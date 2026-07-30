@@ -1,0 +1,16 @@
+=== AOS Kernel v0.1 ===
+GDT initialized.
+IDT initialized.
+Interrupts initialized.
+Mouse (standard) initialized.
+Filesystem ready.
+Loading programs... done
+Terminal ready.
+
+AOS> 
+Tick: 0x2E
+AOS> 
+Tick: 0x67
+AOS> 
+Tick: 0xA1
+AOS> 
