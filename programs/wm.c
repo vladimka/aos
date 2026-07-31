@@ -321,7 +321,7 @@ void main(void) {
         int moved = mx != last_mx || my != last_my || mb != last_mb;
         if (moved && (mb & 1) && !(last_mb & 1)) {
             int cb = close_btn_at(mx, my);
-            if (cb >= 0) {
+            if (cb >= 0 && win_index_at(mx, my) == cb) {
                 struct aos_msg cl = {MSG_CLOSE, 0, 0, 0, 0};
                 send_msg(wins[cb].pid, &cl);
             } else {
