@@ -63,6 +63,8 @@ static void fb_fill(int x, int y, int w, int h, unsigned int rgb) {
             fb[(unsigned)yy * pitch + (unsigned)xx] = rgb;
 }
 
+static void draw_close_btn(const struct win *wn);
+
 static void draw_title(const struct win *wn) {
     unsigned int tcol = (wn->pid == focus_pid) ? COL_TITLE_FOCUS : COL_TITLE;
     fb_fill(wn->x + BORDER, wn->y + BORDER, wn->cw, TITLE_H, tcol);
@@ -85,6 +87,7 @@ static void draw_title(const struct win *wn) {
         mcpy(fb + (unsigned)r * pitch + (unsigned)x0,
              sc + (unsigned)(r - ty) * 1024 + (unsigned)(x0 - tx),
              (unsigned)(x1 - x0));
+    draw_close_btn(wn);
 }
 
 static void blit_content(const struct win *wn) {
@@ -103,6 +106,17 @@ static void blit_content(const struct win *wn) {
         mcpy(dst + (unsigned)r * pitch + (unsigned)x0,
              src + (unsigned)(r - cy) * wn->cw + (unsigned)(x0 - cx),
              (unsigned)(x1 - x0));
+}
+
+static void draw_close_btn(const struct win *wn) {
+    int bx = wn->x + BORDER + wn->cw - 18;
+    int by = wn->y + BORDER + (TITLE_H - 16) / 2;
+    unsigned int *fb = (unsigned int *)fb_addr;
+    unsigned int pitch = fb_pitch >> 2;
+    for (int i = 0; i < 16; i++) {
+        fb[(unsigned)(by + i) * pitch + (unsigned)(bx + i)] = COL_TITLE_TEXT;
+        fb[(unsigned)(by + i) * pitch + (unsigned)(bx + 15 - i)] = COL_TITLE_TEXT;
+    }
 }
 
 static void composite_rect(int x0, int y0, int x1, int y1) {
@@ -216,6 +230,18 @@ static int win_index_at(int mx, int my) {
     return -1;
 }
 
+static int close_btn_at(int mx, int my) {
+    for (int i = MAX_WINDOWS - 1; i >= 0; i--) {
+        struct win *wn = &wins[i];
+        if (!wn->used) continue;
+        int bx = wn->x + BORDER + wn->cw - 18;
+        int by = wn->y + BORDER + (TITLE_H - 16) / 2;
+        if (mx >= bx && mx < bx + 16 && my >= by && my < by + 16)
+            return i;
+    }
+    return -1;
+}
+
 static void free_windows(unsigned int pid) {
     for (int i = 0; i < MAX_WINDOWS; i++)
         if (wins[i].used && wins[i].pid == pid) {
@@ -240,8 +266,8 @@ void main(void) {
     register_events();
 
     // Launch the desktop applications (they create their windows via MSG_CREATE).
-    spawn("bin/term", "", 0);
-    spawn("bin/clock", "", 0);
+    spawn("bin/term", "", getpid());
+    spawn("bin/clock", "", getpid());
 
     int last_mx = 0, last_my = 0, last_mb = 0;
     int redraw = 1;
@@ -294,15 +320,21 @@ void main(void) {
 
         int moved = mx != last_mx || my != last_my || mb != last_mb;
         if (moved && (mb & 1) && !(last_mb & 1)) {
-            int wi = win_index_at(mx, my);
-            if (wi >= 0) {
-                if (focus_pid != wins[wi].pid) redraw = 1;
-                focus_pid = wins[wi].pid;
-                if (my >= wins[wi].y + BORDER &&
-                    my < wins[wi].y + BORDER + TITLE_H) {
-                    drag_i = wi;
-                    drag_dx = mx - wins[wi].x;
-                    drag_dy = my - wins[wi].y;
+            int cb = close_btn_at(mx, my);
+            if (cb >= 0) {
+                struct aos_msg cl = {MSG_CLOSE, 0, 0, 0, 0};
+                send_msg(wins[cb].pid, &cl);
+            } else {
+                int wi = win_index_at(mx, my);
+                if (wi >= 0) {
+                    if (focus_pid != wins[wi].pid) redraw = 1;
+                    focus_pid = wins[wi].pid;
+                    if (my >= wins[wi].y + BORDER &&
+                        my < wins[wi].y + BORDER + TITLE_H) {
+                        drag_i = wi;
+                        drag_dx = mx - wins[wi].x;
+                        drag_dy = my - wins[wi].y;
+                    }
                 }
             }
         }
