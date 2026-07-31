@@ -352,9 +352,19 @@ void main(void) {
             if (ny > (int)fb_h - (wn->ch + TITLE_H + 2 * BORDER))
                 ny = (int)fb_h - (wn->ch + TITLE_H + 2 * BORDER);
             if (nx != wn->x || ny != wn->y) {
+                int ox = wn->x, oy = wn->y;
+                int ow = wn->cw + 2 * BORDER, oh = wn->ch + TITLE_H + 2 * BORDER;
                 wn->x = nx;
                 wn->y = ny;
-                redraw = 1;
+                int x0 = ox < nx ? ox : nx;
+                int y0 = oy < ny ? oy : ny;
+                int x1 = (ox > nx ? ox : nx) + ow;
+                int y1 = (oy > ny ? oy : ny) + oh;
+                composite_rect(x0, y0, x1, y1);
+                if (cursor_overlaps(x0, y0, x1 - x0, y1 - y0)) {
+                    has_cur = 0;
+                    update_cursor(mx, my);
+                }
             }
         }
 
