@@ -22,6 +22,8 @@ void main(void) {
     unsigned int last_sec = 0xFFFFFFFFu;
 
     for (;;) {
+        if (recv_msg(&m) == 0 && m.type == MSG_CLOSE)
+            exit();
         unsigned int t = get_tick();
         unsigned int sec = t / 1000;
         if (sec != last_sec) {

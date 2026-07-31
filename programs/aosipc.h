@@ -8,6 +8,7 @@
 #define MSG_CREATE  4   // app -> wm: "create window"    a = width, b = height
 #define MSG_WININFO 5   // wm -> app: "window ready"     a = winid, b = slab
 #define MSG_EXIT    6   // kernel -> sink: "task exited" a = pid
+#define MSG_CLOSE   7   // wm -> app: "please exit"    a = unused
 
 // Shared-memory window slabs (identity-mapped, user-accessible, see paging.c).
 // Every window owns one 1 MB slab; apps draw 32bpp pixels at:

@@ -212,6 +212,9 @@ void main(void) {
                 prompt();
                 render();
                 break;
+            case MSG_CLOSE:
+                exit();
+                break;
             }
         }
         yield();
