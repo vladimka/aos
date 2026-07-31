@@ -1,9 +1,9 @@
 #include "libaos.h"
 
-void _start(void) {
+void main(void) {
     unsigned int t = get_tick();
-    unsigned int secs = t / 18;
-    unsigned int frac = (t % 18) * 100 / 18;
+    unsigned int secs = t / 1000;
+    unsigned int frac = (t % 1000) * 100 / 1000;
     print("\nUptime: ");
     print_dec(secs);
     putchar('.');

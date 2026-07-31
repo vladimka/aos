@@ -2,6 +2,7 @@
 #include "vga.h"
 #include "serial.h"
 #include "ports.h"
+#include "task.h"
 
 #define PS2_DATA   0x60
 #define PS2_STATUS 0x64
@@ -9,6 +10,15 @@
 static int packet[4];
 static int pcount = 0;
 static int has_wheel = 0;
+static int wheel_acc = 0;
+
+// Absolute cursor position + buttons, consumed by the window manager
+static int mouse_x = 0;
+static int mouse_y = 0;
+static int mouse_buttons = 0;
+static int mouse_wheel = 0;
+static int mouse_xmax = 0;
+static int mouse_ymax = 0;
 
 static int ps2_wait_write(void) {
     int timeout = 100000;
@@ -81,11 +91,33 @@ void mouse_init(void) {
     mouse_cmd(0xF4);
     pcount = 0;
     __asm__ volatile("sti");
+
+    unsigned int fb_addr = 0, fb_size = 0;
+    vga_get_fb_info(&fb_addr, &fb_size);
+    if (fb_size) {
+        mouse_xmax = 1023;
+        mouse_ymax = 767;
+    }
+    mouse_x = mouse_xmax ? mouse_xmax / 2 : 512;
+    mouse_y = mouse_ymax ? mouse_ymax / 2 : 384;
+
     if (has_wheel) {
         serial_print("Mouse with wheel detected.\n");
     } else {
         serial_print("Mouse (standard) initialized.\n");
     }
+}
+
+static void irq_save(unsigned int *flags) {
+    unsigned int f;
+    __asm__ volatile("pushfl; pop %0" : "=r"(f));
+    __asm__ volatile("cli");
+    *flags = f;
+}
+
+static void irq_restore(unsigned int flags) {
+    if (flags & 0x200)
+        __asm__ volatile("sti");
 }
 
 void mouse_process_byte(unsigned char data) {
@@ -105,7 +137,18 @@ void mouse_process_byte(unsigned char data) {
             pcount = 0;
             int wheel = (signed char)packet[3];
             if (wheel)
-                vga_scroll((wheel > 0) ? -3 : 3);
+                mouse_wheel += wheel;
+
+            mouse_x += (signed char)packet[1];
+            mouse_y += (signed char)packet[2];
+            mouse_buttons = packet[0] & 0x07;
+            if (mouse_x < 0) mouse_x = 0;
+            if (mouse_x > mouse_xmax) mouse_x = mouse_xmax;
+            if (mouse_y < 0) mouse_y = 0;
+            if (mouse_y > mouse_ymax) mouse_y = mouse_ymax;
+
+            if (wheel)
+                wheel_acc += (wheel > 0) ? -3 : 3;
         }
     } else {
         if (pcount == 0) {
@@ -118,6 +161,38 @@ void mouse_process_byte(unsigned char data) {
         } else {
             packet[2] = data;
             pcount = 0;
+            mouse_x += (signed char)packet[1];
+            mouse_y += (signed char)packet[2];
+            mouse_buttons = packet[0] & 0x07;
+            if (mouse_x < 0) mouse_x = 0;
+            if (mouse_x > mouse_xmax) mouse_x = mouse_xmax;
+            if (mouse_y < 0) mouse_y = 0;
+            if (mouse_y > mouse_ymax) mouse_y = mouse_ymax;
         }
     }
+}
+
+// Apply accumulated wheel deltas as a single vga_scroll, but only when no GUI
+// event consumer is active (the window manager polls the raw wheel itself).
+// Called from the main loop with IF=1 (never from an IRQ): the multi-MB redraw
+// takes tens of ms in TCG, and running it with interrupts masked would
+// overflow the 16-byte emulated PS/2 queue. Draining in the IRQ stays instant.
+void mouse_flush_wheel(void) {
+    if (wheel_acc && task_event_pid() == 0) {
+        int d = wheel_acc;
+        wheel_acc = 0;
+        vga_scroll(d);
+    }
+}
+
+// Snapshot the cursor for the window manager; consumes the accumulated wheel.
+void mouse_get_state(int *x, int *y, int *buttons, int *wheel) {
+    unsigned int flags;
+    irq_save(&flags);
+    if (x) *x = mouse_x;
+    if (y) *y = mouse_y;
+    if (buttons) *buttons = mouse_buttons;
+    if (wheel) *wheel = mouse_wheel;
+    mouse_wheel = 0;
+    irq_restore(flags);
 }

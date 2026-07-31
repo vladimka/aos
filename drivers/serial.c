@@ -46,3 +46,11 @@ void serial_print_dec(unsigned int n) {
     }
     while (i > 0) serial_putchar(buf[--i]);
 }
+
+int serial_available(void) {
+    return (inb(PORT + 5) & 1) ? 1 : 0;
+}
+
+char serial_read(void) {
+    return inb(PORT);
+}

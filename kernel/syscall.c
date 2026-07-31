@@ -1,13 +1,63 @@
 #include "syscall.h"
 #include "interrupts.h"
 #include "terminal.h"
+#include "vga.h"
 #include "fs.h"
+#include "sfs.h"
 #include "string.h"
 #include "ports.h"
+#include "user.h"
+#include "task.h"
+#include "mouse.h"
+#include "aosipc.h"
 
 extern volatile unsigned int tick;
 
 static char prog_args[256];
+
+// User memory regions (see paging.c): program area + shared window slabs
+#define USER_LO 0x01000000
+#define USER_HI 0x01804000
+#define SLAB_LO 0x03000000
+#define SLAB_HI 0x04000000
+
+static int in_user(const void *p, unsigned int n) {
+    unsigned int a = (unsigned int)p;
+    return a >= USER_LO && n <= USER_HI - a;
+}
+
+static int in_user_area(const void *p, unsigned int n) {
+    unsigned int a = (unsigned int)p;
+    if (a >= USER_LO && n <= USER_HI - a) return 1;
+    if (a >= SLAB_LO && n <= SLAB_HI - a) return 1;
+    return 0;
+}
+
+static char user_str[1024];
+static char user_str2[256];
+
+// Copy a NUL-terminated user string into a kernel buffer, bounded.
+static int copy_user_str_buf(const void *usr, char *dst, unsigned int max) {
+    unsigned int a = (unsigned int)usr;
+    if (a < USER_LO) return -1;
+    unsigned int i = 0;
+    while (i < max - 1) {
+        if (a + i >= USER_HI) break;
+        char c = *(const char *)(a + i);
+        dst[i++] = c;
+        if (c == '\0') return i;
+    }
+    dst[i] = '\0';
+    return i;
+}
+
+static int copy_user_str(const void *usr) {
+    return copy_user_str_buf(usr, user_str, sizeof(user_str));
+}
+
+static int copy_user_str2(const void *usr) {
+    return copy_user_str_buf(usr, user_str2, sizeof(user_str2));
+}
 
 void syscall_set_args(const char *args) {
     unsigned int i;
@@ -16,59 +66,299 @@ void syscall_set_args(const char *args) {
     prog_args[i] = '\0';
 }
 
+// Stdout routing: a task with a mailbox sink delivers output as MSG_DATA
+// messages (up to 12 bytes each); otherwise output goes to the kernel terminal.
+static void route_text(const char *s, unsigned int len) {
+    unsigned int pid = task_current_pid();
+    unsigned int sink = task_current_sink();
+    if (pid > 0 && sink > 0 && task_alive(sink)) {
+        for (unsigned int i = 0; i < len; i += 12) {
+            unsigned int n = len - i;
+            if (n > 12) n = 12;
+            unsigned int b = 0, c = 0, d = 0;
+            for (unsigned int j = 0; j < n; j++) {
+                unsigned int byte = (unsigned char)s[i + j];
+                if (j < 4)
+                    b |= byte << (8 * j);
+                else if (j < 8)
+                    c |= byte << (8 * (j - 4));
+                else
+                    d |= byte << (8 * (j - 8));
+            }
+            task_mailbox_send(sink, MSG_DATA, n, b, c, d);
+        }
+        return;
+    }
+    terminal_write(s, len);
+}
+
+static void route_hex(unsigned int n) {
+    char buf[12];
+    const char *hex = "0123456789ABCDEF";
+    buf[0] = '0'; buf[1] = 'x';
+    int len = 2;
+    int started = 0;
+    for (int i = 28; i >= 0; i -= 4) {
+        int d = (n >> i) & 0xF;
+        if (d || started || i == 0) {
+            buf[len++] = hex[d];
+            started = 1;
+        }
+    }
+    route_text(buf, len);
+}
+
+static void route_dec(unsigned int n) {
+    char buf[12];
+    int i = 0;
+    if (n == 0) {
+        route_text("0", 1);
+        return;
+    }
+    while (n > 0) {
+        buf[i++] = '0' + (n % 10);
+        n /= 10;
+    }
+    for (int j = 0; j < i / 2; j++) {
+        char t = buf[j];
+        buf[j] = buf[i - 1 - j];
+        buf[i - 1 - j] = t;
+    }
+    route_text(buf, i);
+}
+
 void syscall_handler(struct registers *r) {
     unsigned int n = r->eax;
 
-    if (n == SYS_PRINT) {
-        terminal_print((const char *)r->ebx);
-    } else if (n == SYS_PRINT_HEX) {
-        terminal_print_hex(r->ebx);
-    } else if (n == SYS_PRINT_DEC) {
-        terminal_print_dec(r->ebx);
-    } else if (n == SYS_PUTCHAR) {
-        terminal_putchar((char)r->ebx);
-    } else if (n == SYS_FS_WRITE) {
-        r->eax = fs_write((const char *)r->ebx, (const char *)r->ecx, r->edx);
-    } else if (n == SYS_FS_READ) {
-        r->eax = fs_read((const char *)r->ebx, (char *)r->ecx, r->edx);
-    } else if (n == SYS_FS_DELETE) {
-        r->eax = fs_delete((const char *)r->ebx);
-    } else if (n == SYS_FS_SIZE) {
-        r->eax = fs_get_size((const char *)r->ebx);
-    } else if (n == SYS_FS_EXISTS) {
-        r->eax = fs_exists((const char *)r->ebx);
-    } else if (n == SYS_FS_LIST_GET) {
-        unsigned int idx = r->ebx;
-        char *name_buf = (char *)r->ecx;
-        unsigned int *size_out = (unsigned int *)r->edx;
-
-        extern int sfs_get_entry(unsigned int, char *, unsigned int *);
-        r->eax = sfs_get_entry(idx, name_buf, size_out);
-    } else if (n == SYS_TICK) {
+    switch (n) {
+    case SYS_PRINT:
+        if (copy_user_str((const void *)r->ebx) >= 0)
+            route_text(user_str, strlen(user_str));
+        else
+            r->eax = -5;
+        break;
+    case SYS_PRINT_HEX:
+        route_hex(r->ebx);
+        break;
+    case SYS_PRINT_DEC:
+        route_dec(r->ebx);
+        break;
+    case SYS_PUTCHAR: {
+        char c = (char)r->ebx;
+        route_text(&c, 1);
+        break;
+    }
+    case SYS_FS_WRITE:
+        if (copy_user_str((const void *)r->ebx) >= 0 &&
+            in_user((const void *)r->ecx, r->edx))
+            r->eax = fs_write(user_str, (const char *)r->ecx, r->edx);
+        else
+            r->eax = -5;
+        break;
+    case SYS_FS_READ:
+        if (copy_user_str((const void *)r->ebx) >= 0 &&
+            in_user((const void *)r->ecx, r->edx))
+            r->eax = fs_read(user_str, (char *)r->ecx, r->edx);
+        else
+            r->eax = -5;
+        break;
+    case SYS_FS_DELETE:
+        if (copy_user_str((const void *)r->ebx) >= 0)
+            r->eax = fs_delete(user_str);
+        else
+            r->eax = -5;
+        break;
+    case SYS_FS_SIZE:
+        if (copy_user_str((const void *)r->ebx) >= 0)
+            r->eax = fs_get_size(user_str);
+        else
+            r->eax = -5;
+        break;
+    case SYS_FS_EXISTS:
+        if (copy_user_str((const void *)r->ebx) >= 0)
+            r->eax = fs_exists(user_str);
+        else
+            r->eax = -5;
+        break;
+    case SYS_FS_LIST_GET:
+        if (in_user((void *)r->ecx, 28) && in_user((void *)r->edx, 4))
+            r->eax = sfs_get_entry(r->ebx, (char *)r->ecx, (unsigned int *)r->edx);
+        else
+            r->eax = -5;
+        break;
+    case SYS_TICK:
         r->eax = tick;
-    } else if (n == SYS_CLEAR) {
-        extern void vga_init(void);
-        vga_init();
-    } else if (n == SYS_REBOOT) {
-        terminal_print("\nRebooting...\n");
+        break;
+    case SYS_CLEAR:
+        vga_clear();
+        break;
+    case SYS_REBOOT:
         unsigned char good = 0x02;
         while (good & 0x02)
             good = inb(0x64);
         outb(0x64, 0xFE);
         for (;;);
-    } else if (n == SYS_PANIC) {
+    case SYS_PANIC:
         __asm__ volatile("int $0x0");
-    } else if (n == SYS_SHUTDOWN) {
-        terminal_print("\nShutting down...\n");
+        break;
+    case SYS_SHUTDOWN:
         outw(0x604, 0x2000);
         for (;;);
-    } else if (n == SYS_GET_ARGS) {
+    case SYS_GET_ARGS: {
         char *dst = (char *)r->ebx;
         unsigned int maxlen = r->ecx;
-        unsigned int i;
-        for (i = 0; i < maxlen - 1 && prog_args[i]; i++)
-            dst[i] = prog_args[i];
-        if (maxlen > 0) dst[i] = '\0';
-        r->eax = i;
+        if (in_user(dst, maxlen) && maxlen > 0) {
+            const char *args = task_current_pid() > 0 ? task_current_args() : prog_args;
+            unsigned int i;
+            for (i = 0; i < maxlen - 1 && args[i]; i++)
+                dst[i] = args[i];
+            dst[i] = '\0';
+            r->eax = i;
+        } else {
+            r->eax = -5;
+        }
+        break;
+    }
+    case SYS_READ_KEY:
+        r->eax = terminal_read_key();
+        break;
+    case SYS_EXIT:
+        if (task_current_pid() == 0)
+            user_program_exit();
+        else
+            task_exit_current();
+        break;
+    case SYS_YIELD:
+        r->eax = 0;
+        break;
+    case SYS_GETPID:
+        r->eax = task_current_pid();
+        break;
+    case SYS_SEND: {
+        struct aos_msg *m = (struct aos_msg *)r->ecx;
+        if (in_user(m, sizeof(struct aos_msg))) {
+            struct aos_msg mv;
+            mv.type = m->type;
+            mv.a = m->a;
+            mv.b = m->b;
+            mv.c = m->c;
+            mv.d = m->d;
+            r->eax = task_mailbox_send(r->ebx, mv.type, mv.a, mv.b, mv.c, mv.d);
+        } else {
+            r->eax = -5;
+        }
+        break;
+    }
+    case SYS_RECV: {
+        struct aos_msg *m = (struct aos_msg *)r->ebx;
+        if (in_user(m, sizeof(struct aos_msg))) {
+            unsigned int t, av, bv, cv, dv;
+            if (task_mailbox_recv(&t, &av, &bv, &cv, &dv) == 0) {
+                m->type = t;
+                m->a = av;
+                m->b = bv;
+                m->c = cv;
+                m->d = dv;
+                r->eax = 0;
+            } else {
+                r->eax = -1;
+            }
+        } else {
+            r->eax = -5;
+        }
+        break;
+    }
+    case SYS_EVENT:
+        r->eax = task_set_event_pid();
+        break;
+    case SYS_MOUSE: {
+        int *x = (int *)r->ebx;
+        int *y = (int *)r->ecx;
+        int *b = (int *)r->edx;
+        int *w = (int *)r->esi;
+        if ((x == 0 || in_user(x, 4)) && (y == 0 || in_user(y, 4)) &&
+            (b == 0 || in_user(b, 4)) && (w == 0 || in_user(w, 4))) {
+            mouse_get_state(x, y, b, w);
+            r->eax = 0;
+        } else {
+            r->eax = -5;
+        }
+        break;
+    }
+    case SYS_FB_INFO: {
+        unsigned int *addr = (unsigned int *)r->ebx;
+        unsigned int *w = (unsigned int *)r->ecx;
+        unsigned int *h = (unsigned int *)r->edx;
+        unsigned int *pitch = (unsigned int *)r->esi;
+        unsigned int *bpp = (unsigned int *)r->edi;
+        if ((addr == 0 || in_user(addr, 4)) && (w == 0 || in_user(w, 4)) &&
+            (h == 0 || in_user(h, 4)) && (pitch == 0 || in_user(pitch, 4)) &&
+            (bpp == 0 || in_user(bpp, 4))) {
+            unsigned int a, wv, hv, pv, bv;
+            vga_get_fb_dimensions(&a, &wv, &hv, &pv, &bv);
+            if (addr) *addr = a;
+            if (w) *w = wv;
+            if (h) *h = hv;
+            if (pitch) *pitch = pv;
+            if (bpp) *bpp = bv;
+            r->eax = 0;
+        } else {
+            r->eax = -5;
+        }
+        break;
+    }
+    case SYS_TEXT: {
+        struct aos_render_req *req = (struct aos_render_req *)r->ebx;
+        if (in_user(req, sizeof(struct aos_render_req)) &&
+            in_user_area(req->buf, 1) &&
+            copy_user_str_buf(req->str, user_str, sizeof(user_str)) >= 0) {
+            vga_render_text_buffer(req->buf, req->pitch, req->x, req->y,
+                                   user_str, req->fg, req->bg);
+            r->eax = 0;
+        } else {
+            r->eax = -5;
+        }
+        break;
+    }
+    case SYS_FILL: {
+        struct aos_fill_req *req = (struct aos_fill_req *)r->ebx;
+        if (in_user(req, sizeof(struct aos_fill_req)) &&
+            in_user_area(req->buf, 1)) {
+            vga_fill_buffer(req->buf, req->pitch, req->x, req->y,
+                            req->w, req->h, req->rgb);
+            r->eax = 0;
+        } else {
+            r->eax = -5;
+        }
+        break;
+    }
+    case SYS_SETOUT:
+        r->eax = task_set_sink(r->ebx);
+        break;
+    case SYS_SPAWN: {
+        if (copy_user_str((const void *)r->ebx) >= 0) {
+            const char *args = 0;
+            if (r->ecx) {
+                if (copy_user_str2((const void *)r->ecx) >= 0)
+                    args = user_str2;
+                else {
+                    r->eax = -5;
+                    break;
+                }
+            }
+            unsigned int pid;
+            int rc = task_spawn(user_str, args, r->edx, &pid);
+            r->eax = rc == 0 ? (int)pid : rc;
+        } else {
+            r->eax = -5;
+        }
+        break;
+    }
+    case SYS_GETEVENT:
+        r->eax = task_event_pid();
+        break;
+    default:
+        r->eax = -1;
+        break;
     }
 }

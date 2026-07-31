@@ -7,7 +7,7 @@ static void print_name(const char *name) {
     print(p);
 }
 
-void _start(void) {
+void main(void) {
     print("\nAvailable commands:");
     int i = 0;
     while (1) {

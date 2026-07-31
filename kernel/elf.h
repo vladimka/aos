@@ -3,12 +3,7 @@
 
 #define ELF_MAGIC 0x464C457F
 
-#define PT_NULL    0
-#define PT_LOAD    1
-#define PT_DYNAMIC 2
-#define PT_INTERP  3
-#define PT_NOTE    4
-#define PT_PHDR    6
+#define PT_LOAD 1
 
 struct elf_header {
     unsigned int   magic;

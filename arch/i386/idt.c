@@ -16,13 +16,17 @@ struct idt_ptr {
 static struct idt_entry idt[256];
 static struct idt_ptr   idtp;
 
-void idt_install_irq(unsigned char irq, void (*handler)(void)) {
+void idt_install_irq_flags(unsigned char irq, void (*handler)(void), unsigned char flags) {
     unsigned int base = (unsigned int)handler;
     idt[irq].base_low  = base & 0xFFFF;
     idt[irq].base_high = (base >> 16) & 0xFFFF;
     idt[irq].sel       = 0x08;
     idt[irq].always0   = 0;
-    idt[irq].flags     = 0x8E;
+    idt[irq].flags     = flags;
+}
+
+void idt_install_irq(unsigned char irq, void (*handler)(void)) {
+    idt_install_irq_flags(irq, handler, 0x8E);
 }
 
 void idt_init(void) {

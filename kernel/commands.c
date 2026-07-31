@@ -6,6 +6,7 @@
 #include "syscall.h"
 #include "fs.h"
 #include "progload.h"
+#include "user.h"
 
 char command_path[PATH_MAX] = "bin";
 
@@ -27,8 +28,8 @@ void commands_set_path(const char *p) {
 static int try_exec(const char *full_path, const char *arg) {
     void (*entry)(void) = program_load(full_path, arg);
     if (entry) {
-        entry();
-        terminal_set_prompt();
+        user_program_start(entry);
+        terminal_set_prompt();  // runs after the program exits
         return 1;
     }
     terminal_print("\nFailed to load: ");

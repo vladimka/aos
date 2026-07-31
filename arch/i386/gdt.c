@@ -14,8 +14,35 @@ struct gdt_ptr {
     unsigned int   base;
 } __attribute__((packed));
 
-static struct gdt_entry gdt[3];
+struct tss {
+    unsigned int link;
+    unsigned int esp0;
+    unsigned int ss0;
+    unsigned int esp1;
+    unsigned int ss1;
+    unsigned int esp2;
+    unsigned int ss2;
+    unsigned int cr3;
+    unsigned int eip;
+    unsigned int eflags;
+    unsigned int eax, ecx, edx, ebx;
+    unsigned int esp, ebp, esi, edi;
+    unsigned int es, cs, ss, ds, fs, gs;
+    unsigned int ldt;
+    unsigned short trap;
+    unsigned short iomap;
+} __attribute__((packed));
+
+// 0: null, 1: kernel code, 2: kernel data, 3: user code, 4: user data, 5: TSS
+static struct gdt_entry gdt[6];
 static struct gdt_ptr   gp;
+static struct tss       tss_entry;
+
+#define SEL_KCODE 0x08
+#define SEL_KDATA 0x10
+#define SEL_UCODE 0x18
+#define SEL_UDATA 0x20
+#define SEL_TSS   0x28
 
 static void gdt_set_gate(int idx, unsigned int base, unsigned int limit,
                          unsigned char access, unsigned char gran) {
@@ -28,6 +55,11 @@ static void gdt_set_gate(int idx, unsigned int base, unsigned int limit,
     gdt[idx].access      = access;
 }
 
+void tss_set_esp0(unsigned int esp0) {
+    tss_entry.esp0 = esp0;
+    tss_entry.ss0  = SEL_KDATA;
+}
+
 void gdt_init(void) {
     gp.limit = sizeof(gdt) - 1;
     gp.base  = (unsigned int)&gdt;
@@ -35,6 +67,12 @@ void gdt_init(void) {
     gdt_set_gate(0, 0, 0, 0, 0);
     gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xCF);
     gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF);
+    gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF);
+    gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF);
+
+    for (unsigned int i = 0; i < sizeof(struct tss) / 4; i++)
+        ((unsigned int *)&tss_entry)[i] = 0;
+    gdt_set_gate(5, (unsigned int)&tss_entry, sizeof(struct tss) - 1, 0x89, 0x00);
 
     __asm__ volatile("lgdt %0" : : "m"(gp));
     __asm__ volatile(
@@ -50,4 +88,6 @@ void gdt_init(void) {
         :
         : "ax", "memory"
     );
+
+    __asm__ volatile("ltr %0" : : "r"((unsigned short)SEL_TSS));
 }

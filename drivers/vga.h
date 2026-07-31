@@ -24,11 +24,15 @@ enum vga_color {
 };
 
 void vga_init(void);
+void vga_clear(void);
 void vga_set_color(unsigned char fg, unsigned char bg);
 void vga_putchar(char c);
 void vga_print(const char *str);
 void vga_print_hex(unsigned int n);
 void vga_print_dec(unsigned int n);
+void vga_get_fb_info(unsigned int *addr, unsigned int *size);
+void vga_get_fb_dimensions(unsigned int *addr, unsigned int *width, unsigned int *height,
+                           unsigned int *pitch, unsigned int *bpp);
 
 int  vga_get_cursor_x(void);
 int  vga_get_cursor_y(void);
@@ -44,5 +48,12 @@ int vga_get_max_x(void);
 void vga_scroll(int delta);
 int  vga_get_scroll_offset(void);
 void vga_reset_scroll(void);
+
+// Render into an arbitrary 32bpp user pixel buffer (window slabs), using the
+// built-in CyrSlav font. pitch is the row size in bytes.
+void vga_render_text_buffer(unsigned int *buf, unsigned int pitch, int x, int y,
+                            const char *str, unsigned int fg, unsigned int bg);
+void vga_fill_buffer(unsigned int *buf, unsigned int pitch, int x, int y,
+                     int w, int h, unsigned int rgb);
 
 #endif

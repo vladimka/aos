@@ -5,6 +5,7 @@
 #include "fs.h"
 #include "sfs.h"
 #include "string.h"
+#include "user.h"
 
 static char line_buf[LINE_BUF_SIZE];
 static unsigned int line_pos = 0;
@@ -18,6 +19,31 @@ static int e0_prefix = 0;
 
 #define PROMPT     "AOS> "
 #define PROMPT_LEN 5
+
+// ---- Input queue (for user programs) ----
+#define KEY_QUEUE_SIZE 64
+static int key_queue[KEY_QUEUE_SIZE];
+static unsigned int key_queue_head = 0;
+static unsigned int key_queue_tail = 0;
+
+static void key_queue_push(int cp) {
+    unsigned int next = (key_queue_tail + 1) % KEY_QUEUE_SIZE;
+    if (next == key_queue_head) return;
+    key_queue[key_queue_tail] = cp;
+    key_queue_tail = next;
+}
+
+int terminal_read_key(void) {
+    if (key_queue_head == key_queue_tail) return -1;
+    int cp = key_queue[key_queue_head];
+    key_queue_head = (key_queue_head + 1) % KEY_QUEUE_SIZE;
+    return cp;
+}
+
+void terminal_reset_keys(void) {
+    key_queue_head = 0;
+    key_queue_tail = 0;
+}
 
 // ---- Command history ----
 #define HIST_SIZE 16
@@ -145,6 +171,69 @@ static unsigned short map_scancode(unsigned char sc) {
     }
     unsigned short cp = use_upper ? (unsigned char)us_upper[sc] : (unsigned char)us_lower[sc];
     return cp;
+}
+
+// Translate one PS/2 scancode to a key event. Maintains the shared keyboard
+// state (shift/ctrl/caps/ru_layout/E0 prefix). Returns -1 for modifiers,
+// releases and unmapped keys, otherwise an ASCII codepoint (or a GUI_KEY_*
+// special code for navigation keys).
+int terminal_scan_event(unsigned char scancode) {
+    if (scancode == 0xE0) {
+        e0_prefix = 1;
+        return -1;
+    }
+    int ext = e0_prefix;
+    e0_prefix = 0;
+
+    // Shift keys
+    if (scancode == 0x2A || scancode == 0x36) {
+        shift_pressed = 1;
+        if (ctrl_pressed) ru_layout = !ru_layout;
+        return -1;
+    }
+    if (scancode == 0xAA || scancode == 0xB6) {
+        shift_pressed = 0;
+        return -1;
+    }
+
+    // Ctrl keys
+    if (!ext && scancode == 0x1D) {
+        ctrl_pressed = 1;
+        if (shift_pressed) ru_layout = !ru_layout;
+        return -1;
+    }
+    if (!ext && scancode == 0x9D) {
+        ctrl_pressed = 0;
+        return -1;
+    }
+
+    if (scancode & 0x80) return -1;
+
+    if (!ext && scancode == 0x3A) {
+        caps_lock = !caps_lock;
+        return -1;
+    }
+
+    if (ext) {
+        switch (scancode) {
+        case 0x48: return GUI_KEY_UP;
+        case 0x50: return GUI_KEY_DOWN;
+        case 0x4B: return GUI_KEY_LEFT;
+        case 0x4D: return GUI_KEY_RIGHT;
+        case 0x47: return GUI_KEY_HOME;
+        case 0x4F: return GUI_KEY_END;
+        case 0x53: return GUI_KEY_DEL;
+        default: return -1;
+        }
+    }
+
+    if (scancode == 0x0F) return '\t';
+    if (scancode == 0x0E) return '\b';
+    if (scancode == 0x1C) return '\r';
+    if (scancode == 0x01) return 27;    // Escape
+
+    unsigned short cp = map_scancode(scancode);
+    return cp ? (int)cp : -1;
 }
 
 // ---- Line redraw ----
@@ -458,126 +547,100 @@ static void handle_delete(void) {
     line_redraw_from(cursor_pos);
 }
 
-void terminal_keyboard_handler(unsigned char scancode) {
-    // E0 prefix handling
-    if (scancode == 0xE0) {
-        e0_prefix = 1;
+// Serial console input: feed a byte as if it came from the keyboard
+void terminal_serial_byte(unsigned char c) {
+    if (user_program_active()) {
+        key_queue_push(c);
         return;
     }
-
-    int ext = e0_prefix;
-    e0_prefix = 0;
-
-    // Shift keys
-    if (scancode == 0x2A || scancode == 0x36) {
-        shift_pressed = 1;
-        if (ctrl_pressed) { ru_layout = !ru_layout; }
-        return;
-    }
-    if (scancode == 0xAA || scancode == 0xB6) {
-        shift_pressed = 0;
-        return;
-    }
-
-    // Ctrl keys
-    if (!ext && scancode == 0x1D) {
-        ctrl_pressed = 1;
-        if (shift_pressed) { ru_layout = !ru_layout; }
-        return;
-    }
-    if (!ext && scancode == 0x9D) {
-        ctrl_pressed = 0;
-        return;
-    }
-
-    if (scancode & 0x80) return;
-
-    if (!ext && scancode == 0x3A) {
-        caps_lock = !caps_lock;
-        return;
-    }
-
-    if (ext) {
-        switch (scancode) {
-        case 0x48: // Up
-            tab_reset();
-            vga_reset_scroll();
-            hist_load(1);
-            return;
-        case 0x50: // Down
-            tab_reset();
-            vga_reset_scroll();
-            hist_load(-1);
-            return;
-        case 0x4B: // Left
-            tab_reset();
-            vga_reset_scroll();
-            if (cursor_pos > 0) {
-                int clen = utf8_char_len_rev(line_buf, cursor_pos);
-                cursor_pos -= clen;
-                line_full_redraw();
-            }
-            return;
-        case 0x4D: // Right
-            tab_reset();
-            vga_reset_scroll();
-            if (cursor_pos < line_pos) {
-                int clen = utf8_char_len_at(line_buf, cursor_pos);
-                cursor_pos += clen;
-                line_full_redraw();
-            }
-            return;
-        case 0x47: // Home
-            tab_reset();
-            vga_reset_scroll();
-            cursor_pos = 0;
-            line_full_redraw();
-            return;
-        case 0x4F: // End
-            tab_reset();
-            vga_reset_scroll();
-            cursor_pos = line_pos;
-            line_full_redraw();
-            return;
-        case 0x53: // Delete
-            tab_reset();
-            vga_reset_scroll();
-            handle_delete();
-            return;
-        }
-        return;
-    }
-
-    // Tab
-    if (scancode == 0x0F) {
-        vga_reset_scroll();
-        tab_complete();
-        return;
-    }
-
-    // Backspace
-    if (scancode == 0x0E) {
-        tab_reset();
-        vga_reset_scroll();
-        handle_backspace();
-        return;
-    }
-
-    // Enter
-    if (scancode == 0x1C) {
+    switch (c) {
+    case '\r':
+    case '\n':
         tab_reset();
         vga_reset_scroll();
         process_line();
+        break;
+    case '\b':
+    case 0x7F:
+        tab_reset();
+        vga_reset_scroll();
+        handle_backspace();
+        break;
+    case '\t':
+        vga_reset_scroll();
+        tab_complete();
+        break;
+    default:
+        if (c >= 0x20 && c < 0x7F) {
+            tab_reset();
+            vga_reset_scroll();
+            insert_codepoint(c);
+        }
+        break;
+    }
+}
+
+void terminal_keyboard_handler(unsigned char scancode) {
+    int k = terminal_scan_event(scancode);
+    if (k < 0) return;
+
+    vga_reset_scroll();
+    tab_reset();
+
+    switch (k) {
+    case GUI_KEY_UP:
+        hist_load(1);
+        return;
+    case GUI_KEY_DOWN:
+        hist_load(-1);
+        return;
+    case GUI_KEY_LEFT:
+        if (cursor_pos > 0) {
+            int clen = utf8_char_len_rev(line_buf, cursor_pos);
+            cursor_pos -= clen;
+            line_full_redraw();
+        }
+        return;
+    case GUI_KEY_RIGHT:
+        if (cursor_pos < line_pos) {
+            int clen = utf8_char_len_at(line_buf, cursor_pos);
+            cursor_pos += clen;
+            line_full_redraw();
+        }
+        return;
+    case GUI_KEY_HOME:
+        cursor_pos = 0;
+        line_full_redraw();
+        return;
+    case GUI_KEY_END:
+        cursor_pos = line_pos;
+        line_full_redraw();
+        return;
+    case GUI_KEY_DEL:
+        handle_delete();
         return;
     }
 
-    // Printable character
-    tab_reset();
-    vga_reset_scroll();
-    unsigned short cp = map_scancode(scancode);
-    if (!cp) return;
+    if (k == '\t') {
+        tab_complete();
+        return;
+    }
+    if (k == '\b') {
+        handle_backspace();
+        return;
+    }
+    if (k == '\r') {
+        process_line();
+        return;
+    }
+    if (k < 0x20) return;   // escape and other controls are ignored
 
-    insert_codepoint(cp);
+    if (user_program_active()) {
+        key_queue_push(k);
+        return;
+    }
+
+    insert_codepoint((unsigned short)k);
 }
 
 void terminal_init(void) {

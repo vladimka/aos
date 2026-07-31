@@ -2,7 +2,7 @@
 #include "string.h"
 
 #define FS_MEM   ((unsigned char *)0x200000)
-#define FS_SIZE  (64 * 1024)
+#define FS_SIZE  (160 * 1024)
 
 static struct sfs_header *hdr = (struct sfs_header *)FS_MEM;
 
@@ -108,28 +108,6 @@ int fs_delete(const char *name) {
     return 0;
 }
 
-int fs_write(const char *name, const char *data, unsigned int size) {
-    int i = find_entry(name);
-    if (i < 0) {
-        int r = fs_create(name);
-        if (r < 0) return r;
-        i = find_entry(name);
-    }
-
-    struct sfs_entry *e = entry_at(i);
-    unsigned int off = e->offset;
-
-    if (off + size > FS_SIZE)
-        size = FS_SIZE - off;
-
-    char *dst = data_at(off);
-    for (unsigned int j = 0; j < size; j++)
-        dst[j] = data[j];
-
-    e->size = size;
-    return size;
-}
-
 int fs_read(const char *name, char *buf, unsigned int size) {
     int i = find_entry(name);
     if (i < 0) return -1;
@@ -144,12 +122,50 @@ int fs_read(const char *name, char *buf, unsigned int size) {
     return size;
 }
 
-void fs_list(fs_list_callback cb) {
-    for (unsigned int i = 0; i < SFS_MAX_FILES; i++) {
-        struct sfs_entry *e = entry_at(i);
-        if (e->flags & 1)
-            cb(e->name, e->size);
+int fs_read_at(const char *name, char *buf, unsigned int size, unsigned int offset) {
+    int i = find_entry(name);
+    if (i < 0) return -1;
+
+    struct sfs_entry *e = entry_at(i);
+    if (offset >= e->size) return 0;
+    if (size > e->size - offset) size = e->size - offset;
+
+    char *src = data_at(e->offset + offset);
+    for (unsigned int j = 0; j < size; j++)
+        buf[j] = src[j];
+
+    return size;
+}
+
+int fs_write(const char *name, const char *data, unsigned int size) {
+    int i = find_entry(name);
+    if (i < 0) {
+        int r = fs_create(name);
+        if (r < 0) return r;
+        i = find_entry(name);
     }
+
+    struct sfs_entry *e = entry_at(i);
+    unsigned int off = e->offset;
+
+    if (size > FS_SIZE - off) return -3;  // not enough space
+    unsigned int end = off + size;
+
+    // Must not overwrite another file's data
+    for (unsigned int k = 0; k < SFS_MAX_FILES; k++) {
+        if (k == (unsigned int)i) continue;
+        struct sfs_entry *f = entry_at(k);
+        if (!(f->flags & 1)) continue;
+        unsigned int f_end = f->offset + f->size;
+        if (f_end > off && f->offset < end) return -4;  // overlaps another file
+    }
+
+    char *dst = data_at(off);
+    for (unsigned int j = 0; j < size; j++)
+        dst[j] = data[j];
+
+    e->size = size;
+    return size;
 }
 
 int sfs_get_entry(unsigned int idx, char *name_buf, unsigned int *size_out) {

@@ -2,6 +2,7 @@
 .extern isr_handler
 .extern irq_handler
 .extern syscall_handler
+.extern task_switch_kernel
 
 .macro isr_noerr index
 .global isr\index
@@ -66,13 +67,7 @@ isr_common:
     mov $isr_handler, %eax
     call *%eax
     add $4, %esp
-    pop %gs
-    pop %fs
-    pop %es
-    pop %ds
-    popa
-    add $8, %esp
-    iret
+    jmp switch_and_restore
 
 .macro irq index num
 .global irq\index
@@ -120,13 +115,7 @@ syscall_common:
     mov $syscall_handler, %eax
     call *%eax
     add $4, %esp
-    pop %gs
-    pop %fs
-    pop %es
-    pop %ds
-    popa
-    add $8, %esp
-    iret
+    jmp switch_and_restore
 
 irq_common:
     pusha
@@ -143,6 +132,18 @@ irq_common:
     mov $irq_handler, %eax
     call *%eax
     add $4, %esp
+    jmp switch_and_restore
+
+# ---- Scheduler exit path ----
+# After the C handler returns, ESP points at the current task's saved frame
+# (its kernel_esp). Let the scheduler pick the next task, switch page
+# directories + TSS esp0, then restore that task's frame.
+switch_and_restore:
+    push %esp               # current kernel_esp
+    call task_switch_kernel # returns next task's kernel_esp in %eax
+    add $4, %esp
+    mov %eax, %esp
+task_restore:
     pop %gs
     pop %fs
     pop %es

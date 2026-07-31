@@ -1,6 +1,8 @@
 #ifndef LIBAOS_H
 #define LIBAOS_H
 
+#include "aosipc.h"
+
 void print(const char *s);
 void print_hex(unsigned int n);
 void print_dec(unsigned int n);
@@ -19,5 +21,27 @@ void reboot(void);
 void shutdown(void);
 void panic(void);
 void get_args(char *buf, unsigned int maxlen);
+
+void exit(void);
+int  read_key(void);
+void *malloc(unsigned int size);
+void free(void *p);
+
+// Multitasking + GUI
+void yield(void);
+unsigned int getpid(void);
+int send_msg(unsigned int pid, const struct aos_msg *m);
+int recv_msg(struct aos_msg *m);
+int register_events(void);
+int get_event_pid(void);
+int get_mouse(int *x, int *y, int *buttons, int *wheel);
+int get_fb_info(unsigned int *addr, unsigned int *w, unsigned int *h,
+                unsigned int *pitch, unsigned int *bpp);
+int render_text(unsigned int *buf, unsigned int pitch, int x, int y,
+                const char *str, unsigned int fg, unsigned int bg);
+int fill_rect(unsigned int *buf, unsigned int pitch, int x, int y,
+              int w, int h, unsigned int rgb);
+int set_stdout(unsigned int pid);
+int spawn(const char *path, const char *args, unsigned int sink);
 
 #endif

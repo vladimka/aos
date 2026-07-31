@@ -2,3 +2,7 @@
 *.iso
 *.log
 *.o
+*.d
+*.bin
+kernel/progs.c
+iso/

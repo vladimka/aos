@@ -1,6 +1,6 @@
 #include "libaos.h"
 
-void _start(void) {
+void main(void) {
     print("\nShutting down...");
     shutdown();
 }

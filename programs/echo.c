@@ -1,6 +1,6 @@
 #include "libaos.h"
 
-void _start(void) {
+void main(void) {
     char args[256];
     get_args(args, 256);
 

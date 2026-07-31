@@ -1,5 +1,5 @@
 #include "libaos.h"
 
-void _start(void) {
+void main(void) {
     clear_screen();
 }

@@ -16,7 +16,8 @@ void load_embedded_programs(void) {
         int ret = fs_write(embedded_progs[i].name,
                           (const char *)embedded_progs[i].data,
                           embedded_progs[i].size);
-        (void)ret;
+        if (ret < 0)
+            terminal_print("write failed: ");
     }
     terminal_print("done\n");
 }

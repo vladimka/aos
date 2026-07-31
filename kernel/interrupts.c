@@ -1,6 +1,8 @@
 #include "interrupts.h"
 #include "idt.h"
 #include "vga.h"
+#include "serial.h"
+#include "printf.h"
 #include "ports.h"
 
 extern void isr0(void);
@@ -114,20 +116,11 @@ char *exception_messages[] = {
 };
 
 void isr_handler(struct registers *r) {
+    unsigned int cr2;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
     vga_set_color(VGA_WHITE, VGA_RED);
-    vga_print("\n=== KERNEL PANIC ===");
-    vga_print("\nException: ");
-    vga_print(exception_messages[r->int_no]);
-    vga_print("\nEIP: ");
-    vga_print_hex(r->eip);
-    vga_print("  CS: ");
-    vga_print_hex(r->cs);
-    vga_print("  EFLAGS: ");
-    vga_print_hex(r->eflags);
-    vga_print("  ERR: ");
-    vga_print_hex(r->err_code);
-    vga_print("\nSystem halted.\n");
-
+    printf("\n=== KERNEL PANIC ===\nException: %s\nEIP: 0x%x  CS: 0x%x  EFLAGS: 0x%x  ERR: 0x%x  CR2: 0x%x\nSystem halted.\n",
+           exception_messages[r->int_no], r->eip, r->cs, r->eflags, r->err_code, cr2);
     for (;;)
         __asm__ volatile("cli; hlt");
 }
@@ -135,12 +128,16 @@ void isr_handler(struct registers *r) {
 void irq_handler(struct registers *r) {
     int irq = r->int_no - 32;
 
-    if (irq_routines[irq])
-        irq_routines[irq]();
-
+    // Acknowledge the PIC before running the handler: the timer handler may
+    // switch to ring 3 (serial newline -> command) and iret away before its
+    // own EOI, which would leave IRQ0 in-service and block lower-priority
+    // IRQs (keyboard IRQ1) for the whole user program lifetime.
     if (irq >= 8)
         outb(0xA0, 0x20);
     outb(0x20, 0x20);
+
+    if (irq_routines[irq])
+        irq_routines[irq]();
 }
 
 void interrupts_init(void) {
@@ -196,11 +193,9 @@ void interrupts_init(void) {
     idt_install_irq(46, irq14);
     idt_install_irq(47, irq15);
 
-    idt_install_irq(0x80, isr128);
+    idt_install_irq_flags(0x80, isr128, 0xEE);
 
     __asm__ volatile("sti");
 
-    vga_print("Interrupts initialized.\n");
-    extern void serial_print(const char *);
-    serial_print("Interrupts initialized.\n");
+    printf("Interrupts initialized.\n");
 }

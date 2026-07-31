@@ -3,8 +3,9 @@ AS      = gcc
 LD      = ld
 PYTHON  = python3
 CFLAGS  = -ffreestanding -Wall -Wextra -O2 -std=c11 -nostdlib -fno-builtin \
-          -fno-stack-protector -m32 -mno-sse -mno-mmx -mno-80387
-CFLAGS  += -Ikernel -Idrivers -Iarch/i386 -Iboot
+          -fno-stack-protector -fno-pie -fno-pic -m32 -mno-sse -mno-mmx -mno-80387 \
+          -MMD -MP
+CFLAGS  += -Ikernel -Idrivers -Iarch/i386 -Iboot -Iprograms
 ASFLAGS = -m32 -c -x assembler-with-cpp
 LDFLAGS = -T linker.ld -m elf_i386 -nostdlib --no-warn-rwx-segments
 
@@ -12,14 +13,20 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               drivers/serial.o drivers/mouse.o kernel/terminal.o kernel/commands.o \
               kernel/sfs.o kernel/string.o arch/i386/gdt.o arch/i386/idt.o \
               kernel/interrupts.o kernel/elf.o kernel/syscall.o \
-              kernel/progload.o kernel/progs.o
+              kernel/progload.o kernel/paging.o kernel/user.o \
+              kernel/user_tramp.o kernel/printf.o kernel/progs.o \
+              kernel/task.o
 
-PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test
+PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock
 PROG_ELFS = $(addprefix programs/, $(addsuffix .elf, $(PROGRAMS)))
+PROG_OBJS = $(addprefix programs/, $(addsuffix .o, $(PROGRAMS))) programs/libaos.o
 
 all: aos.iso
 
 boot/%.o: boot/%.S
+	$(AS) $(ASFLAGS) -o $@ $<
+
+kernel/%.o: kernel/%.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
 kernel/%.o: kernel/%.c
@@ -56,7 +63,12 @@ run: aos.iso
 	qemu-system-i386 -cdrom $<
 
 clean:
-	rm -f $(KERNEL_OBJS) $(PROG_ELFS) *.elf *.bin *.iso kernel/progs.c
-	rm -rf iso programs/*.o
+	rm -f $(KERNEL_OBJS) $(PROG_ELFS) $(PROG_OBJS) *.elf *.bin *.iso kernel/progs.c
+	rm -f $(KERNEL_OBJS:.o=.d) $(PROG_OBJS:.o=.d)
+	rm -rf iso
+
+-include $(KERNEL_OBJS:.o=.d) $(PROG_OBJS:.o=.d)
+
+.SECONDARY: $(KERNEL_OBJS) $(PROG_OBJS) $(PROG_ELFS)
 
 .PHONY: all run clean

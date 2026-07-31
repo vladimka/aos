@@ -4,6 +4,10 @@
 #include "fs.h"
 #include "string.h"
 
+// Valid program memory region (user pages, see paging.c)
+#define PROG_LOAD_MIN 0x01000000
+#define PROG_LOAD_MAX 0x01100000
+
 static void elf_error(const char *msg) {
     serial_print("ELF: ");
     serial_print(msg);
@@ -11,16 +15,15 @@ static void elf_error(const char *msg) {
 }
 
 void *elf_load(const char *path) {
-    char buf[4096];
     int sz = fs_get_size(path);
-    if (sz <= 0) { elf_error("not found"); return 0; }
-    if (sz > 4096) sz = 4096;
+    if (sz <= 0) { elf_error("not found: "); serial_print(path); return 0; }
+
+    // ELF header + program header table
+    char buf[4096];
+    int got = fs_read_at(path, buf, sizeof(buf), 0);
+    if (got <= 0) { elf_error("read failed"); return 0; }
 
     struct elf_header *ehdr = (struct elf_header *)buf;
-    if (fs_read(path, buf, sz) <= 0) {
-        elf_error("read failed");
-        return 0;
-    }
 
     if (ehdr->magic != ELF_MAGIC)   { elf_error("bad magic"); return 0; }
     if (ehdr->arch != 1)            { elf_error("not 32-bit"); return 0; }
@@ -30,31 +33,43 @@ void *elf_load(const char *path) {
         elf_error("bad phentsize"); return 0;
     }
 
-    if (ehdr->phoff + ehdr->phnum * ehdr->phentsize > (unsigned int)sz) {
+    if (ehdr->phoff + ehdr->phnum * ehdr->phentsize > (unsigned int)got) {
         elf_error("program headers out of range");
+        return 0;
+    }
+
+    if (ehdr->entry < PROG_LOAD_MIN || ehdr->entry >= PROG_LOAD_MAX) {
+        elf_error("entry point out of range");
         return 0;
     }
 
     struct elf_prog_header *phdr = (struct elf_prog_header *)(buf + ehdr->phoff);
 
     for (unsigned int i = 0; i < ehdr->phnum; i++) {
-        if (phdr[i].type == PT_LOAD) {
-            unsigned int vaddr = phdr[i].vaddr;
-            unsigned int memsz = phdr[i].memsz;
-            unsigned int filesz = phdr[i].filesz;
-            unsigned int offset = phdr[i].offset;
+        if (phdr[i].type != PT_LOAD) continue;
 
-            char *dst = (char *)vaddr;
+        unsigned int vaddr  = phdr[i].vaddr;
+        unsigned int memsz  = phdr[i].memsz;
+        unsigned int filesz = phdr[i].filesz;
+        unsigned int offset = phdr[i].offset;
 
-            if (offset + filesz > (unsigned int)sz) filesz = sz - offset;
-
-            if (offset + filesz <= (unsigned int)sz && filesz > 0)
-                for (unsigned int j = 0; j < filesz; j++)
-                    dst[j] = buf[offset + j];
-
-            for (unsigned int j = filesz; j < memsz; j++)
-                dst[j] = 0;
+        if (vaddr < PROG_LOAD_MIN || vaddr + memsz > PROG_LOAD_MAX ||
+            vaddr + memsz < vaddr) {
+            elf_error("segment out of range");
+            return 0;
         }
+        if (filesz > memsz) filesz = memsz;
+
+        char *dst = (char *)vaddr;
+
+        if (filesz > 0) {
+            if (fs_read_at(path, dst, filesz, offset) <= 0) {
+                elf_error("segment read failed");
+                return 0;
+            }
+        }
+        for (unsigned int j = filesz; j < memsz; j++)
+            dst[j] = 0;
     }
 
     return (void *)ehdr->entry;
