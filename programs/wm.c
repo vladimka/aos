@@ -147,6 +147,13 @@ static void update_cursor(int mx, int my) {
     }
 }
 
+static int cursor_overlaps(int x, int y, int w, int h) {
+    if (!has_cur) return 0;
+    int cx0 = cur_x - CUR_R, cy0 = cur_y - CUR_R;
+    return cx0 < x + w && cx0 + 2 * CUR_R > x &&
+           cy0 < y + h && cy0 + 2 * CUR_R > y;
+}
+
 // ---- window management ---------------------------------------------------
 
 static int alloc_window(unsigned int pid, int w, int h, int *out_wid, int *out_slab) {
@@ -167,15 +174,15 @@ static int alloc_window(unsigned int pid, int w, int h, int *out_wid, int *out_s
     return -1;
 }
 
-static unsigned int win_at(int mx, int my) {
+static int win_index_at(int mx, int my) {
     for (int i = MAX_WINDOWS - 1; i >= 0; i--) {
         struct win *wn = &wins[i];
         if (!wn->used) continue;
         if (mx >= wn->x && mx < wn->x + wn->cw + 2 * BORDER &&
             my >= wn->y && my < wn->y + wn->ch + TITLE_H + 2 * BORDER)
-            return wn->pid;
+            return i;
     }
-    return 0;
+    return -1;
 }
 
 static void free_windows(unsigned int pid) {
@@ -205,8 +212,12 @@ void main(void) {
 
     int last_mx = 0, last_my = 0, last_mb = 0;
     int redraw = 1;
+    int drag_i = -1, drag_dx = 0, drag_dy = 0;
 
     for (;;) {
+        int mx, my, mb, wheel;
+        get_mouse(&mx, &my, &mb, &wheel);
+
         struct aos_msg m;
         while (recv_msg(&m) == 0) {
             switch (m.type) {
@@ -228,7 +239,22 @@ void main(void) {
                 break;
             }
             case MSG_UPDATE:
-                redraw = 1;
+                if (m.a < MAX_WINDOWS && wins[m.a].used) {
+                    int hit_cur = 0;
+                    for (int i = (int)m.a; i < MAX_WINDOWS; i++) {
+                        struct win *wn = &wins[i];
+                        if (!wn->used) continue;
+                        if (cursor_overlaps(wn->x + BORDER,
+                                            wn->y + BORDER + TITLE_H,
+                                            wn->cw, wn->ch))
+                            hit_cur = 1;
+                        blit_content(wn);
+                    }
+                    if (hit_cur) {
+                        has_cur = 0;
+                        update_cursor(mx, my);
+                    }
+                }
                 break;
             case MSG_EXIT:
                 free_windows(m.a);
@@ -237,20 +263,44 @@ void main(void) {
             }
         }
 
-        int mx, my, mb, wheel;
-        get_mouse(&mx, &my, &mb, &wheel);
         int moved = mx != last_mx || my != last_my || mb != last_mb;
         if (moved && (mb & 1) && !(last_mb & 1)) {
-            unsigned int wpid = win_at(mx, my);
-            if (wpid) {
-                if (focus_pid != wpid) redraw = 1;
-                focus_pid = wpid;
+            int wi = win_index_at(mx, my);
+            if (wi >= 0) {
+                if (focus_pid != wins[wi].pid) redraw = 1;
+                focus_pid = wins[wi].pid;
+                if (my >= wins[wi].y + BORDER &&
+                    my < wins[wi].y + BORDER + TITLE_H) {
+                    drag_i = wi;
+                    drag_dx = mx - wins[wi].x;
+                    drag_dy = my - wins[wi].y;
+                }
+            }
+        }
+        if (!(mb & 1) && (last_mb & 1))
+            drag_i = -1;
+        if (drag_i >= 0 && wins[drag_i].used &&
+            (mx != last_mx || my != last_my)) {
+            struct win *wn = &wins[drag_i];
+            int nx = mx - drag_dx;
+            int ny = my - drag_dy;
+            if (nx < 0) nx = 0;
+            if (ny < 0) ny = 0;
+            if (nx > (int)fb_w - (wn->cw + 2 * BORDER))
+                nx = (int)fb_w - (wn->cw + 2 * BORDER);
+            if (ny > (int)fb_h - (wn->ch + TITLE_H + 2 * BORDER))
+                ny = (int)fb_h - (wn->ch + TITLE_H + 2 * BORDER);
+            if (nx != wn->x || ny != wn->y) {
+                wn->x = nx;
+                wn->y = ny;
+                redraw = 1;
             }
         }
 
         if (redraw) {
             composite();
             has_cur = 0;
+            update_cursor(mx, my);
             redraw = 0;
         }
         if (moved) {
