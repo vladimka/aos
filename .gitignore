@@ -6,3 +6,4 @@
 *.bin
 kernel/progs.c
 iso/
+.worktrees/
