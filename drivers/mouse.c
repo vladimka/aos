@@ -140,7 +140,7 @@ void mouse_process_byte(unsigned char data) {
                 mouse_wheel += wheel;
 
             mouse_x += (signed char)packet[1];
-            mouse_y += (signed char)packet[2];
+            mouse_y -= (signed char)packet[2];
             mouse_buttons = packet[0] & 0x07;
             if (mouse_x < 0) mouse_x = 0;
             if (mouse_x > mouse_xmax) mouse_x = mouse_xmax;
@@ -162,7 +162,7 @@ void mouse_process_byte(unsigned char data) {
             packet[2] = data;
             pcount = 0;
             mouse_x += (signed char)packet[1];
-            mouse_y += (signed char)packet[2];
+            mouse_y -= (signed char)packet[2];
             mouse_buttons = packet[0] & 0x07;
             if (mouse_x < 0) mouse_x = 0;
             if (mouse_x > mouse_xmax) mouse_x = mouse_xmax;
