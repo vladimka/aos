@@ -78,6 +78,7 @@ static void draw_title(const struct win *wn) {
     int y0 = ty > clip_y0 ? ty : clip_y0;
     int x1 = (tx + tw < clip_x1) ? tx + tw : clip_x1;
     int y1 = (ty + 16 < clip_y1) ? ty + 16 : clip_y1;
+    if (x0 >= x1 || y0 >= y1) return;
     unsigned int *fb = (unsigned int *)fb_addr;
     unsigned int pitch = fb_pitch >> 2;
     for (int r = y0; r < y1; r++)
@@ -97,6 +98,7 @@ static void blit_content(const struct win *wn) {
     int y0 = cy > clip_y0 ? cy : clip_y0;
     int x1 = (cx + wn->cw < clip_x1) ? cx + wn->cw : clip_x1;
     int y1 = (cy + wn->ch < clip_y1) ? cy + wn->ch : clip_y1;
+    if (x0 >= x1 || y0 >= y1) return;
     for (int r = y0; r < y1; r++)
         mcpy(dst + (unsigned)r * pitch + (unsigned)x0,
              src + (unsigned)(r - cy) * wn->cw + (unsigned)(x0 - cx),
