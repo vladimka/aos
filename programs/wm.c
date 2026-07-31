@@ -28,6 +28,7 @@ static int next_slab = 1;
 static unsigned int focus_pid;
 static int has_cur, cur_x, cur_y;
 static unsigned int snap[2 * CUR_R][2 * CUR_R];
+static int clip_x0, clip_y0, clip_x1, clip_y1;
 
 // ---- small helpers -------------------------------------------------------
 
@@ -53,9 +54,13 @@ static void int2str(char *buf, int v) {
 static void fb_fill(int x, int y, int w, int h, unsigned int rgb) {
     unsigned int *fb = (unsigned int *)fb_addr;
     unsigned int pitch = fb_pitch >> 2;
-    for (int yy = 0; yy < h && y + yy < (int)fb_h; yy++)
-        for (int xx = 0; xx < w && x + xx < (int)fb_w; xx++)
-            fb[(unsigned)(y + yy) * pitch + (unsigned)(x + xx)] = rgb;
+    int x0 = x > clip_x0 ? x : clip_x0;
+    int y0 = y > clip_y0 ? y : clip_y0;
+    int x1 = (x + w < clip_x1) ? x + w : clip_x1;
+    int y1 = (y + h < clip_y1) ? y + h : clip_y1;
+    for (int yy = y0; yy < y1; yy++)
+        for (int xx = x0; xx < x1; xx++)
+            fb[(unsigned)yy * pitch + (unsigned)xx] = rgb;
 }
 
 static void draw_title(const struct win *wn) {
@@ -67,12 +72,18 @@ static void draw_title(const struct win *wn) {
     render_text(sc, 1024 * 4, 0, 0, buf, COL_TITLE_TEXT, tcol);
     int tw = 8;
     for (int i = 0; buf[i]; i++) tw += 8;
-    unsigned int *dst = (unsigned int *)fb_addr +
-                        (unsigned)(wn->y + BORDER + (TITLE_H - 16) / 2) * (fb_pitch >> 2) +
-                        (unsigned)(wn->x + BORDER + 6);
-    for (int r = 0; r < 16; r++)
-        mcpy(dst + (unsigned)r * (fb_pitch >> 2), sc + (unsigned)r * 1024,
-             (unsigned)tw);
+    int tx = wn->x + BORDER + 6;
+    int ty = wn->y + BORDER + (TITLE_H - 16) / 2;
+    int x0 = tx > clip_x0 ? tx : clip_x0;
+    int y0 = ty > clip_y0 ? ty : clip_y0;
+    int x1 = (tx + tw < clip_x1) ? tx + tw : clip_x1;
+    int y1 = (ty + 16 < clip_y1) ? ty + 16 : clip_y1;
+    unsigned int *fb = (unsigned int *)fb_addr;
+    unsigned int pitch = fb_pitch >> 2;
+    for (int r = y0; r < y1; r++)
+        mcpy(fb + (unsigned)r * pitch + (unsigned)x0,
+             sc + (unsigned)(r - ty) * 1024 + (unsigned)(x0 - tx),
+             (unsigned)(x1 - x0));
 }
 
 static void blit_content(const struct win *wn) {
@@ -80,30 +91,48 @@ static void blit_content(const struct win *wn) {
         (const unsigned int *)(AOS_SLAB_BASE + wn->slab * AOS_SLAB_SIZE);
     unsigned int *dst = (unsigned int *)fb_addr;
     unsigned int pitch = fb_pitch >> 2;
-    int yoff = wn->y + BORDER + TITLE_H;
-    for (int r = 0; r < wn->ch && yoff + r < (int)fb_h; r++)
-        mcpy(dst + (unsigned)(yoff + r) * pitch + (unsigned)(wn->x + BORDER),
-             src + (unsigned)r * wn->cw, (unsigned)wn->cw);
+    int cx = wn->x + BORDER;
+    int cy = wn->y + BORDER + TITLE_H;
+    int x0 = cx > clip_x0 ? cx : clip_x0;
+    int y0 = cy > clip_y0 ? cy : clip_y0;
+    int x1 = (cx + wn->cw < clip_x1) ? cx + wn->cw : clip_x1;
+    int y1 = (cy + wn->ch < clip_y1) ? cy + wn->ch : clip_y1;
+    for (int r = y0; r < y1; r++)
+        mcpy(dst + (unsigned)r * pitch + (unsigned)x0,
+             src + (unsigned)(r - cy) * wn->cw + (unsigned)(x0 - cx),
+             (unsigned)(x1 - x0));
 }
 
-static void composite(void) {
-    unsigned int *fb = (unsigned int *)fb_addr;
-    unsigned int pitch = fb_pitch >> 2;
-    for (unsigned int y = 0; y < fb_h; y++) {
-        unsigned int *row = fb + y * pitch;
-        for (unsigned int x = 0; x < fb_w; x++)
-            row[x] = COL_DESKTOP;
-    }
+static void composite_rect(int x0, int y0, int x1, int y1) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (int)fb_w) x1 = (int)fb_w;
+    if (y1 > (int)fb_h) y1 = (int)fb_h;
+    if (x0 >= x1 || y0 >= y1) return;
+    clip_x0 = x0; clip_y0 = y0; clip_x1 = x1; clip_y1 = y1;
+    fb_fill(x0, y0, x1 - x0, y1 - y0, COL_DESKTOP);
     for (int i = 0; i < MAX_WINDOWS; i++) {
         struct win *wn = &wins[i];
         if (!wn->used) continue;
-        fb_fill(wn->x, wn->y, wn->cw + 2 * BORDER, BORDER, COL_BORDER);
-        fb_fill(wn->x, wn->y + wn->ch + TITLE_H + BORDER, wn->cw + 2 * BORDER, BORDER, COL_BORDER);
-        fb_fill(wn->x, wn->y, BORDER, wn->ch + TITLE_H + 2 * BORDER, COL_BORDER);
-        fb_fill(wn->x + wn->cw + BORDER, wn->y, BORDER, wn->ch + TITLE_H + 2 * BORDER, COL_BORDER);
-        draw_title(wn);
-        blit_content(wn);
+        if (wn->x < x1 && wn->x + wn->cw + 2 * BORDER > x0 &&
+            wn->y < y1 && wn->y + wn->ch + TITLE_H + 2 * BORDER > y0) {
+            fb_fill(wn->x, wn->y, wn->cw + 2 * BORDER, BORDER, COL_BORDER);
+            fb_fill(wn->x, wn->y + wn->ch + TITLE_H + BORDER,
+                    wn->cw + 2 * BORDER, BORDER, COL_BORDER);
+            fb_fill(wn->x, wn->y, BORDER, wn->ch + TITLE_H + 2 * BORDER,
+                    COL_BORDER);
+            fb_fill(wn->x + wn->cw + BORDER, wn->y, BORDER,
+                    wn->ch + TITLE_H + 2 * BORDER, COL_BORDER);
+            draw_title(wn);
+            blit_content(wn);
+        }
     }
+    clip_x0 = 0; clip_y0 = 0;
+    clip_x1 = (int)fb_w; clip_y1 = (int)fb_h;
+}
+
+static void composite(void) {
+    composite_rect(0, 0, (int)fb_w, (int)fb_h);
 }
 
 // ---- cursor (drawn last, erased via its own snapshot) ----------------------
@@ -196,6 +225,8 @@ static void free_windows(unsigned int pid) {
 void main(void) {
     unsigned int bpp;
     get_fb_info(&fb_addr, &fb_w, &fb_h, &fb_pitch, &bpp);
+    clip_x1 = (int)fb_w;
+    clip_y1 = (int)fb_h;
     print("wm: fb="); print_hex(fb_addr); print(" w="); print_dec(fb_w);
     print(" h="); print_dec(fb_h); print(" pitch="); print_dec(fb_pitch);
     print(" bpp="); print_dec(bpp); print("\n");
@@ -240,17 +271,13 @@ void main(void) {
             }
             case MSG_UPDATE:
                 if (m.a < MAX_WINDOWS && wins[m.a].used) {
-                    int hit_cur = 0;
-                    for (int i = (int)m.a; i < MAX_WINDOWS; i++) {
-                        struct win *wn = &wins[i];
-                        if (!wn->used) continue;
-                        if (cursor_overlaps(wn->x + BORDER,
-                                            wn->y + BORDER + TITLE_H,
-                                            wn->cw, wn->ch))
-                            hit_cur = 1;
-                        blit_content(wn);
-                    }
-                    if (hit_cur) {
+                    struct win *wn = &wins[m.a];
+                    composite_rect(wn->x, wn->y,
+                                   wn->x + wn->cw + 2 * BORDER,
+                                   wn->y + wn->ch + TITLE_H + 2 * BORDER);
+                    if (cursor_overlaps(wn->x, wn->y,
+                                        wn->cw + 2 * BORDER,
+                                        wn->ch + TITLE_H + 2 * BORDER)) {
                         has_cur = 0;
                         update_cursor(mx, my);
                     }
