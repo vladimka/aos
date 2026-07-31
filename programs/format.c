@@ -9,19 +9,14 @@ void _start(void) {
         p++;
         if (*p == 'y') {
             print("Formatting... ");
-            fs_delete("bin/help");
-            fs_delete("bin/uptime");
-            fs_delete("bin/clear");
-            fs_delete("bin/echo");
-            fs_delete("bin/tick");
-            fs_delete("bin/info");
-            fs_delete("bin/reboot");
-            fs_delete("bin/panic");
-            fs_delete("bin/ls");
-            fs_delete("bin/cat");
-            fs_delete("bin/rm");
-            fs_delete("bin/format");
-            fs_delete("bin/shutdown");
+            int i = 0;
+            while (1) {
+                char name[28];
+                unsigned int size;
+                if (fs_list_get(i, name, &size) < 0) break;
+                fs_delete(name);
+                i++;
+            }
             print("done");
             return;
         }

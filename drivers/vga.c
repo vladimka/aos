@@ -117,6 +117,24 @@ static void fb_draw_glyph(unsigned int x, unsigned int y, unsigned char glyph, u
     }
 }
 
+static void fb_erase_underline(void) {
+    if (!fb_initialized) return;
+    unsigned int fg_rgb = color_rgb[fg_color];
+    unsigned int bg_rgb = color_rgb[bg_color];
+    unsigned short cp = screen_mirror[cursor_y][cursor_x];
+    if (cp == 0) cp = ' ';
+    unsigned short glyph = fb_cp_to_glyph(cp);
+    for (int row = 0; row < 16; row++) {
+        unsigned char bits = fb_font[glyph * 16 + row];
+        for (int col = 0; col < 8; col++) {
+            if (bits & (0x80 >> col))
+                draw_pixel(cursor_x * 8 + col, cursor_y * 16 + row, fg_rgb);
+            else
+                draw_pixel(cursor_x * 8 + col, cursor_y * 16 + row, bg_rgb);
+        }
+    }
+}
+
 static void fb_scroll(void) {
     mirror_shift_up();
     unsigned int row_bytes = fb_pitch * 16;
@@ -170,6 +188,8 @@ static void fb_putchar(char c) {
     unsigned char uc = (unsigned char)c;
 
     if (uc == '\n') {
+        if (scroll_offset == 0)
+            fb_erase_underline();
         cursor_x = 0;
         cursor_y++;
         if (cursor_y > max_y) fb_scroll();
@@ -241,15 +261,51 @@ static void reset_utf8_state(void) {
     utf8_codepoint = 0;
 }
 
+static void render_cp_row(const unsigned short *cp_row, int len, int screen_row) {
+    unsigned int fg_rgb = color_rgb[fg_color];
+    unsigned int bg_rgb = color_rgb[bg_color];
+
+    if (fb_initialized) {
+        for (int col = 0; col < len && col < mirror_cols; col++) {
+            unsigned short cp = cp_row[col];
+            if (cp == 0) cp = ' ';
+            unsigned short glyph = fb_cp_to_glyph(cp);
+            for (int r = 0; r < 16; r++) {
+                unsigned char bits = fb_font[glyph * 16 + r];
+                for (int c = 0; c < 8; c++) {
+                    if (bits & (0x80 >> c))
+                        draw_pixel(col * 8 + c, screen_row * 16 + r, fg_rgb);
+                    else
+                        draw_pixel(col * 8 + c, screen_row * 16 + r, bg_rgb);
+                }
+            }
+        }
+        // Clear rest of line
+        for (int col = len; col < mirror_cols; col++)
+            for (int r = 0; r < 16; r++)
+                for (int c = 0; c < 8; c++)
+                    draw_pixel(col * 8 + c, screen_row * 16 + r, bg_rgb);
+    } else if (text_initialized) {
+        for (int col = 0; col < TEXT_COLS; col++) {
+            unsigned short cp = col < len ? cp_row[col] : 0;
+            if (cp == 0) cp = ' ';
+            TEXT_ADDR[screen_row * TEXT_COLS + col] = text_color << 8 | (cp > 0xFF ? '?' : (unsigned char)cp);
+        }
+    }
+}
+
 static void render_scrollback(void) {
     if (scroll_offset <= 0 || scrollback_count == 0) return;
 
     int visible_rows = max_y + 1;
     int total = scrollback_count;
-    int start = total - scroll_offset - visible_rows;
-    if (start < 0) start = 0;
 
-    unsigned int fg_rgb = color_rgb[fg_color];
+    // Combined viewport: scrollback lines 0..total-1 followed by the current
+    // screen (screen_mirror rows 0..visible_rows-1). Scrolling back by
+    // `scroll_offset` moves the top of the viewport up that many lines.
+    int sb_start = total - scroll_offset;
+    if (sb_start < 0) sb_start = 0;
+
     unsigned int bg_rgb = color_rgb[bg_color];
 
     if (fb_initialized) {
@@ -265,48 +321,18 @@ static void render_scrollback(void) {
     }
 
     int screen_row = 0;
-    for (int si = start; si < total && screen_row <= max_y; si++, screen_row++) {
+    for (int si = sb_start; si < total && screen_row <= max_y; si++, screen_row++) {
         int idx = (scrollback_head + si) % SCROLLBACK_LINES;
-        unsigned char len = scrollback_len[idx];
-        if (fb_initialized) {
-            for (int col = 0; col < len && col < mirror_cols; col++) {
-                unsigned short cp = scrollback_lines[idx][col];
-                if (cp == 0) cp = ' ';
-                unsigned short glyph = fb_cp_to_glyph(cp);
-                for (int r = 0; r < 16; r++) {
-                    unsigned char bits = fb_font[glyph * 16 + r];
-                    for (int c = 0; c < 8; c++) {
-                        if (bits & (0x80 >> c))
-                            draw_pixel(col * 8 + c, screen_row * 16 + r, fg_rgb);
-                        else
-                            draw_pixel(col * 8 + c, screen_row * 16 + r, bg_rgb);
-                    }
-                }
-            }
-            // Clear rest of line
-            for (int col = len; col < mirror_cols; col++)
-                for (int r = 0; r < 16; r++)
-                    for (int c = 0; c < 8; c++)
-                        draw_pixel(col * 8 + c, screen_row * 16 + r, bg_rgb);
-        } else if (text_initialized) {
-            for (int col = 0; col < TEXT_COLS; col++) {
-                unsigned short cp = col < len ? scrollback_lines[idx][col] : 0;
-                if (cp == 0) cp = ' ';
-                TEXT_ADDR[screen_row * TEXT_COLS + col] = text_color << 8 | (cp > 0xFF ? '?' : (unsigned char)cp);
-            }
-        }
+        render_cp_row(scrollback_lines[idx], scrollback_len[idx], screen_row);
     }
+    // Continue with the current live screen below the scrollback portion
+    for (int row = 0; screen_row <= max_y && row < visible_rows; row++, screen_row++)
+        render_cp_row(screen_mirror[row], mirror_cols, screen_row);
+
     reset_utf8_state();
 }
 
 void vga_scroll(int delta) {
-    serial_print("vga_scroll: delta=");
-    serial_print_hex(delta);
-    serial_print(" count=");
-    serial_print_hex(scrollback_count);
-    serial_print(" offset=");
-    serial_print_hex(scroll_offset);
-    serial_print("\n");
     int old_offset = scroll_offset;
     scroll_offset += delta;
     if (scroll_offset < 0) scroll_offset = 0;

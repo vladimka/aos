@@ -237,12 +237,35 @@ static void tab_complete(void) {
         if (tab_match(word, "format"))
             strncpy(tab_matches[tab_match_count++], "format", 27);
 
-        for (unsigned int i = 0; i < SFS_MAX_FILES && tab_match_count < 40; i++) {
-            char name[28];
-            unsigned int sz;
-            if (sfs_get_entry(i, name, &sz) != 0) continue;
-            if (strncmp(name, "bin/", 4) == 0 && tab_match(word, name + 4))
-                strncpy(tab_matches[tab_match_count++], name + 4, 27);
+        if (tab_match(word, "setpath"))
+            strncpy(tab_matches[tab_match_count++], "setpath", 27);
+
+        // Search all PATH directories
+        char path_copy[PATH_MAX];
+        extern char command_path[PATH_MAX];
+        strncpy(path_copy, command_path, PATH_MAX - 1);
+        path_copy[PATH_MAX - 1] = '\0';
+
+        char *dir = path_copy;
+        while (*dir && tab_match_count < 40) {
+            char *next = dir;
+            while (*next && *next != ':') next++;
+            int dir_len = next - dir;
+            int has_sep = (*next == ':');
+            *next = '\0';
+
+            if (dir_len > 0) {
+                for (unsigned int i = 0; i < SFS_MAX_FILES && tab_match_count < 40; i++) {
+                    char name[28];
+                    unsigned int sz;
+                    if (sfs_get_entry(i, name, &sz) != 0) continue;
+                    if (strncmp(name, dir, dir_len) == 0 && name[dir_len] == '/' && tab_match(word, name + dir_len + 1))
+                        strncpy(tab_matches[tab_match_count++], name + dir_len + 1, 27);
+                }
+            }
+
+            if (!has_sep) break;
+            dir = next + 1;
         }
 
         if (tab_match_count == 0) return;

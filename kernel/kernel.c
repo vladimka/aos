@@ -23,14 +23,22 @@ static void keyboard_handler(void) {
     unsigned char status = inb(0x64);
     if (!(status & 1)) return;
     unsigned char data = inb(0x60);
-    if (status & 0x20)
+
+    if (status & 0x20) {
         mouse_process_byte(data);
-    else
+        status = inb(0x64);
+        if (status & 1 && !(status & 0x20)) {
+            data = inb(0x60);
+            terminal_keyboard_handler(data);
+        }
+    } else {
         terminal_keyboard_handler(data);
+    }
 }
 
 static void mouse_handler(void) {
-    mouse_process_byte(inb(0x60));
+    if (inb(0x64) & 0x20)
+        mouse_process_byte(inb(0x60));
 }
 
 static void print_both(const char *s) {

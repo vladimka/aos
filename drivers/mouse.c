@@ -37,6 +37,12 @@ static int mouse_cmd(unsigned char cmd) {
 }
 
 void mouse_init(void) {
+    __asm__ volatile("cli");
+
+    // Drain any stale bytes in the PS/2 output buffer
+    while (inb(PS2_STATUS) & 1)
+        inb(PS2_DATA);
+
     ps2_wait_write();
     outb(PS2_STATUS, 0xA8);
 
@@ -74,11 +80,10 @@ void mouse_init(void) {
 
     mouse_cmd(0xF4);
     pcount = 0;
+    __asm__ volatile("sti");
     if (has_wheel) {
-        vga_print("Mouse with wheel detected.\n");
         serial_print("Mouse with wheel detected.\n");
     } else {
-        vga_print("Mouse (standard) initialized.\n");
         serial_print("Mouse (standard) initialized.\n");
     }
 }
