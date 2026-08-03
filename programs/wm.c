@@ -372,7 +372,6 @@ void main(void) {
         if (redraw) {
             composite();
             has_cur = 0;
-            update_cursor(mx, my);
             redraw = 0;
             need_cursor = 1;
         }
