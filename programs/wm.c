@@ -139,13 +139,29 @@ struct win {
     int slab;
     int x, y;       // screen position (whole window incl. border/title)
     int cw, ch;     // content size
+    int app;        // APP_TERM / APP_CLOCK / APP_UNKNOWN
 };
+
+enum { APP_TERM = 0, APP_CLOCK = 1, APP_UNKNOWN = 2 };
+
+static struct launcher {
+    const char *path;
+    unsigned int pid;
+    int running;
+} launchers[2] = {
+    { "bin/term", 0, 0 },
+    { "bin/clock", 0, 0 },
+};
+
+static int zorder[MAX_WINDOWS];
+static int nz;
 
 static struct win wins[MAX_WINDOWS];
 static unsigned int fb_addr, fb_w, fb_h, fb_pitch;
 static unsigned int *scratch;   // slab 0: scratch for title-bar text rendering
 static int next_slab = 1;
 static unsigned int focus_pid;
+static int redraw = 1;
 static int has_cur, cur_x, cur_y;
 static unsigned int snap[2 * CUR_R][2 * CUR_R];
 static int clip_x0, clip_y0, clip_x1, clip_y1;
@@ -189,6 +205,8 @@ static void draw_dock(void);
 static int dock_x0(void);
 static int dock_y0(void);
 static int dock_width(void);
+static int app_type_of(unsigned int pid);
+static void raise_pid(unsigned int pid);
 
 static void draw_title(const struct win *wn) {
     unsigned int tcol = (wn->pid == focus_pid) ? COL_TITLE_FOCUS : COL_TITLE;
@@ -252,8 +270,8 @@ static void composite_rect(int x0, int y0, int x1, int y1) {
     if (x0 >= x1 || y0 >= y1) return;
     clip_x0 = x0; clip_y0 = y0; clip_x1 = x1; clip_y1 = y1;
     fb_fill(x0, y0, x1 - x0, y1 - y0, COL_DESKTOP);
-    for (int i = 0; i < MAX_WINDOWS; i++) {
-        struct win *wn = &wins[i];
+    for (int k = 0; k < nz; k++) {
+        struct win *wn = &wins[zorder[k]];
         if (!wn->used) continue;
         if (wn->x < x1 && wn->x + wn->cw + 2 * BORDER > x0 &&
             wn->y < y1 && wn->y + wn->ch + TITLE_H + 2 * BORDER > y0) {
@@ -281,7 +299,7 @@ static void composite(void) {
 
 // ---- dock ----------------------------------------------------------------
 
-static int dock_nitems(void) { return 2; }
+static int dock_nitems(void) { return 2 + nz; }
 
 static int dock_x0(void) {
     return (int)fb_w / 2 - (16 + dock_nitems() * DOCK_STRIDE) / 2;
@@ -317,7 +335,58 @@ static void draw_dock(void) {
     int iy = dy0 + DOCK_PAD_Y;
     draw_icon(dx0 + DOCK_PAD_X, iy, icon_term, COL_ICON_FG);
     draw_icon(dx0 + DOCK_PAD_X + DOCK_STRIDE, iy, icon_clock, COL_ICON_FG);
-    (void)icon_unknown;
+    int di = 2;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (!wins[i].used) continue;
+        const char (*ic)[DOCK_ICON + 1];
+        if (wins[i].app == APP_TERM) ic = icon_term;
+        else if (wins[i].app == APP_CLOCK) ic = icon_clock;
+        else ic = icon_unknown;
+        int ix = dx0 + DOCK_PAD_X + di * DOCK_STRIDE;
+        draw_icon(ix, iy, ic, COL_ICON_FG);
+        unsigned int *fb = (unsigned int *)fb_addr;
+        unsigned int pitch = fb_pitch >> 2;
+        int dotx = ix + DOCK_ICON / 2 - 2;
+        int doty = iy + DOCK_ICON + 4;
+        for (int r = 0; r < 4; r++)
+            for (int c = 0; c < 4; c++)
+                fb[(unsigned)(doty + r) * pitch + (unsigned)(dotx + c)] = COL_DOCK_ACTIVE;
+        di++;
+    }
+}
+
+static int win_at_dock_index(int di) {
+    int n = 0;
+    for (int i = 0; i < MAX_WINDOWS; i++)
+        if (wins[i].used) {
+            if (n == di) return i;
+            n++;
+        }
+    return -1;
+}
+
+static void launcher_click(int i) {
+    if (launchers[i].running) {
+        raise_pid(launchers[i].pid);
+        return;
+    }
+    int pid = spawn(launchers[i].path, "", getpid());
+    if (pid > 0) launchers[i].pid = (unsigned int)pid;
+}
+
+static int dock_hit(int mx, int my) {
+    int dx0 = dock_x0(), dy0 = dock_y0();
+    if (my < dy0 || my >= dy0 + DOCK_H) return 0;
+    int rel = mx - dx0;
+    if (rel < 0 || rel >= dock_width()) return 0;
+    int i = (rel - DOCK_PAD_X) / DOCK_STRIDE;
+    if (i < 0) return 1;
+    if (i < 2) launcher_click(i);
+    else if (i < 2 + nz) {
+        int wi = win_at_dock_index(i - 2);
+        if (wi >= 0) raise_pid(wins[wi].pid);
+    }
+    return 1;
 }
 
 // ---- cursor (drawn last, erased via its own snapshot) ----------------------
@@ -379,34 +448,36 @@ static int alloc_window(unsigned int pid, int w, int h, int *out_wid, int *out_s
         wins[i].slab = next_slab++;
         wins[i].cw = w;
         wins[i].ch = h;
+        wins[i].app = app_type_of(pid);
         wins[i].x = 20 + i * 24;
         wins[i].y = 20 + i * 28;
         *out_wid = i;
         *out_slab = wins[i].slab;
+        zorder[nz++] = i;
         return 0;
     }
     return -1;
 }
 
 static int win_index_at(int mx, int my) {
-    for (int i = MAX_WINDOWS - 1; i >= 0; i--) {
-        struct win *wn = &wins[i];
+    for (int k = nz - 1; k >= 0; k--) {
+        struct win *wn = &wins[zorder[k]];
         if (!wn->used) continue;
         if (mx >= wn->x && mx < wn->x + wn->cw + 2 * BORDER &&
             my >= wn->y && my < wn->y + wn->ch + TITLE_H + 2 * BORDER)
-            return i;
+            return zorder[k];
     }
     return -1;
 }
 
 static int close_btn_at(int mx, int my) {
-    for (int i = MAX_WINDOWS - 1; i >= 0; i--) {
-        struct win *wn = &wins[i];
+    for (int k = nz - 1; k >= 0; k--) {
+        struct win *wn = &wins[zorder[k]];
         if (!wn->used) continue;
         int bx = wn->x + BORDER + wn->cw - 18;
         int by = wn->y + BORDER + (TITLE_H - 16) / 2;
         if (mx >= bx && mx < bx + 16 && my >= by && my < by + 16)
-            return i;
+            return zorder[k];
     }
     return -1;
 }
@@ -415,8 +486,34 @@ static void free_windows(unsigned int pid) {
     for (int i = 0; i < MAX_WINDOWS; i++)
         if (wins[i].used && wins[i].pid == pid) {
             wins[i].used = 0;
+            for (int j = 0; j < nz; j++)
+                if (zorder[j] == i) {
+                    for (int k = j; k < nz - 1; k++) zorder[k] = zorder[k + 1];
+                    nz--;
+                    break;
+                }
             if (focus_pid == pid) focus_pid = 0;
         }
+    for (int i = 0; i < 2; i++)
+        if (launchers[i].pid == pid) launchers[i].running = 0;
+}
+
+static void raise_pid(unsigned int pid) {
+    int at = -1;
+    for (int i = 0; i < nz; i++)
+        if (wins[zorder[i]].used && wins[zorder[i]].pid == pid) { at = i; break; }
+    if (at < 0) return;
+    int wi = zorder[at];
+    for (int j = at; j < nz - 1; j++) zorder[j] = zorder[j + 1];
+    zorder[nz - 1] = wi;
+    if (focus_pid != pid) redraw = 1;
+    focus_pid = pid;
+}
+
+static int app_type_of(unsigned int pid) {
+    for (int i = 0; i < 2; i++)
+        if (launchers[i].pid == pid) return i;
+    return APP_UNKNOWN;
 }
 
 void main(void) {
@@ -435,7 +532,6 @@ void main(void) {
     register_events();
 
     int last_mx = 0, last_my = 0, last_mb = 0;
-    int redraw = 1;
     int drag_i = -1, drag_dx = 0, drag_dy = 0;
 
     for (;;) {
@@ -452,12 +548,18 @@ void main(void) {
                 }
                 break;
             case MSG_CREATE: {
+                int launched = 0;
+                for (int i = 0; i < 2; i++)
+                    if (launchers[i].pid && launchers[i].pid == m.c) {
+                        launchers[i].running = 1;
+                        launched = 1;
+                    }
                 int wid, slab;
                 if (alloc_window(m.c, (int)m.a, (int)m.b, &wid, &slab) == 0) {
                     struct aos_msg r = {MSG_WININFO, (unsigned int)wid,
                                         (unsigned int)slab, 0, 0};
                     send_msg(m.c, &r);
-                    if (!focus_pid) focus_pid = m.c;
+                    if (launched || !focus_pid) focus_pid = m.c;
                     redraw = 1;
                 }
                 break;
@@ -485,20 +587,22 @@ void main(void) {
 
         int moved = mx != last_mx || my != last_my || mb != last_mb;
         if (moved && (mb & 1) && !(last_mb & 1)) {
-            int cb = close_btn_at(mx, my);
-            if (cb >= 0 && win_index_at(mx, my) == cb) {
-                struct aos_msg cl = {MSG_CLOSE, 0, 0, 0, 0};
-                send_msg(wins[cb].pid, &cl);
-            } else {
-                int wi = win_index_at(mx, my);
-                if (wi >= 0) {
-                    if (focus_pid != wins[wi].pid) redraw = 1;
-                    focus_pid = wins[wi].pid;
-                    if (my >= wins[wi].y + BORDER &&
-                        my < wins[wi].y + BORDER + TITLE_H) {
-                        drag_i = wi;
-                        drag_dx = mx - wins[wi].x;
-                        drag_dy = my - wins[wi].y;
+            if (!dock_hit(mx, my)) {
+                int cb = close_btn_at(mx, my);
+                if (cb >= 0 && win_index_at(mx, my) == cb) {
+                    struct aos_msg cl = {MSG_CLOSE, 0, 0, 0, 0};
+                    send_msg(wins[cb].pid, &cl);
+                } else {
+                    int wi = win_index_at(mx, my);
+                    if (wi >= 0) {
+                        if (focus_pid != wins[wi].pid) redraw = 1;
+                        focus_pid = wins[wi].pid;
+                        if (my >= wins[wi].y + BORDER &&
+                            my < wins[wi].y + BORDER + TITLE_H) {
+                            drag_i = wi;
+                            drag_dx = mx - wins[wi].x;
+                            drag_dy = my - wins[wi].y;
+                        }
                     }
                 }
             }
@@ -534,6 +638,7 @@ void main(void) {
         }
 
         int need_cursor = moved;
+        if (!has_cur) need_cursor = 1;
         if (redraw) {
             composite();
             has_cur = 0;
