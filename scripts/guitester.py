@@ -11,6 +11,11 @@ import socket, sys, time
 
 MON = "/tmp/aos-gui.sock"
 PPM = "/tmp/aos-gui-px.ppm"
+# QEMU's HMP "mouse_move dx dy" is RELATIVE (deltas), so absolute clicks must
+# be turned into deltas from the last known position. Tracked in MOUSE_STATE.
+# The kernel boots the cursor at (511,383) (screen center, see mouse_init).
+MOUSE_STATE = "/tmp/aos-mouse.state"
+MOUSE_BOOT = (511, 383)
 
 
 def cmd(c):
@@ -24,6 +29,26 @@ def cmd(c):
         data = b""
     s.close()
     return data.decode()
+
+
+def read_state():
+    try:
+        with open(MOUSE_STATE) as f:
+            x, y = f.read().split()
+            return int(x), int(y)
+    except Exception:
+        return MOUSE_BOOT
+
+
+def write_state(x, y):
+    with open(MOUSE_STATE, "w") as f:
+        f.write("%d %d\n" % (x, y))
+
+
+def move_abs(x, y):
+    cx, cy = read_state()
+    cmd("mouse_move %d %d" % (x - cx, y - cy))
+    write_state(x, y)
 
 
 def read_pixel(x, y):
@@ -41,10 +66,13 @@ def main():
     a = sys.argv[1:]
     if a[0] == "click":
         x, y = int(a[1]), int(a[2])
-        cmd("mouse_move %d %d" % (x, y))
+        move_abs(x, y)
+        time.sleep(0.3)
         cmd("mouse_button 1")
         time.sleep(0.4)
         cmd("mouse_button 0")
+    elif a[0] == "resetmouse":
+        write_state(int(a[1]), int(a[2]))
     elif a[0] == "snap":
         cmd("screendump " + a[1])
     elif a[0] == "pixel":
