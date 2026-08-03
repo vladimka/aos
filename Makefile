@@ -51,6 +51,9 @@ programs/%.elf: programs/%.o programs/libaos.o programs/programs.ld
 kernel/progs.c: $(PROG_ELFS) scripts/gen_progs.py
 	$(PYTHON) scripts/gen_progs.py $(PROG_ELFS) > $@
 
+compile_commands.json: scripts/gen_compile_commands.py $(wildcard kernel/*.c drivers/*.c arch/i386/*.c boot/*.c programs/*.c)
+	$(PYTHON) scripts/gen_compile_commands.py
+
 aos.elf: $(KERNEL_OBJS) linker.ld
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
 
