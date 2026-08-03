@@ -11,6 +11,11 @@ MON = "/tmp/aos-ipc.sock"
 SER = "/tmp/aos-ipc.log"
 PPM = "/tmp/aos-ipc.ppm"
 BEFORE = "/tmp/aos-ipc-before.ppm"
+AFTER = "/tmp/aos-ipc-after.ppm"
+
+TXT_X0, TXT_X1 = 21, 660          # term text band, x range (content left..right)
+TXT_Y0, TXT_Y1 = 39, 70           # term text band, y range (content rows 0..1)
+TXT_THRESHOLD = 500               # AFTER band must grow by more than this (pixels)
 
 def wait_for(path, seconds=10):
     end = time.time() + seconds
@@ -53,8 +58,28 @@ def ppm_pixel(path, x, y):
         f.seek((y * w + x) * 3, 1)
         return tuple(f.read(3))
 
+def ppm_data(path):
+    with open(path, "rb") as f:
+        if f.readline().strip() != b"P6":
+            raise AssertionError("not a P6 PPM: " + path)
+        dim = f.readline().split()
+        f.readline()                       # maxval
+        return int(dim[0]), int(dim[1]), f.read()
+
+def count_text_pixels(path, x0, y0, x1, y1):
+    # Text color is COL_FG 0xD8D8D8 on COL_BG 0x101010; count pixels where
+    # every channel is >= 0xC0 (bright) in the given x/y rectangle.
+    w, h, data = ppm_data(path)
+    n = 0
+    for y in range(y0, y1 + 1):
+        row = data[(y * w + x0) * 3:(y * w + x1 + 1) * 3]
+        for i in range(0, len(row), 3):
+            if row[i] >= 0xC0 and row[i + 1] >= 0xC0 and row[i + 2] >= 0xC0:
+                n += 1
+    return n
+
 def main():
-    for path in (MON, SER, PPM, BEFORE):
+    for path in (MON, SER, PPM, BEFORE, AFTER):
         try: os.unlink(path)
         except FileNotFoundError: pass
     qemu = subprocess.Popen([
@@ -86,6 +111,19 @@ def main():
         with open(PPM, "rb") as f: after = f.read()
         if before == after:
             raise AssertionError("terminal did not process the ipctest command")
+        before_txt = count_text_pixels(BEFORE, TXT_X0, TXT_Y0, TXT_X1, TXT_Y1)
+        after_txt = count_text_pixels(PPM, TXT_X0, TXT_Y0, TXT_X1, TXT_Y1)
+        if after_txt - before_txt <= TXT_THRESHOLD:
+            raise AssertionError(
+                "terminal did not render IPC TEST PASS (band text grew %d, want > %d)"
+                % (after_txt - before_txt, TXT_THRESHOLD))
+        hmp("mouse_move 1 0")
+        time.sleep(0.3)
+        hmp("screendump " + AFTER)
+        wait_for(AFTER)
+        with open(AFTER, "rb") as f: moved = f.read()
+        if moved == after:
+            raise AssertionError("window manager stopped responding after the run")
         print("PASS: IPC exit notification and WM regression")
         return 0
     finally:

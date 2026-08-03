@@ -82,6 +82,8 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         unsigned int sink = dead->sink;
         unsigned int ep = (unsigned int)event_pid;
         dead->state = TASK_FREE;
+        // Exit notifications are best-effort: a full recipient mailbox
+        // (task_mailbox_send returns -3) silently drops the message.
         if (sink < MAX_TASKS && sink != dead->pid && tasks[sink].state != TASK_FREE)
             task_mailbox_send(sink, MSG_TYPE_EXIT, dead->pid, 0, 0, 0);
         if (ep > 0 && ep < MAX_TASKS && ep != dead->pid && ep != sink &&
