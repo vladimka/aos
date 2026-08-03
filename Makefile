@@ -10,7 +10,8 @@ ASFLAGS = -m32 -c -x assembler-with-cpp
 LDFLAGS = -T linker.ld -m elf_i386 -nostdlib --no-warn-rwx-segments
 
 KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
-              drivers/serial.o drivers/mouse.o kernel/terminal.o kernel/commands.o \
+              drivers/serial.o drivers/mouse.o drivers/pci.o drivers/uhci.o \
+              kernel/terminal.o kernel/commands.o \
               kernel/sfs.o kernel/string.o arch/i386/gdt.o arch/i386/idt.o \
               kernel/interrupts.o kernel/elf.o kernel/syscall.o \
               kernel/progload.o kernel/paging.o kernel/user.o \
