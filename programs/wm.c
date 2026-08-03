@@ -12,6 +12,125 @@
 #define COL_TITLE_TEXT   0xFFFFFF
 #define COL_CURSOR       0xFFFFFF
 
+// ---- dock ----------------------------------------------------------------
+
+#define DOCK_H       52
+#define DOCK_MARGIN  8
+#define DOCK_PAD_X   12
+#define DOCK_PAD_Y   10
+#define DOCK_ICON    32
+#define DOCK_STRIDE  40
+
+#define COL_DOCK_BG      0x20283A
+#define COL_DOCK_BORDER  0x2E4E7B
+#define COL_ICON_FG      0xE8EEF8
+#define COL_DOCK_ACTIVE  0x4A7AB5
+
+// 32x32 1bpp icons, 'X' = foreground pixel, anything else = transparent.
+static const char icon_term[32][33] = {
+    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X........XX.....................X",
+    "X.........XX....................X",
+    "X..........XX...................X",
+    "X..........XX...................X",
+    "X.........XX....................X",
+    "X........XX.....................X",
+    "X..............................X",
+    "X..............................X",
+    "X..........XXXXXXXXXXX.........X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+};
+
+static const char icon_clock[32][33] = {
+    "................................",
+    "................................",
+    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X...........XXX.............X..",
+    "..X...........XXX.............X..",
+    "..X...........XXX.............X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X...........XXX.............X..",
+    "..X...........XXX.............X..",
+    "..X...........XXX.............X..",
+    "..X...........XXX.............X..",
+    "..X...........XXX.............X..",
+    "..X.XXX........XXXXXXXXX.XXX..X..",
+    "..X.XXX........XXXXXXXXX.XXX..X..",
+    "..X...........XXX.............X..",
+    "..X...........XXX.............X..",
+    "..X...........XXX.............X..",
+    "..X...........XXX.............X..",
+    "..X...........XXX.............X..",
+    "..X...........XXX.............X..",
+    "..X..........................X..",
+    "..X...........XXX.............X..",
+    "..X...........XXX.............X..",
+    "..X...........XXX.............X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
+    "................................",
+    "................................",
+};
+
+static const char icon_unknown[32][33] = {
+    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X..........XXXXXXX.............X",
+    "X.........XXXXXXXX.............X",
+    "X.........XXXXXXXX.............X",
+    "X........XX....XXX.............X",
+    "X........XX....XXX.............X",
+    "X........XX....XXX.............X",
+    "X.............XXX..............X",
+    "X.............XX...............X",
+    "X............XX................X",
+    "X............XX................X",
+    "X...............................X",
+    "X...............................X",
+    "X............XX................X",
+    "X............XX................X",
+    "X...............................X",
+    "X...............................X",
+    "X...............................X",
+    "X...............................X",
+    "X...............................X",
+    "X...............................X",
+    "X...............................X",
+    "X...............................X",
+    "X...............................X",
+    "X...............................X",
+    "X...............................X",
+    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+};
+
 struct win {
     int used;
     unsigned int pid;
@@ -64,6 +183,11 @@ static void fb_fill(int x, int y, int w, int h, unsigned int rgb) {
 }
 
 static void draw_close_btn(const struct win *wn);
+static int cursor_overlaps(int x, int y, int w, int h);
+static void draw_dock(void);
+static int dock_x0(void);
+static int dock_y0(void);
+static int dock_width(void);
 
 static void draw_title(const struct win *wn) {
     unsigned int tcol = (wn->pid == focus_pid) ? COL_TITLE_FOCUS : COL_TITLE;
@@ -145,10 +269,54 @@ static void composite_rect(int x0, int y0, int x1, int y1) {
     }
     clip_x0 = 0; clip_y0 = 0;
     clip_x1 = (int)fb_w; clip_y1 = (int)fb_h;
+    draw_dock();
+    if (cursor_overlaps(dock_x0(), dock_y0(), dock_width(), DOCK_H))
+        has_cur = 0;
 }
 
 static void composite(void) {
     composite_rect(0, 0, (int)fb_w, (int)fb_h);
+}
+
+// ---- dock ----------------------------------------------------------------
+
+static int dock_nitems(void) { return 2; }
+
+static int dock_x0(void) {
+    return (int)fb_w / 2 - (16 + dock_nitems() * DOCK_STRIDE) / 2;
+}
+
+static int dock_y0(void) { return (int)fb_h - DOCK_H - DOCK_MARGIN; }
+
+static int dock_width(void) { return 16 + dock_nitems() * DOCK_STRIDE; }
+
+static void draw_icon(int x, int y, const char icon[DOCK_ICON][DOCK_ICON + 1],
+                      unsigned int fg) {
+    unsigned int *fb = (unsigned int *)fb_addr;
+    unsigned int pitch = fb_pitch >> 2;
+    for (int r = 0; r < DOCK_ICON; r++)
+        for (int c = 0; c < DOCK_ICON; c++)
+            if (icon[r][c] == 'X')
+                fb[(unsigned)(y + r) * pitch + (unsigned)(x + c)] = fg;
+}
+
+static void draw_dock(void) {
+    int dx0 = dock_x0(), dy0 = dock_y0();
+    int dw = dock_width();
+    fb_fill(dx0, dy0, dw, DOCK_H, COL_DOCK_BG);
+    fb_fill(dx0, dy0, dw, 1, COL_DOCK_BORDER);
+    fb_fill(dx0, dy0 + DOCK_H - 1, dw, 1, COL_DOCK_BORDER);
+    fb_fill(dx0, dy0, 1, DOCK_H, COL_DOCK_BORDER);
+    fb_fill(dx0 + dw - 1, dy0, 1, DOCK_H, COL_DOCK_BORDER);
+    // fake rounded corners
+    fb_fill(dx0, dy0, 1, 1, COL_DESKTOP);
+    fb_fill(dx0 + dw - 1, dy0, 1, 1, COL_DESKTOP);
+    fb_fill(dx0, dy0 + DOCK_H - 1, 1, 1, COL_DESKTOP);
+    fb_fill(dx0 + dw - 1, dy0 + DOCK_H - 1, 1, 1, COL_DESKTOP);
+    int iy = dy0 + DOCK_PAD_Y;
+    draw_icon(dx0 + DOCK_PAD_X, iy, icon_term, COL_ICON_FG);
+    draw_icon(dx0 + DOCK_PAD_X + DOCK_STRIDE, iy, icon_clock, COL_ICON_FG);
+    (void)icon_unknown;
 }
 
 // ---- cursor (drawn last, erased via its own snapshot) ----------------------

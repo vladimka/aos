@@ -4,7 +4,7 @@ LD      = ld
 PYTHON  = python3
 CFLAGS  = -ffreestanding -Wall -Wextra -O2 -std=c11 -nostdlib -fno-builtin \
           -fno-stack-protector -fno-pie -fno-pic -m32 -mno-sse -mno-mmx -mno-80387 \
-          -MMD -MP
+          -Wno-unterminated-string-initialization -MMD -MP
 CFLAGS  += -Ikernel -Idrivers -Iarch/i386 -Iboot -Iprograms
 ASFLAGS = -m32 -c -x assembler-with-cpp
 LDFLAGS = -T linker.ld -m elf_i386 -nostdlib --no-warn-rwx-segments
