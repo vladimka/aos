@@ -265,10 +265,6 @@ void main(void) {
     scratch = (unsigned int *)AOS_SLAB_BASE;
     register_events();
 
-    // Launch the desktop applications (they create their windows via MSG_CREATE).
-    spawn("bin/term", "", getpid());
-    spawn("bin/clock", "", getpid());
-
     int last_mx = 0, last_my = 0, last_mb = 0;
     int redraw = 1;
     int drag_i = -1, drag_dx = 0, drag_dy = 0;
