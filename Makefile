@@ -60,7 +60,7 @@ aos.iso: aos.elf
 	grub-mkrescue -o $@ iso
 
 run: aos.iso
-	qemu-system-i386 -cdrom $<
+	qemu-system-i386 -display gtk,grab-on-hover=on -cdrom $<
 
 clean:
 	rm -f $(KERNEL_OBJS) $(PROG_ELFS) $(PROG_OBJS) *.elf *.bin *.iso kernel/progs.c

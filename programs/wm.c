@@ -248,12 +248,14 @@ void main(void) {
             }
         }
 
+        int need_cursor = moved;
         if (redraw) {
             composite();
             has_cur = 0;
             redraw = 0;
+            need_cursor = 1;
         }
-        if (moved) {
+        if (need_cursor) {
             update_cursor(mx, my);
         }
         last_mx = mx;
