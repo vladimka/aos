@@ -3,7 +3,7 @@
   "lsp": {
     "clangd": {
       "command": ["clangd", "--background-index", "--header-insertion=never"],
-      "extensions": ["c", "h"]
+      "extensions": [".c", ".h"]
     }
   }
 }

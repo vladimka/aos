@@ -1,4 +1,5 @@
 #include "libaos.h"
+#include "ico.h"
 
 #define MAX_WINDOWS 8
 #define TITLE_H     18
@@ -132,6 +133,111 @@ static const char icon_unknown[32][33] = {
     "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
 };
 
+static const char icon_folder[32][33] = {
+    "................................",
+    "................................",
+    "..XXXXXXXXXXXXXXXXXXXXXXXXXXX...",
+    "..XXXXXXXXXXXXXXXXXXXXXXXXXXX...",
+    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "................................",
+    "................................",
+    "................................",
+};
+
+static const char icon_file[32][33] = {
+    "................................",
+    "................................",
+    "....XXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "....X..........................X",
+    "....X..........................X",
+    "....X..XXXXXXXXX...............X",
+    "....X..X.......X...............X",
+    "....X..X.......X...............X",
+    "....X..XXXXXXXXX...............X",
+    "....X..........................X",
+    "....X..........................X",
+    "....X..XXXXXXXXX...............X",
+    "....X..X.......X...............X",
+    "....X..X.......X...............X",
+    "....X..XXXXXXXXX...............X",
+    "....X..........................X",
+    "....X..........................X",
+    "....X..XXXXXXXXX...............X",
+    "....X..X.......X...............X",
+    "....X..X.......X...............X",
+    "....X..XXXXXXXXX...............X",
+    "....X..........................X",
+    "....X..........................X",
+    "....X..........................X",
+    "....X..........................X",
+    "....X..........................X",
+    "....X..........................X",
+    "....XXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+};
+
+static const char icon_image[32][33] = {
+    "................................",
+    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
+    "..X..........................X..",
+    "..X.........XXXX.............X..",
+    "..X........X....X............X..",
+    "..X........X....X............X..",
+    "..X.......X......X...........X..",
+    "..X.......X......X...........X..",
+    "..X......X........X..........X..",
+    "..X......X........X..........X..",
+    "..X.....X..........X.........X..",
+    "..X.....X..........X.........X..",
+    "..X....X............X........X..",
+    "..X....X............X........X..",
+    "..X...X..............X.......X..",
+    "..X...X..............X.......X..",
+    "..X..X................X......X..",
+    "..X..X................X......X..",
+    "..X.X..................X.....X..",
+    "..X.X..................X.....X..",
+    "..XX....................X....X..",
+    "..X......................X...X..",
+    "..X......................X...X..",
+    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+};
+
 struct win {
     int used;
     unsigned int pid;
@@ -207,6 +313,9 @@ static int dock_y0(void);
 static int dock_width(void);
 static int app_type_of(unsigned int pid);
 static void raise_pid(unsigned int pid);
+static void draw_desktop_icons(void);
+static void draw_menu(void);
+static void draw_dialog(void);
 
 static void draw_title(const struct win *wn) {
     unsigned int tcol = (wn->pid == focus_pid) ? COL_TITLE_FOCUS : COL_TITLE;
@@ -270,6 +379,7 @@ static void composite_rect(int x0, int y0, int x1, int y1) {
     if (x0 >= x1 || y0 >= y1) return;
     clip_x0 = x0; clip_y0 = y0; clip_x1 = x1; clip_y1 = y1;
     fb_fill(x0, y0, x1 - x0, y1 - y0, COL_DESKTOP);
+    draw_desktop_icons();
     for (int k = 0; k < nz; k++) {
         struct win *wn = &wins[zorder[k]];
         if (!wn->used) continue;
@@ -289,7 +399,15 @@ static void composite_rect(int x0, int y0, int x1, int y1) {
     clip_x0 = 0; clip_y0 = 0;
     clip_x1 = (int)fb_w; clip_y1 = (int)fb_h;
     draw_dock();
+    draw_menu();
+    draw_dialog();
     if (cursor_overlaps(dock_x0(), dock_y0(), dock_width(), DOCK_H))
+        has_cur = 0;
+    if (menu_open &&
+        cursor_overlaps(menu_draw_x, menu_draw_y, MENU_W,
+                        MENU_N * MENU_ITEM_H + 2 * MENU_BORDER))
+        has_cur = 0;
+    if (dlg_open && cursor_overlaps(dlg_draw_x, dlg_draw_y, 360, 88))
         has_cur = 0;
 }
 
@@ -391,6 +509,255 @@ static int dock_hit(int mx, int my) {
         if (wi >= 0) raise_pid(wins[wi].pid);
     }
     return 1;
+}
+
+// ---- desktop file icons ---------------------------------------------------
+
+#define ICON_W    32
+#define ICON_H    32
+#define GRID_X0   16
+#define GRID_Y0   24
+#define GRID_CELL 52
+#define LABEL_H   16
+
+enum { K_FOLDER = 0, K_TEXT = 1, K_ICO = 2, K_OTHER = 3 };
+
+static struct dent {
+    char name[28];
+    int kind;
+} files[64];
+static int nfiles;
+static int files_dirty = 1;
+static int refresh_cnt;
+
+static void fb_put(int x, int y, unsigned int rgb) {
+    if (x < clip_x0 || x >= clip_x1 || y < clip_y0 || y >= clip_y1) return;
+    unsigned int *fb = (unsigned int *)fb_addr;
+    ((unsigned int *)fb)[(unsigned)y * (fb_pitch >> 2) + (unsigned)x] = rgb;
+}
+
+// Clip-aware 1bpp icon art: 'X' = foreground pixel.
+static void draw_icon_art(int x, int y, const char art[ICON_W][ICON_W + 1],
+                          unsigned int fg) {
+    for (int r = 0; r < ICON_W; r++)
+        for (int c = 0; c < ICON_W; c++)
+            if (art[r][c] == 'X') fb_put(x + c, y + r, fg);
+}
+
+static int utf8_vis_len(const char *s) {
+    int n = 0;
+    while (*s) {
+        unsigned char c = (unsigned char)*s++;
+        if (c < 0x80) n++;
+        else if ((c & 0xE0) == 0xC0) { s += 1; n++; }
+        else if ((c & 0xF0) == 0xE0) { s += 2; n++; }
+        else { s += 3; n++; }
+    }
+    return n;
+}
+
+// Render a UTF-8 string into the FB at (x, y) with clipping. Text is drawn
+// through the scratch slab (same technique as draw_title).
+static void fb_text(int x, int y, const char *s, unsigned int fg,
+                    unsigned int bg) {
+    render_text(scratch, 1024 * 4, 0, 0, s, fg, bg);
+    int w = utf8_vis_len(s) * 8;
+    int x0 = x > clip_x0 ? x : clip_x0;
+    int y0 = y > clip_y0 ? y : clip_y0;
+    int x1 = (x + w < clip_x1) ? x + w : clip_x1;
+    int y1 = (y + 16 < clip_y1) ? y + 16 : clip_y1;
+    if (x0 >= x1 || y0 >= y1) return;
+    unsigned int *fb = (unsigned int *)fb_addr;
+    unsigned int pitch = fb_pitch >> 2;
+    for (int r = y0; r < y1; r++)
+        mcpy(fb + (unsigned)r * pitch + (unsigned)x0,
+             scratch + (unsigned)(r - y) * 1024 + (unsigned)(x0 - x),
+             (unsigned)(x1 - x0));
+}
+
+static int ext_match(const char *n, const char *ext) {
+    int nl = 0, el = 0;
+    while (n[nl]) nl++;
+    while (ext[el]) el++;
+    if (nl < el) return 0;
+    for (int i = 0; i < el; i++) {
+        char a = n[nl - el + i], b = ext[i];
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
+static void refresh_files(void) {
+    files_dirty = 0;
+    nfiles = 0;
+    for (int i = 0; i < 64; i++) {
+        char nm[28];
+        unsigned int sz;
+        if (fs_list_get((unsigned int)i, nm, &sz) != 0) continue;
+        if (nm[0] == 0) continue;
+        // Programs live in the dock; keep the desktop for data files.
+        if (nm[0] == 'b' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == '/')
+            continue;
+        int len = 0;
+        while (nm[len]) len++;
+        int kind;
+        if (len > 0 && nm[len - 1] == '/') kind = K_FOLDER;
+        else if (ext_match(nm, ".ico")) kind = K_ICO;
+        else if (ext_match(nm, ".txt")) kind = K_TEXT;
+        else kind = K_OTHER;
+        int j;
+        for (j = 0; j < 27 && nm[j]; j++) files[nfiles].name[j] = nm[j];
+        files[nfiles].name[j] = 0;
+        files[nfiles].kind = kind;
+        nfiles++;
+        if (nfiles >= 64) break;
+    }
+}
+
+static void icon_rect(int i, int *x, int *y) {
+    int cols = ((int)fb_w - GRID_X0) / GRID_CELL;
+    if (cols < 1) cols = 1;
+    *x = GRID_X0 + (i % cols) * GRID_CELL;
+    *y = GRID_Y0 + (i / cols) * (ICON_H + LABEL_H + 8);
+}
+
+static void draw_ico_file(int i, int x, int y) {
+    static char ico_buf[8192];
+    static unsigned int px[ICON_W * ICON_H];
+    unsigned int dw, dh;
+    int sz = fs_read(files[i].name, ico_buf, sizeof(ico_buf));
+    if (sz > 0 &&
+        ico_decode((const unsigned char *)ico_buf, (unsigned int)sz,
+                   ICON_W, ICON_H, &dw, &dh, px) == 0) {
+        for (int r = 0; r < ICON_W; r++)
+            for (int c = 0; c < ICON_W; c++) {
+                unsigned int p = px[r * ICON_W + c];
+                if (p & 0xFF000000) fb_put(x + c, y + r, p & 0x00FFFFFF);
+            }
+    } else {
+        draw_icon_art(x, y, icon_image, COL_ICON_FG);
+    }
+}
+
+static void draw_desktop_icons(void) {
+    for (int i = 0; i < nfiles; i++) {
+        int x, y;
+        icon_rect(i, &x, &y);
+        if (x + ICON_W < clip_x0 || x >= clip_x1) continue;
+        if (y + ICON_H < clip_y0 || y >= clip_y1) continue;
+        switch (files[i].kind) {
+        case K_FOLDER: draw_icon_art(x, y, icon_folder, COL_ICON_FG); break;
+        case K_ICO:    draw_ico_file(i, x, y); break;
+        case K_TEXT:   draw_icon_art(x, y, icon_file, COL_ICON_FG); break;
+        default:       draw_icon_art(x, y, icon_unknown, COL_ICON_FG); break;
+        }
+        if (y + ICON_H + 2 < clip_y1)
+            fb_text(x, y + ICON_H + 2, files[i].name, COL_ICON_FG,
+                    COL_DESKTOP);
+    }
+}
+
+static int icon_at(int mx, int my) {
+    for (int i = 0; i < nfiles; i++) {
+        int x, y;
+        icon_rect(i, &x, &y);
+        if (mx >= x && mx < x + ICON_W && my >= y && my < y + ICON_H)
+            return i;
+    }
+    return -1;
+}
+
+static void open_file(int i) {
+    if (files[i].kind == K_ICO || files[i].kind == K_FOLDER) return;
+    spawn("bin/notepad", files[i].name, getpid());
+}
+
+// ---- desktop context menu + create dialog ---------------------------------
+
+#define MENU_W      176
+#define MENU_ITEM_H 22
+#define MENU_N       2
+#define MENU_BORDER  1
+
+#define COL_MENU_BG     0x20283A
+#define COL_MENU_BORDER 0x4A7AB5
+#define COL_MENU_FG     0xFFFFFF
+
+static const char menu_items[MENU_N][24] = {
+    "\xd0\x9d\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb9 \xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb",   // Новый файл
+    "\xd0\x9d\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x8f \xd0\xbf\xd0\xb0\xd0\xbf\xd0\xba\xd0\xb0", // Новая папка
+};
+
+static int menu_open, menu_x, menu_y;
+static int menu_draw_x, menu_draw_y;
+
+static int dlg_open, dlg_mode;         // mode 0 = file, 1 = folder
+static char dlg_name[40];
+static int dlg_len;
+static int dlg_draw_x, dlg_draw_y;
+
+static void draw_menu(void) {
+    if (!menu_open) return;
+    int x = menu_x, y = menu_y;
+    int mw = MENU_W;
+    int mh = MENU_N * MENU_ITEM_H + 2 * MENU_BORDER;
+    if (x + mw > (int)fb_w) x = (int)fb_w - mw;
+    if (y + mh > (int)fb_h) y = (int)fb_h - mh;
+    menu_draw_x = x;
+    menu_draw_y = y;
+    fb_fill(x, y, mw, mh, COL_MENU_BORDER);
+    fb_fill(x + MENU_BORDER, y + MENU_BORDER, mw - 2 * MENU_BORDER,
+            mh - 2 * MENU_BORDER, COL_MENU_BG);
+    fb_text(x + 10, y + MENU_BORDER + 3, menu_items[0], COL_MENU_FG,
+            COL_MENU_BG);
+    fb_text(x + 10, y + MENU_BORDER + 3 + MENU_ITEM_H, menu_items[1],
+            COL_MENU_FG, COL_MENU_BG);
+}
+
+static int menu_item_at(int mx, int my) {
+    if (!menu_open) return -1;
+    int x = menu_draw_x, y = menu_draw_y;
+    if (mx < x || mx >= x + MENU_W) return -1;
+    if (my < y || my >= y + MENU_N * MENU_ITEM_H + 2 * MENU_BORDER) return -1;
+    int i = (my - (y + MENU_BORDER)) / MENU_ITEM_H;
+    if (i < 0 || i >= MENU_N) return -1;
+    return i;
+}
+
+static void do_create(void) {
+    if (dlg_len == 0) return;
+    char full[30];
+    int i;
+    for (i = 0; i < dlg_len; i++) full[i] = dlg_name[i];
+    if (dlg_mode == 1) full[i++] = '/';   // folders are names ending with '/'
+    full[i] = 0;
+    fs_write(full, "", 0);
+    files_dirty = 1;
+}
+
+static void draw_dialog(void) {
+    if (!dlg_open) return;
+    int x = (int)fb_w / 2 - 180;
+    int y = (int)fb_h / 3;
+    dlg_draw_x = x;
+    dlg_draw_y = y;
+    fb_fill(x, y, 360, 88, COL_MENU_BG);
+    fb_fill(x, y, 360, 1, COL_MENU_BORDER);
+    fb_fill(x, y + 87, 360, 1, COL_MENU_BORDER);
+    fb_fill(x, y, 1, 88, COL_MENU_BORDER);
+    fb_fill(x + 359, y, 1, 88, COL_MENU_BORDER);
+    const char *title = dlg_mode
+        ? "\xd0\x98\xd0\xbc\xd1\x8f \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb9 \xd0\xbf\xd0\xb0\xd0\xbf\xd0\xba\xd0\xb8:"
+        : "\xd0\x98\xd0\xbc\xd1\x8f \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb\xd0\xb0:";
+    fb_text(x + 10, y + 8, title, COL_MENU_FG, COL_MENU_BG);
+    int bx = x + 10, by = y + 36, bw = 340, bh = 20;
+    fb_fill(bx, by, bw, bh, 0x101010);
+    if (dlg_len)
+        fb_text(bx + 4, by + 2, dlg_name, COL_MENU_FG, 0x101010);
+    int cx = bx + 4 + dlg_len * 8;      // dialog names are ASCII only
+    fb_fill(cx, by + 3, 2, 14, COL_MENU_FG);
 }
 
 // ---- cursor (drawn last, erased via its own snapshot) ----------------------
@@ -542,10 +909,32 @@ void main(void) {
         int mx, my, mb, wheel;
         get_mouse(&mx, &my, &mb, &wheel);
 
+        refresh_cnt++;
+        if (files_dirty || (refresh_cnt & 127) == 0) refresh_files();
+
         struct aos_msg m;
         while (recv_msg(&m) == 0) {
             switch (m.type) {
             case MSG_KEY:
+                if (dlg_open) {
+                    unsigned int k = m.a;
+                    if (k == '\r' || k == 27) {          // Enter / Esc
+                        if (k == '\r') do_create();
+                        dlg_open = 0;
+                        redraw = 1;
+                    } else if (k == '\b') {
+                        if (dlg_len > 0) { dlg_len--; dlg_name[dlg_len] = 0; }
+                        redraw = 1;
+                    } else if (k >= 0x20 && k < 0x7F) {  // printable ASCII name
+                        int cap = (dlg_mode == 1) ? 26 : 27;
+                        if (dlg_len < cap) {
+                            dlg_name[dlg_len++] = (char)k;
+                            dlg_name[dlg_len] = 0;
+                        }
+                        redraw = 1;
+                    }
+                    break;
+                }
                 if (focus_pid) {
                     struct aos_msg k = {MSG_KEY, m.a, 0, 0, 0};
                     send_msg(focus_pid, &k);
@@ -591,7 +980,19 @@ void main(void) {
 
         int moved = mx != last_mx || my != last_my || mb != last_mb;
         if (moved && (mb & 1) && !(last_mb & 1)) {
-            if (!dock_hit(mx, my)) {
+            if (menu_open) {
+                int it = menu_item_at(mx, my);
+                menu_open = 0;
+                redraw = 1;
+                if (it >= 0) {
+                    dlg_open = 1;
+                    dlg_mode = it;                  // 0 = file, 1 = folder
+                    dlg_len = 0;
+                    dlg_name[0] = 0;
+                }
+            } else if (dlg_open) {
+                // clicks are ignored while the dialog is open
+            } else if (!dock_hit(mx, my)) {
                 int cb = close_btn_at(mx, my);
                 if (cb >= 0 && win_index_at(mx, my) == cb) {
                     struct aos_msg cl = {MSG_CLOSE, 0, 0, 0, 0};
@@ -607,8 +1008,24 @@ void main(void) {
                             drag_dx = mx - wins[wi].x;
                             drag_dy = my - wins[wi].y;
                         }
+                    } else {
+                        int fi = icon_at(mx, my);
+                        if (fi >= 0) open_file(fi);
                     }
                 }
+            }
+        }
+        if (moved && (mb & 2) && !(last_mb & 2)) {
+            if (dlg_open) {
+                // keep the dialog open, ignore right clicks
+            } else if (menu_open) {
+                menu_open = 0;
+                redraw = 1;
+            } else if (!dock_hit(mx, my) && win_index_at(mx, my) < 0) {
+                menu_x = mx;
+                menu_y = my;
+                menu_open = 1;
+                redraw = 1;
             }
         }
         if (!(mb & 1) && (last_mb & 1))
