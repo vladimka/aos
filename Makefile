@@ -10,7 +10,8 @@ ASFLAGS = -m32 -c -x assembler-with-cpp
 LDFLAGS = -T linker.ld -m elf_i386 -nostdlib --no-warn-rwx-segments
 
 KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
-              drivers/serial.o drivers/mouse.o kernel/terminal.o kernel/commands.o \
+              drivers/serial.o drivers/mouse.o drivers/pci.o drivers/uhci.o \
+              kernel/terminal.o kernel/commands.o \
               kernel/sfs.o kernel/string.o arch/i386/gdt.o arch/i386/idt.o \
               kernel/interrupts.o kernel/elf.o kernel/syscall.o \
               kernel/progload.o kernel/paging.o kernel/user.o \
@@ -50,6 +51,9 @@ programs/%.elf: programs/%.o programs/libaos.o programs/programs.ld
 kernel/progs.c: $(PROG_ELFS) scripts/gen_progs.py
 	$(PYTHON) scripts/gen_progs.py $(PROG_ELFS) > $@
 
+compile_commands.json: scripts/gen_compile_commands.py $(wildcard kernel/*.c drivers/*.c arch/i386/*.c boot/*.c programs/*.c)
+	$(PYTHON) scripts/gen_compile_commands.py
+
 aos.elf: $(KERNEL_OBJS) linker.ld
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
 
@@ -60,7 +64,7 @@ aos.iso: aos.elf
 	grub-mkrescue -o $@ iso
 
 run: aos.iso
-	qemu-system-i386 -cdrom $<
+	qemu-system-i386 -display gtk,grab-on-hover=on -cdrom $<
 
 clean:
 	rm -f $(KERNEL_OBJS) $(PROG_ELFS) $(PROG_OBJS) *.elf *.bin *.iso kernel/progs.c

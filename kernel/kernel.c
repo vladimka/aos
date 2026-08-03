@@ -12,6 +12,7 @@
 #include "fs.h"
 #include "progload.h"
 #include "mouse.h"
+#include "uhci.h"
 #include "aosipc.h"
 
 volatile unsigned int tick = 0;
@@ -96,6 +97,8 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     irq_install_handler(12, mouse_handler);
 
     mouse_init();
+
+    usb_init();
 
     fs_init();
     printf("Filesystem ready.\n");
