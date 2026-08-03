@@ -80,9 +80,13 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         current_exited = 0;
         struct task *dead = current_task;
         unsigned int sink = dead->sink;
+        unsigned int ep = (unsigned int)event_pid;
         dead->state = TASK_FREE;
         if (sink < MAX_TASKS && sink != dead->pid && tasks[sink].state != TASK_FREE)
             task_mailbox_send(sink, MSG_TYPE_EXIT, dead->pid, 0, 0, 0);
+        if (ep > 0 && ep < MAX_TASKS && ep != dead->pid && ep != sink &&
+            tasks[ep].state != TASK_FREE)
+            task_mailbox_send(ep, MSG_TYPE_EXIT, dead->pid, 0, 0, 0);
     }
 
     struct task *next = 0;
@@ -174,9 +178,6 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
 }
 
 void task_exit_current(void) {
-    struct task *t = current_task;
-    if (t->sink < MAX_TASKS && t->sink != t->pid && tasks[t->sink].state != TASK_FREE)
-        task_mailbox_send(t->sink, MSG_TYPE_EXIT, t->pid, 0, 0, 0);
     current_exited = 1;
 }
 
@@ -203,13 +204,23 @@ const char *task_current_args(void) {
     return task_args[current_task->pid];
 }
 
-int task_mailbox_send(unsigned int pid, unsigned int t, unsigned int a, unsigned int b, unsigned int c, unsigned int d) {
-    if (pid >= MAX_TASKS) return -1;
-    if (tasks[pid].state == TASK_FREE) return -2;
-    unsigned int next = (mbox_tail[pid] + 1) % MSG_CAP;
-    if (next == mbox_head[pid]) return -3;
+int task_mailbox_send(unsigned int pid, unsigned int t, unsigned int a,
+                      unsigned int b, unsigned int c, unsigned int d) {
     unsigned int flags;
     irq_save(&flags);
+    if (pid >= MAX_TASKS) {
+        irq_restore(flags);
+        return -1;
+    }
+    if (tasks[pid].state == TASK_FREE) {
+        irq_restore(flags);
+        return -2;
+    }
+    unsigned int next = (mbox_tail[pid] + 1) % MSG_CAP;
+    if (next == mbox_head[pid]) {
+        irq_restore(flags);
+        return -3;
+    }
     mbox[pid][mbox_tail[pid]][0] = t;
     mbox[pid][mbox_tail[pid]][1] = a;
     mbox[pid][mbox_tail[pid]][2] = b;
