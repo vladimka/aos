@@ -371,7 +371,11 @@ static void launcher_click(int i) {
         return;
     }
     int pid = spawn(launchers[i].path, "", getpid());
-    if (pid > 0) launchers[i].pid = (unsigned int)pid;
+    if (pid > 0) {
+        launchers[i].pid = (unsigned int)pid;
+    } else {
+        print("wm: dock spawn failed\n");
+    }
 }
 
 static int dock_hit(int mx, int my) {
@@ -506,7 +510,7 @@ static void raise_pid(unsigned int pid) {
     int wi = zorder[at];
     for (int j = at; j < nz - 1; j++) zorder[j] = zorder[j + 1];
     zorder[nz - 1] = wi;
-    if (focus_pid != pid) redraw = 1;
+    if (at != nz - 1 || focus_pid != pid) redraw = 1;
     focus_pid = pid;
 }
 
