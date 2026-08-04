@@ -138,8 +138,8 @@ static const char icon_folder[32][33] = {
     "................................",
     "..XXXXXXXXXXXXXXXXXXXXXXXXXXX...",
     "..XXXXXXXXXXXXXXXXXXXXXXXXXXX...",
-    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
+    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
     "..X..........................X..",
     "..X..........................X..",
     "..X..........................X..",
@@ -271,6 +271,23 @@ static int redraw = 1;
 static int has_cur, cur_x, cur_y;
 static unsigned int snap[2 * CUR_R][2 * CUR_R];
 static int clip_x0, clip_y0, clip_x1, clip_y1;
+
+// ---- desktop context menu + create dialog state (used by composite_rect) ----
+#define MENU_W      176
+#define MENU_ITEM_H 22
+#define MENU_N       2
+#define MENU_BORDER  1
+
+#define COL_MENU_BG     0x20283A
+#define COL_MENU_BORDER 0x4A7AB5
+#define COL_MENU_FG     0xFFFFFF
+
+static int menu_open, menu_x, menu_y;
+static int menu_draw_x, menu_draw_y;
+static int dlg_open, dlg_mode;         // mode 0 = file, 1 = folder
+static char dlg_name[40];
+static int dlg_len;
+static int dlg_draw_x, dlg_draw_y;
 
 // ---- small helpers -------------------------------------------------------
 
@@ -590,6 +607,7 @@ static int ext_match(const char *n, const char *ext) {
 }
 
 static void refresh_files(void) {
+    int old_n = nfiles;
     files_dirty = 0;
     nfiles = 0;
     for (int i = 0; i < 64; i++) {
@@ -614,6 +632,7 @@ static void refresh_files(void) {
         nfiles++;
         if (nfiles >= 64) break;
     }
+    if (nfiles != old_n) redraw = 1;
 }
 
 static void icon_rect(int i, int *x, int *y) {
@@ -676,27 +695,10 @@ static void open_file(int i) {
 
 // ---- desktop context menu + create dialog ---------------------------------
 
-#define MENU_W      176
-#define MENU_ITEM_H 22
-#define MENU_N       2
-#define MENU_BORDER  1
-
-#define COL_MENU_BG     0x20283A
-#define COL_MENU_BORDER 0x4A7AB5
-#define COL_MENU_FG     0xFFFFFF
-
 static const char menu_items[MENU_N][24] = {
     "\xd0\x9d\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb9 \xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb",   // Новый файл
     "\xd0\x9d\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x8f \xd0\xbf\xd0\xb0\xd0\xbf\xd0\xba\xd0\xb0", // Новая папка
 };
-
-static int menu_open, menu_x, menu_y;
-static int menu_draw_x, menu_draw_y;
-
-static int dlg_open, dlg_mode;         // mode 0 = file, 1 = folder
-static char dlg_name[40];
-static int dlg_len;
-static int dlg_draw_x, dlg_draw_y;
 
 static void draw_menu(void) {
     if (!menu_open) return;
