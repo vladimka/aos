@@ -4,6 +4,7 @@
 #include "serial.h"
 #include "pmm.h"
 #include "interrupts.h"
+#include "vrng.h"
 
 static struct virtio_dev *dev_list;
 
@@ -22,22 +23,31 @@ int virtio_dev_init(struct virtio_dev *d, unsigned int supported,
     unsigned int guest = host & supported;
     outl(d->bar + VIRTIO_PCI_GUEST_FEATURES, guest);
     d->features = guest;
-    outb(d->bar + VIRTIO_PCI_STATUS,
-         VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_DRIVER_OK);
     if (features_out) *features_out = guest;
     return 0;
+}
+
+void virtio_ready(struct virtio_dev *d) {
+    outb(d->bar + VIRTIO_PCI_STATUS,
+         VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_DRIVER_OK);
 }
 
 int virtio_setup_queue(struct virtio_dev *d, unsigned int qidx, unsigned int n) {
     outw(d->bar + VIRTIO_PCI_QUEUE_SEL, qidx);
     unsigned short qnum = inw(d->bar + VIRTIO_PCI_QUEUE_NUM);
-    if (qnum < n) return -1;
+    if (qnum < n) n = qnum;                  // device caps the queue; shrink to fit
+    if (n == 0) return -1;
+    // Legacy vring layout QEMU computes from QUEUE_PFN (virtio_queue_update_rings,
+    // align = VIRTIO_PCI_VRING_ALIGN 4096): desc at base, avail right after the
+    // descriptor table, used at the next 4096 boundary.
+    unsigned int avail_off = n * sizeof(struct vring_desc);
+    unsigned int used_off = 4096;
     unsigned int base = (unsigned int)page_alloc_order(2);   // 16 KiB, contiguous
     if (!base) return -2;
     struct virtio_vq *vq = &d->vq[qidx];
     vq->desc = (volatile struct vring_desc *)base;
-    vq->avail = (volatile struct vring_avail *)(base + 4096);
-    vq->used = (volatile struct vring_used *)(base + 8192);
+    vq->avail = (volatile struct vring_avail *)(base + avail_off);
+    vq->used = (volatile struct vring_used *)(base + used_off);
     vq->size = n;
     for (unsigned int i = 0; i < n; i++) {
         vq->desc[i].addr = 0;
@@ -144,10 +154,9 @@ void virtio_init(void) {
         if (list[i].vendor != VIRTIO_PCI_VENDOR) continue;
         serial_print("virtio: dev=");
         serial_print_hex(list[i].device);
-        serial_print(" bar=");
-        serial_print_hex(list[i].bar0 & ~0x3u);
         serial_print(" irq=");
         serial_print_dec(list[i].irq);
         serial_print("\n");
     }
+    vrng_init();
 }
