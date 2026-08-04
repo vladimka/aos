@@ -9,3 +9,8 @@ iso/
 .worktrees/
 .superpowers/
 scripts/__pycache__/
+build/
+tools/musl-i686/
+tools/*.tgz
+
+.cache/
