@@ -2,6 +2,7 @@
 #include "string.h"
 #include "vblk.h"
 #include "serial.h"
+#include "kmm.h"
 
 #define FS_MEM   ((unsigned char *)0x200000)
 #define FS_SIZE  (1024 * 1024)
@@ -28,7 +29,8 @@ static void sfs_touch(unsigned int off, unsigned int len) {
 
 void sfs_flush(void) {
     if (!disk_present) return;
-    static unsigned char sector[512];
+    unsigned char *sector = kmalloc(512);
+    if (!sector) return;                 // OOM: skip the flush, keep RAM copy
     for (unsigned int s = 0; s < FS_SECTORS; s++) {
         if (!(dirty_bits[s / 8] & (1 << (s % 8)))) continue;
         for (unsigned int j = 0; j < 512; j++)
@@ -37,6 +39,7 @@ void sfs_flush(void) {
             serial_print("sfs: flush sector fail\n");
         dirty_bits[s / 8] &= (unsigned char)~(1 << (s % 8));
     }
+    kfree(sector);
 }
 
 static struct sfs_entry *entry_at(unsigned int i) {
@@ -70,17 +73,20 @@ void fs_format(void) {
 
 void fs_init(void) {
     if (disk_present) {
-        static unsigned char sector[512];
+        unsigned char *sector = kmalloc(512);
         unsigned int s;
-        for (s = 0; s < FS_SECTORS; s++) {
-            if (vblk_read(s, sector) != 0) break;
-            for (unsigned int j = 0; j < 512; j++)
-                FS_MEM[s * 512 + j] = sector[j];
-        }
-        if (s == FS_SECTORS && hdr->magic[0] == 'S' && hdr->magic[1] == 'F' &&
-            hdr->magic[2] == 'S' && hdr->magic[3] == '1') {
-            serial_print("SFS mounted from disk.\n");
-            return;
+        if (sector) {
+            for (s = 0; s < FS_SECTORS; s++) {
+                if (vblk_read(s, sector) != 0) break;
+                for (unsigned int j = 0; j < 512; j++)
+                    FS_MEM[s * 512 + j] = sector[j];
+            }
+            kfree(sector);
+            if (s == FS_SECTORS && hdr->magic[0] == 'S' && hdr->magic[1] == 'F' &&
+                hdr->magic[2] == 'S' && hdr->magic[3] == '1') {
+                serial_print("SFS mounted from disk.\n");
+                return;
+            }
         }
         serial_print("SFS formatting new disk.\n");
         fs_format();
