@@ -6,7 +6,8 @@
 #include "string.h"
 #include "serial.h"
 #include "user.h"
-#include "string.h"
+#include "kmm.h"
+#include "pmm.h"
 
 #define PTE_PRESENT  0x1
 #define PTE_WRITABLE 0x2
@@ -18,7 +19,6 @@
 #define TASK_USTACK_TOP  0x01804000
 #define TASK_KSTACK_SIZE 8192
 #define TASK_USER_MB     12u
-#define TASK_FRAME_START 0x04000000
 
 #define FRAME_WORDS 19
 
@@ -27,21 +27,18 @@
 #define MSG_TYPE_EXIT 6
 
 static struct task tasks[MAX_TASKS];
-static unsigned char kstacks[MAX_TASKS][TASK_KSTACK_SIZE] __attribute__((aligned(16)));
-static unsigned int task_pds[MAX_TASKS][1024] __attribute__((aligned(4096)));
-static unsigned int task_pts[MAX_TASKS][3][1024] __attribute__((aligned(4096)));
 
-static unsigned int mbox[MAX_TASKS][MSG_CAP][5];
-static unsigned int mbox_head[MAX_TASKS];
-static unsigned int mbox_tail[MAX_TASKS];
-
-static char task_args[MAX_TASKS][256];
+// Kernel stacks of exited tasks, freed only from a live task's context (the
+// exit path still runs on the dying task's own stack until switch_and_restore
+// does "mov %eax, %esp" after task_switch_kernel returns).
+static struct task *zombies[MAX_TASKS];
+static int nzombies = 0;
 
 static struct task *current_task;
 static int event_pid = 0;
 static int current_exited = 0;
 
-// ---- IF-preserving cli/sti (mailbox ops run both in IRQ and syscall ctx) ----
+// ---- IF-preserving cli/sti (mailbox + kmalloc ops run in IRQ and syscall ctx) ----
 static void irq_save(unsigned int *flags) {
     unsigned int f;
     __asm__ volatile("pushfl; pop %0" : "=r"(f));
@@ -54,31 +51,62 @@ static void irq_restore(unsigned int flags) {
         __asm__ volatile("sti");
 }
 
+static void drain_zombies(void) {
+    while (nzombies > 0) {
+        struct task *z = zombies[--nzombies];
+        if (z->kstack) {
+            kfree(z->kstack);
+            z->kstack = 0;
+            z->kstack_top = 0;
+        }
+    }
+}
+
+// Free a task's user frames, its 3 user PTs, and its PD page.
+static void task_free_addrspace(struct task *t) {
+    for (int pdn = USER_PD_LO; pdn <= USER_PD_HI; pdn++) {
+        unsigned int *pt = t->pts[pdn - USER_PD_LO];
+        for (int p = 0; p < 1024; p++)
+            if (pt[p] & PTE_PRESENT)
+                page_free((void *)(pt[p] & 0xFFFFF000));
+        page_free(pt);
+        t->pts[pdn - USER_PD_LO] = 0;
+    }
+    page_free(t->pd);
+    t->pd = 0;
+    t->cr3 = 0;
+}
+
 void task_init(void) {
     memset(tasks, 0, sizeof(tasks));
     for (int i = 0; i < MAX_TASKS; i++) {
         tasks[i].state = TASK_FREE;
         tasks[i].pid = i;
-        mbox_head[i] = 0;
-        mbox_tail[i] = 0;
     }
     // Task 0 is the kernel idle context (the main shell loop). It also hosts
     // single-user programs (user_program_start): its ring3->ring0 transitions
-    // land on the shared sys_stack, so esp0 must point there.
+    // land on the shared static sys_stack, so esp0 points there and kstack is
+    // not owned/freed by task.c. It needs a mailbox to receive exit notices.
     tasks[0].state = TASK_RUNNING;
     tasks[0].cr3 = (unsigned int)paging_kernel_pd();
     tasks[0].kstack_top = user_kstack_top();
+    tasks[0].mbox = kmalloc(MSG_CAP * 5 * 4);
+    tasks[0].mbox_head = 0;
+    tasks[0].mbox_tail = 0;
     current_task = &tasks[0];
     tss_set_esp0(tasks[0].kstack_top);
 }
 
 unsigned int task_switch_kernel(unsigned int cur_esp) {
+    drain_zombies();
+    int exited = current_exited;
     current_task->kernel_esp = cur_esp;
     current_task->state = TASK_READY;
 
-    if (current_exited) {
+    struct task *dead = 0;
+    if (exited) {
         current_exited = 0;
-        struct task *dead = current_task;
+        dead = current_task;
         unsigned int sink = dead->sink;
         unsigned int ep = (unsigned int)event_pid;
         dead->state = TASK_FREE;
@@ -107,10 +135,26 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
     } else {
         current_task->state = TASK_RUNNING;
     }
+
+    // The dead task can no longer run and its address space is no longer
+    // active (CR3 switched above). Free everything except its kstack, which we
+    // are still executing on: defer it to the zombie list.
+    if (exited) {
+        task_free_addrspace(dead);
+        kfree(dead->mbox);
+        kfree(dead->args);
+        dead->mbox = 0;
+        dead->args = 0;
+        if (nzombies < MAX_TASKS)
+            zombies[nzombies++] = dead;
+    }
+
     return next->kernel_esp;
 }
 
 int task_spawn(const char *path, const char *args, unsigned int sink, unsigned int *out_pid) {
+    drain_zombies();
+
     int pid = -1;
     for (int i = 1; i < MAX_TASKS; i++)
         if (tasks[i].state == TASK_FREE) { pid = i; break; }
@@ -119,25 +163,55 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     struct task *t = &tasks[pid];
     memset(t, 0, sizeof(*t));
     t->pid = pid;
-    t->kstack = kstacks[pid];
-    t->kstack_top = (unsigned int)(t->kstack + TASK_KSTACK_SIZE);
     t->sink = sink;
 
-    // Per-task address space: clone the kernel PD, point PD4..6 at this
-    // task's own physical frames (program at 0x01000000, heap, stack top).
+    unsigned char *ks = kmalloc(TASK_KSTACK_SIZE);
+    unsigned int *pd = page_alloc_zero();
+    unsigned int *pts[3];
+    for (int i = 0; i < 3; i++) pts[i] = page_alloc_zero();
+    unsigned int (*mbox)[5] = (unsigned int (*)[5])kmalloc(MSG_CAP * 5 * 4);
+    char *argsb = kmalloc(256);
+    if (!ks || !pd || !pts[0] || !pts[1] || !pts[2] || !mbox || !argsb) {
+        if (ks) kfree(ks);
+        if (pd) page_free(pd);
+        for (int i = 0; i < 3; i++) if (pts[i]) page_free(pts[i]);
+        if (mbox) kfree(mbox);
+        if (argsb) kfree(argsb);
+        return -1;
+    }
+    t->kstack = ks;
+    t->kstack_top = (unsigned int)(ks + TASK_KSTACK_SIZE);
+    t->pd = pd;
+    t->pts[0] = pts[0];
+    t->pts[1] = pts[1];
+    t->pts[2] = pts[2];
+    t->mbox = mbox;
+    t->mbox_head = 0;
+    t->mbox_tail = 0;
+    t->args = argsb;
+
     unsigned int *kpd = paging_kernel_pd();
     for (int i = 0; i < 1024; i++)
-        task_pds[pid][i] = kpd[i];
+        pd[i] = kpd[i];
 
-    unsigned int fb = TASK_FRAME_START + (pid - 1) * TASK_USER_MB * 1024 * 1024;
-    for (int pd = USER_PD_LO; pd <= USER_PD_HI; pd++) {
-        unsigned int *pt = task_pts[pid][pd - USER_PD_LO];
-        unsigned int base = fb + (pd - USER_PD_LO) * 4 * 1024 * 1024;
-        for (int p = 0; p < 1024; p++)
-            pt[p] = (base + p * 4096) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
-        task_pds[pid][pd] = (unsigned int)pt | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+    for (int pdn = USER_PD_LO; pdn <= USER_PD_HI; pdn++) {
+        unsigned int *pt = pts[pdn - USER_PD_LO];
+        for (int p = 0; p < 1024; p++) {
+            unsigned int frame = (unsigned int)page_alloc_zero();
+            if (!frame) {
+                task_free_addrspace(t);
+                kfree(t->kstack);
+                kfree(t->mbox);
+                kfree(t->args);
+                t->kstack = 0; t->mbox = 0; t->args = 0;
+                t->state = TASK_FREE;
+                return -1;
+            }
+            pt[p] = frame | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+        }
+        pd[pdn] = (unsigned int)pt | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
     }
-    t->cr3 = (unsigned int)task_pds[pid];
+    t->cr3 = (unsigned int)pd;
 
     // Load the ELF into the task's address space. The temporary CR3 switch
     // must not be interrupted: an IRQ mid-switch would leave the interrupted
@@ -150,21 +224,26 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     __asm__ volatile("sti");
 
     if (!entry) {
+        task_free_addrspace(t);
+        kfree(t->kstack);
+        kfree(t->mbox);
+        kfree(t->args);
+        t->kstack = 0; t->mbox = 0; t->args = 0;
         t->state = TASK_FREE;
         return -2;
     }
 
     unsigned int ai = 0;
     if (args)
-        while (args[ai] && ai < 255) { task_args[pid][ai] = args[ai]; ai++; }
-    task_args[pid][ai] = '\0';
+        while (args[ai] && ai < 255) { t->args[ai] = args[ai]; ai++; }
+    t->args[ai] = '\0';
 
     // Synthetic interrupt frame (matches the real CPU+isr_common layout:
     // gs,fs,es,ds,edi..eax,int_no,err_code,eip,cs,eflags,user_esp,ss) so the
     // restore path iret's straight into ring 3.
     unsigned int *w = (unsigned int *)(t->kstack + TASK_KSTACK_SIZE - FRAME_WORDS * 4);
     w[0] = 0x23; w[1] = 0x23; w[2] = 0x23; w[3] = 0x23;   // gs fs es ds
-    for (int i = 4; i < 12; i++) w[i] = 0;                  // edi..eax
+    for (int i = 4; i < 12; i++) w[i] = 0;                // edi..eax
     w[12] = 0;              // int_no
     w[13] = 0;              // err_code
     w[14] = (unsigned int)entry;
@@ -202,8 +281,9 @@ int task_alive(unsigned int pid) {
     return pid < MAX_TASKS && tasks[pid].state != TASK_FREE;
 }
 
+// syscall.c only calls this for pid > 0; task 0 uses its own prog_args buffer.
 const char *task_current_args(void) {
-    return task_args[current_task->pid];
+    return current_task->args;
 }
 
 int task_mailbox_send(unsigned int pid, unsigned int t, unsigned int a,
@@ -214,21 +294,22 @@ int task_mailbox_send(unsigned int pid, unsigned int t, unsigned int a,
         irq_restore(flags);
         return -1;
     }
-    if (tasks[pid].state == TASK_FREE) {
+    struct task *target = &tasks[pid];
+    if (target->state == TASK_FREE) {
         irq_restore(flags);
         return -2;
     }
-    unsigned int next = (mbox_tail[pid] + 1) % MSG_CAP;
-    if (next == mbox_head[pid]) {
+    unsigned int next = (target->mbox_tail + 1) % MSG_CAP;
+    if (next == target->mbox_head) {
         irq_restore(flags);
         return -3;
     }
-    mbox[pid][mbox_tail[pid]][0] = t;
-    mbox[pid][mbox_tail[pid]][1] = a;
-    mbox[pid][mbox_tail[pid]][2] = b;
-    mbox[pid][mbox_tail[pid]][3] = c;
-    mbox[pid][mbox_tail[pid]][4] = d;
-    mbox_tail[pid] = next;
+    target->mbox[target->mbox_tail][0] = t;
+    target->mbox[target->mbox_tail][1] = a;
+    target->mbox[target->mbox_tail][2] = b;
+    target->mbox[target->mbox_tail][3] = c;
+    target->mbox[target->mbox_tail][4] = d;
+    target->mbox_tail = next;
     irq_restore(flags);
     return 0;
 }
@@ -236,16 +317,16 @@ int task_mailbox_send(unsigned int pid, unsigned int t, unsigned int a,
 int task_mailbox_recv(unsigned int *t, unsigned int *a, unsigned int *b, unsigned int *c, unsigned int *d) {
     unsigned int flags;
     irq_save(&flags);
-    unsigned int pid = current_task->pid;
+    struct task *self = current_task;
     int rc = -1;
-    if (mbox_head[pid] != mbox_tail[pid]) {
-        unsigned int i = mbox_head[pid];
-        if (t) *t = mbox[pid][i][0];
-        if (a) *a = mbox[pid][i][1];
-        if (b) *b = mbox[pid][i][2];
-        if (c) *c = mbox[pid][i][3];
-        if (d) *d = mbox[pid][i][4];
-        mbox_head[pid] = (i + 1) % MSG_CAP;
+    if (self->mbox_head != self->mbox_tail) {
+        unsigned int i = self->mbox_head;
+        if (t) *t = self->mbox[i][0];
+        if (a) *a = self->mbox[i][1];
+        if (b) *b = self->mbox[i][2];
+        if (c) *c = self->mbox[i][3];
+        if (d) *d = self->mbox[i][4];
+        self->mbox_head = (i + 1) % MSG_CAP;
         rc = 0;
     }
     irq_restore(flags);

@@ -1,7 +1,7 @@
 #ifndef TASK_H
 #define TASK_H
 
-#define MAX_TASKS 6
+#define MAX_TASKS 24
 
 #define TASK_FREE   0
 #define TASK_READY  1
@@ -15,6 +15,12 @@ struct task {
     unsigned char *kstack;
     unsigned int kstack_top;
     unsigned int sink;
+    unsigned int *pd;           // task's own page directory page
+    unsigned int *pts[3];       // the 3 user-area page table pages
+    unsigned int (*mbox)[5];    // mailbox ring buffer (kmalloc'd): MSG_CAP x 5 words
+    unsigned int mbox_head;
+    unsigned int mbox_tail;
+    char *args;                 // argument buffer (kmalloc'd)
 };
 
 void task_init(void);
