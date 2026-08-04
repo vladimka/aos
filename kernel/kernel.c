@@ -104,6 +104,7 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     printf("Filesystem ready.\n");
 
     load_embedded_programs();
+    load_embedded_data();
 
     terminal_init();
 

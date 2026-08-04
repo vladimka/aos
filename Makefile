@@ -18,9 +18,9 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               kernel/user_tramp.o kernel/printf.o kernel/progs.o \
               kernel/task.o
 
-PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock ipctest
+PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock ipctest notepad
 PROG_ELFS = $(addprefix programs/, $(addsuffix .elf, $(PROGRAMS)))
-PROG_OBJS = $(addprefix programs/, $(addsuffix .o, $(PROGRAMS))) programs/libaos.o
+PROG_OBJS = $(addprefix programs/, $(addsuffix .o, $(PROGRAMS))) programs/libaos.o programs/ico.o
 
 all: aos.iso
 
@@ -48,8 +48,15 @@ programs/libaos.o: programs/libaos.c programs/libaos.h
 programs/%.elf: programs/%.o programs/libaos.o programs/programs.ld
 	$(LD) -T programs/programs.ld -m elf_i386 -static -nostdlib -n --no-warn-rwx-segments -o $@ programs/libaos.o $<
 
-kernel/progs.c: $(PROG_ELFS) scripts/gen_progs.py
-	$(PYTHON) scripts/gen_progs.py $(PROG_ELFS) > $@
+# wm links the pure-C ICO decoder in addition to libaos.
+programs/wm.elf: programs/wm.o programs/ico.o programs/libaos.o programs/programs.ld
+	$(LD) -T programs/programs.ld -m elf_i386 -static -nostdlib -n --no-warn-rwx-segments -o $@ programs/libaos.o programs/wm.o programs/ico.o
+
+scripts/demo.ico: scripts/gen_ico.py
+	$(PYTHON) scripts/gen_ico.py > $@
+
+kernel/progs.c: $(PROG_ELFS) scripts/demo.ico scripts/gen_progs.py
+	$(PYTHON) scripts/gen_progs.py $(PROG_ELFS) --data demo.ico=scripts/demo.ico > $@
 
 compile_commands.json: scripts/gen_compile_commands.py $(wildcard kernel/*.c drivers/*.c arch/i386/*.c boot/*.c programs/*.c)
 	$(PYTHON) scripts/gen_compile_commands.py
