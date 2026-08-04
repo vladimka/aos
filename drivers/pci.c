@@ -33,3 +33,31 @@ int pci_init(unsigned int *io_base, unsigned int *irq) {
     }
     return -1;
 }
+
+void pci_config_write(unsigned char bus, unsigned char dev,
+                      unsigned char func, unsigned char reg, unsigned int value) {
+    outl(PCI_CONFIG_ADDR, config_addr(bus, dev, func, reg));
+    outl(PCI_CONFIG_DATA, value);
+}
+
+int pci_find_all(struct pci_dev *out, int max) {
+    int n = 0;
+    for (unsigned char b = 0; b < 1; b++)
+        for (unsigned char d = 0; d < 32; d++)
+            for (unsigned char f = 0; f < 8; f++) {
+                unsigned int id = pci_config_read(b, d, f, 0x00);
+                if (id == 0xFFFFFFFF || id == 0)
+                    continue;
+                if (n >= max) return n;
+                out[n].bus = b;
+                out[n].dev = d;
+                out[n].func = f;
+                out[n].vendor = id & 0xFFFF;
+                out[n].device = id >> 16;
+                out[n].classcode = pci_config_read(b, d, f, 0x08) >> 8;
+                out[n].bar0 = pci_config_read(b, d, f, 0x10);
+                out[n].irq = pci_config_read(b, d, f, 0x3C) & 0xFF;
+                n++;
+            }
+    return n;
+}
