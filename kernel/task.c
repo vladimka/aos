@@ -21,6 +21,8 @@
 #define TASK_KSTACK_SIZE 8192
 #define TASK_USER_MB     12u
 
+#define STACK_MARGIN 0x10000   // Linux stack/mmap margin (must match loader)
+
 #define FRAME_WORDS 19
 
 #define MSG_CAP 128
@@ -72,6 +74,17 @@ static void task_free_addrspace(struct task *t) {
                 page_free((void *)(pt[p] & 0xFFFFF000));
         page_free(pt);
         t->pts[pdn - USER_PD_LO] = 0;
+    }
+    if (t->abi == ABI_LINUX) {
+        for (int i = 0; i < 32; i++) {
+            unsigned int *pt = t->lpts[i];
+            if (!pt) continue;
+            for (int p = 0; p < 1024; p++)
+                if (pt[p] & PTE_PRESENT)
+                    page_free((void *)(pt[p] & 0xFFFFF000));
+            page_free(pt);
+            t->lpts[i] = 0;
+        }
     }
     page_free(t->pd);
     t->pd = 0;
@@ -136,6 +149,12 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         tss_set_esp0(next->kstack_top);
         if (next->cr3 != paging_get_cr3())
             paging_set_cr3(next->cr3);
+        // A Linux task that installed TLS (tls_seg32 is set) must see the
+        // descriptor again when it resumes: %gs reloads pull from the LDT.
+        if (next->abi == ABI_LINUX && next->lctx && next->lctx->tls_seg32)
+            ldt_set_tls(next->lctx->tls_base, next->lctx->tls_limit,
+                        next->lctx->tls_seg32, next->lctx->tls_ro,
+                        next->lctx->tls_gran_pages);
     } else {
         current_task->state = TASK_RUNNING;
     }
@@ -234,9 +253,36 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     // must not be interrupted: an IRQ mid-switch would leave the interrupted
     // kernel code with the wrong page tables after rescheduling.
     void *entry;
+    int abi;
+    int probed = elf_probe(path, &abi);
+    t->abi = (probed == 0 && abi == ABI_LINUX) ? ABI_LINUX : ABI_AOS;
+
+    if (t->abi == ABI_LINUX) {
+        struct linux_ctx *lc = t->lctx;
+        linux_ctx_init(lc);
+        lc->win_lo = 0x08000000;
+        lc->win_hi = 0x10000000;
+        lc->stack_top = 0x10000000;
+        lc->mmap_cur = 0x10000000 - STACK_MARGIN;
+        for (int pdn = 32; pdn <= 63; pdn++) {
+            unsigned int *pt = page_alloc_zero();
+            if (!pt) {
+                task_free_addrspace(t);
+                kfree(t->kstack); kfree(t->mbox); kfree(t->args); kfree(t->lctx);
+                t->kstack = 0; t->mbox = 0; t->args = 0; t->lctx = 0;
+                t->state = TASK_FREE;
+                return -1;
+            }
+            t->lpts[pdn - 32] = pt;
+            pd[pdn] = (unsigned int)pt | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+        }
+    }
+
     __asm__ volatile("cli");
     paging_set_cr3(t->cr3);
-    entry = elf_load(path);
+    entry = (t->abi == ABI_LINUX)
+                ? elf_load_linux(path, args, t->lctx)
+                : elf_load(path);
     paging_set_cr3((unsigned int)kpd);
     __asm__ volatile("sti");
 
@@ -267,7 +313,7 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     w[14] = (unsigned int)entry;
     w[15] = 0x1B;           // user cs
     w[16] = 0x202;          // eflags (IF set)
-    w[17] = TASK_USTACK_TOP;
+    w[17] = (t->abi == ABI_LINUX) ? t->lctx->stack_sp : TASK_USTACK_TOP;
     w[18] = 0x23;           // user ss
     t->kernel_esp = (unsigned int)w;
 

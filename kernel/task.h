@@ -19,6 +19,7 @@ struct task {
     unsigned int sink;
     unsigned int *pd;           // task's own page directory page
     unsigned int *pts[3];       // the 3 user-area page table pages
+    unsigned int *lpts[32];     // Linux window (PD 32..63) page-table pages
     unsigned int (*mbox)[5];    // mailbox ring buffer (kmalloc'd): MSG_CAP x 5 words
     unsigned int mbox_head;
     unsigned int mbox_tail;
