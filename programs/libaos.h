@@ -23,6 +23,10 @@ void panic(void);
 void get_args(char *buf, unsigned int maxlen);
 
 void exit(void);
+void sleep_ms(unsigned int ms);                    // SYS_SLEEP (block ~ms)
+int  waitpid(unsigned int pid);                    // SYS_WAITPID (exit code or <0)
+int  get_children(unsigned int *pids, unsigned int max); // SYS_GET_CHILDREN
+void exit_with_code(int code);                     // SYS_EXIT with ebx=code
 int  read_key(void);
 void *malloc(unsigned int size);
 void free(void *p);

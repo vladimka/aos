@@ -15,6 +15,9 @@
 #define SYS_SETOUT   27
 #define SYS_SPAWN    28
 #define SYS_GETEVENT 29
+#define SYS_SLEEP     30
+#define SYS_WAITPID   31
+#define SYS_GET_CHILDREN 32
 
 static int syscall(int num, int a, int b, int c, int d, int e) {
     int ret;
@@ -53,6 +56,12 @@ void panic(void)                         { syscall(13, 0, 0, 0, 0, 0); }
 void shutdown(void)                      { syscall(14, 0, 0, 0, 0, 0); }
 void get_args(char *buf, unsigned int maxlen) { syscall(15, (int)buf, maxlen, 0, 0, 0); }
 void exit(void)                          { syscall(SYS_EXIT, 0, 0, 0, 0, 0); for (;;); }
+void exit_with_code(int code)         { syscall(SYS_EXIT, code, 0, 0, 0, 0); for (;;); }
+void sleep_ms(unsigned int ms)        { syscall(SYS_SLEEP, (int)ms, 0, 0, 0, 0); }
+int  waitpid(unsigned int pid)        { return syscall(SYS_WAITPID, (int)pid, 0, 0, 0, 0); }
+int  get_children(unsigned int *pids, unsigned int max) {
+    return syscall(SYS_GET_CHILDREN, (int)pids, (int)max, 0, 0, 0);
+}
 
 // Blocking key read: the syscall is non-blocking; spin + yield so the
 // scheduler can run other tasks while we wait.

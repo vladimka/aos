@@ -10,7 +10,7 @@ ASFLAGS = -m32 -c -x assembler-with-cpp
 LDFLAGS = -T linker.ld -m elf_i386 -nostdlib --no-warn-rwx-segments
 
 KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
-              drivers/serial.o drivers/mouse.o drivers/pci.o drivers/uhci.o \
+              drivers/serial.o drivers/mouse.o drivers/pci.o drivers/uhci.o drivers/virtio.o \
               kernel/terminal.o kernel/commands.o \
               kernel/sfs.o kernel/string.o arch/i386/gdt.o arch/i386/idt.o \
               kernel/interrupts.o kernel/elf.o kernel/syscall.o \
@@ -19,7 +19,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               kernel/user_tramp.o kernel/printf.o kernel/progs.o \
               kernel/task.o kernel/linux_syscall.o
 
-PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock ipctest notepad many linrun
+PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock ipctest notepad many linrun sleeptest exitto
 PROG_ELFS = $(addprefix programs/, $(addsuffix .elf, $(PROGRAMS)))
 PROG_OBJS = $(addprefix programs/, $(addsuffix .o, $(PROGRAMS))) programs/libaos.o programs/ico.o
 
