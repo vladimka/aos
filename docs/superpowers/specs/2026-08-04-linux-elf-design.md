@@ -229,3 +229,29 @@ is the one musl actually issues.
 4. No `KERNEL PANIC` during any run; buddy never hands out the task-0 Linux
    window or the grown ramdisk.
 5. `manytest.py`, `ipctest.py`, `notepadtest.py` all pass unmodified.
+
+## Implemented (2026-08-04)
+
+Status: **complete** — step 1 landed (commits `3e4f7d6`..`1e7201e`).
+
+- ABI probe (`elf_probe`), loader (`elf_load_linux`), musl stack/auxv
+  builder (`stack_build`), `elf_load_linux` with PT_LOAD mapping via
+  `paging_map_user_page`.
+- Task-0 8 MB window `0x08000000..0x08800000` identity-mapped (PDE 32–33),
+  reserved in the buddy; spawned Linux tasks get a private
+  `0x08000000..0x10000000` (32 MB) via `lpts[32]` page tables.
+- `linux_ctx` fd/brk/mmap/stack/TLS runtime context; `linux_ctx_init` at
+  spawn; `int 0x80` routed by task ABI to `linux_syscall_handler`.
+- Full syscall table from the design (exit/exit_group, write, read,
+  open/openat, close, unlink, lseek/_llseek, access, time, getpid,
+  getuid/gid/euid/egid, ioctl(-ENOTTY), gettimeofday, uname, brk,
+  mmap2 top-down, munmap/mprotect no-op, nanosleep (PIT-tick spin),
+  clock_gettime, set_thread_area/modify_ldt via a real LDT
+  (`ldt_set_tls`, GDT index 6), set_tid_address, stat64/fstatat64/fstat64,
+  getdents64).
+- Embedded `lin/hello`, `lin/ls`, `lin/cat`, `lin/test.txt`; `bin/linrun`
+  spawns `lin/hello` as a real pid>0 task. `lin/*` hidden from the desktop
+  icon grid (`wm.c refresh_files`, alongside `bin/`) to keep
+  `notepadtest.py` icon positions stable.
+- Regression: `linhello.py` PASS, `lincat.py` PASS, `manytest.py` PASS,
+  `ipctest.py` PASS, `notepadtest.py` PASS.
