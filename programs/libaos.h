@@ -28,6 +28,7 @@ int  waitpid(unsigned int pid);                    // SYS_WAITPID (exit code or 
 int  get_children(unsigned int *pids, unsigned int max); // SYS_GET_CHILDREN
 void exit_with_code(int code);                     // SYS_EXIT with ebx=code
 int  read_key(void);
+int  get_random(unsigned char *buf, unsigned int maxlen);  // SYS_RANDOM (virtio-rng)
 void *malloc(unsigned int size);
 void free(void *p);
 

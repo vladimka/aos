@@ -18,6 +18,7 @@
 #define SYS_SLEEP     30
 #define SYS_WAITPID   31
 #define SYS_GET_CHILDREN 32
+#define SYS_RANDOM    33
 
 static int syscall(int num, int a, int b, int c, int d, int e) {
     int ret;
@@ -61,6 +62,9 @@ void sleep_ms(unsigned int ms)        { syscall(SYS_SLEEP, (int)ms, 0, 0, 0, 0);
 int  waitpid(unsigned int pid)        { return syscall(SYS_WAITPID, (int)pid, 0, 0, 0, 0); }
 int  get_children(unsigned int *pids, unsigned int max) {
     return syscall(SYS_GET_CHILDREN, (int)pids, (int)max, 0, 0, 0);
+}
+int get_random(unsigned char *buf, unsigned int maxlen) {
+    return syscall(SYS_RANDOM, (int)buf, (int)maxlen, 0, 0, 0);
 }
 
 // Blocking key read: the syscall is non-blocking; spin + yield so the

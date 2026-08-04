@@ -11,6 +11,7 @@
 #include "mouse.h"
 #include "aosipc.h"
 #include "linux_syscall.h"
+#include "vrng.h"
 
 extern volatile unsigned int tick;
 
@@ -379,6 +380,16 @@ void syscall_handler(struct registers *r) {
         } else {
             r->eax = -5;
         }
+        break;
+    }
+    case SYS_RANDOM: {
+        unsigned char *buf = (unsigned char *)r->ebx;
+        unsigned int maxlen = r->ecx;
+        if (maxlen > 512) maxlen = 512;
+        if (maxlen > 0 && in_user(buf, maxlen))
+            r->eax = vrng_bytes(buf, maxlen);
+        else
+            r->eax = -5;
         break;
     }
     default:

@@ -36,6 +36,7 @@
 #define SYS_SLEEP        30
 #define SYS_WAITPID      31
 #define SYS_GET_CHILDREN 32
+#define SYS_RANDOM       33
 
 void syscall_set_args(const char *args);
 void route_text(const char *s, unsigned int len);
