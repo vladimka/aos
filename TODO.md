@@ -8,6 +8,8 @@
 Справочные факты о текущем состоянии (чтобы не предлагать уже сделанное):
 30 syscalls (`int $0x80`, `kernel/syscall.c`), планировщик round-robin на `MAX_TASKS=24`; buddy-аллокатор страниц (`kernel/pmm.c`) и kmalloc (`kernel/kmm.c`), ресурсы задач выделяются динамически (`kernel/task.c`), SFS-ramdisk 160 КБ / 64 файла (`kernel/sfs.c`), PIT 1000 Гц, PS/2 клавиатура+мышь, framebuffer 1024×768×32, UHCI-энумерация USB-планшета QEMU (`drivers/uhci.c`), пользовательский heap — bump-аллокатор, программы грузятся из `bin/` в ramdisk.
 
+**Linux ELF (step 1, готово)**: статические musl i386-бинарники (ET_EXEC, no INTERP) исполняются как user-программы — `lin/hello`, `lin/ls`, `lin/cat` (из `tools/linux/*.c`, musl-toolchain). Адресное пространство `0x08000000..0x10000000` (окно Linux), TLS через GDT-слот 6 (musl-селектор `0x33`), syscalls `int 0x80` в `kernel/linux_syscall.c` (write/writev, open/read/close, brk, mmap2, stat64/getdents64, TLS и др.). См. AGENTS.md → «Linux ELF execution (step 1)». Возможные следующие шаги — шаги 2+: stdin из терминала, больше syscalls (dup/exec/fork), сигналы, пайпы между AOS/Linux.
+
 ---
 
 ## 1. Ядро
@@ -171,7 +173,7 @@
 
 ## 4. Инфраструктура, сборка, тесты
 
-- [ ] **P0 — `make test`.** Единая цель: собрать, прогнать `notepadtest.py`, `ipctest.py`, `guitester`-сценарии; fail-fast вывод.
+- [x] **P0 — `make test`.** Единая цель: собрать, прогнать `linhello`/`lincat`/`ipctest`/`manytest`/`notepadtest`; fail-fast вывод (`make test` в Makefile).
 - [ ] **P0 — CI (`.github/workflows/build.yml`): запускать тесты, а не только сборку.** Сейчас workflow собирает ISO; добавить headless QEMU-шаги с pixel-ассертами (в CI доступен QEMU).
 - [ ] **P0 — Вынести `scripts/notepadtest.py`/`guitester.py` на общий каркас** (класс QEMU-окружения), чтобы новые тесты не копировали код запуска/мыши/снимпшотов.
 - [ ] **P1 — `scripts/` документация по каждому тесту** (что проверяет, какие координаты, как обновлять при изменении лейаута WM).
