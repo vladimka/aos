@@ -89,7 +89,12 @@ static void buddy_free_range(unsigned int base, unsigned int end) {
 }
 
 // Add an available physical range, cutting out any reserved regions.
+// Round to whole pages so no free block is ever inserted at an unaligned
+// address (an unaligned base would mis-index pmm_frames[] when returned).
 static void add_available(unsigned int base, unsigned int end) {
+    base = (base + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    end = end & ~(PAGE_SIZE - 1);
+    if (base >= end) return;
     for (unsigned int i = 0; i < nreserved; i++) {
         if (reserved[i].start >= end || reserved[i].end <= base) continue;
         if (reserved[i].start > base)
@@ -215,7 +220,9 @@ void pmm_init(unsigned int mb_info_addr) {
     if (fb_size && fb_addr < 256u * 1024 * 1024) {
         unsigned int fbe = fb_addr + fb_size;
         if (fbe > 256u * 1024 * 1024) fbe = 256u * 1024 * 1024;
-        reserve(fb_addr, fbe);
+        fb_addr = (fb_addr + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        fbe = fbe & ~(PAGE_SIZE - 1);
+        if (fbe > fb_addr) reserve(fb_addr, fbe);
     }
 
     unsigned char *mbi = (unsigned char *)mb_info_addr;
