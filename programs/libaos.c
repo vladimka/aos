@@ -19,6 +19,8 @@
 #define SYS_WAITPID   31
 #define SYS_GET_CHILDREN 32
 #define SYS_RANDOM    33
+#define SYS_RTC       34
+#define SYS_UPTIME    35
 
 static int syscall(int num, int a, int b, int c, int d, int e) {
     int ret;
@@ -65,6 +67,13 @@ int  get_children(unsigned int *pids, unsigned int max) {
 }
 int get_random(unsigned char *buf, unsigned int maxlen) {
     return syscall(SYS_RANDOM, (int)buf, (int)maxlen, 0, 0, 0);
+}
+
+int get_rtc(struct aos_time *t) {
+    return syscall(SYS_RTC, (int)t, 0, 0, 0, 0);
+}
+unsigned int get_uptime(void) {
+    return (unsigned int)syscall(SYS_UPTIME, 0, 0, 0, 0, 0);
 }
 
 // Blocking key read: the syscall is non-blocking; spin + yield so the

@@ -11,7 +11,7 @@ LDFLAGS = -T linker.ld -m elf_i386 -nostdlib --no-warn-rwx-segments
 
 KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               drivers/serial.o drivers/mouse.o drivers/pci.o drivers/uhci.o drivers/virtio.o \
-              drivers/vrng.o drivers/vblk.o drivers/vnet.o \
+              drivers/vrng.o drivers/vblk.o drivers/vnet.o drivers/rtc.o \
               kernel/terminal.o kernel/commands.o \
               kernel/sfs.o kernel/string.o arch/i386/gdt.o arch/i386/idt.o \
               kernel/interrupts.o kernel/elf.o kernel/syscall.o \
@@ -20,7 +20,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               kernel/user_tramp.o kernel/printf.o kernel/progs.o \
               kernel/task.o kernel/linux_syscall.o
 
-PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock ipctest notepad many linrun sleeptest exitto random
+PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest exitto random
 PROG_ELFS = $(addprefix programs/, $(addsuffix .elf, $(PROGRAMS)))
 PROG_OBJS = $(addprefix programs/, $(addsuffix .o, $(PROGRAMS))) programs/libaos.o programs/ico.o
 
@@ -89,7 +89,7 @@ disk.img:
 	truncate -s 4M $@
 
 run: aos.iso disk.img
-	qemu-system-i386 -m 256 -display gtk,grab-on-hover=on -cdrom $< \
+	qemu-system-i386 -m 256 -rtc base=localtime -display gtk,grab-on-hover=on -cdrom $< \
 	  -drive file=disk.img,format=raw,if=none,id=d0 \
 	  -device virtio-blk-pci,disable-modern=on,drive=d0 \
 	  -device virtio-rng-pci,disable-modern=on \
@@ -101,7 +101,7 @@ run: aos.iso disk.img
 # linhello/lincat need the musl Linux payload, so they are included only when
 # the musl toolchain is installed.
 LINUX_TESTS = $(if $(LINUX_BINS),linhello lincat)
-TESTS = ipctest manytest notepadtest sleeptest rngtest blktest virtiotest netlooptest $(LINUX_TESTS)
+TESTS = ipctest manytest notepadtest sleeptest rngtest blktest virtiotest netlooptest rtctest $(LINUX_TESTS)
 
 test: aos.iso
 	@set -e; for t in $(TESTS); do \

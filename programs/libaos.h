@@ -3,6 +3,10 @@
 
 #include "aosipc.h"
 
+struct aos_time {
+    int year, month, day, hour, minute, second;
+};
+
 void print(const char *s);
 void print_hex(unsigned int n);
 void print_dec(unsigned int n);
@@ -27,8 +31,10 @@ void sleep_ms(unsigned int ms);                    // SYS_SLEEP (block ~ms)
 int  waitpid(unsigned int pid);                    // SYS_WAITPID (exit code or <0)
 int  get_children(unsigned int *pids, unsigned int max); // SYS_GET_CHILDREN
 void exit_with_code(int code);                     // SYS_EXIT with ebx=code
-int  read_key(void);
-int  get_random(unsigned char *buf, unsigned int maxlen);  // SYS_RANDOM (virtio-rng)
+int read_key(void);
+int get_random(unsigned char *buf, unsigned int maxlen);  // SYS_RANDOM (virtio-rng)
+int get_rtc(struct aos_time *t);                          // SYS_RTC (CMOS wall clock)
+unsigned int get_uptime(void);                            // SYS_UPTIME (seconds since boot)
 void *malloc(unsigned int size);
 void free(void *p);
 

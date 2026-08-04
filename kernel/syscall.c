@@ -13,6 +13,7 @@
 #include "linux_syscall.h"
 #include "vrng.h"
 #include "kmm.h"
+#include "rtc.h"
 
 extern volatile unsigned int tick;
 
@@ -419,6 +420,19 @@ void syscall_handler(struct registers *r) {
             r->eax = -5;
         break;
     }
+    case SYS_RTC: {
+        struct aos_time *t = (struct aos_time *)r->ebx;
+        if (in_user(t, sizeof(struct aos_time))) {
+            if (rtc_get(t) == 0) r->eax = 0;
+            else r->eax = -1;
+        } else {
+            r->eax = -5;
+        }
+        break;
+    }
+    case SYS_UPTIME:
+        r->eax = tick / 1000;             // seconds since boot
+        break;
     default:
         r->eax = -1;
         break;
