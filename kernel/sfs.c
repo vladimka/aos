@@ -2,7 +2,7 @@
 #include "string.h"
 
 #define FS_MEM   ((unsigned char *)0x200000)
-#define FS_SIZE  (160 * 1024)
+#define FS_SIZE  (1024 * 1024)
 
 static struct sfs_header *hdr = (struct sfs_header *)FS_MEM;
 

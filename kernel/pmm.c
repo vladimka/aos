@@ -212,7 +212,7 @@ void pmm_init(unsigned int mb_info_addr) {
 
     reserve(0x00000000, 0x00100000);                     // low MB (BIOS/multiboot)
     reserve(0x00100000, (unsigned int)&_end);            // kernel image
-    reserve(0x00200000, 0x00200000 + 160 * 1024);        // ramdisk (kernel/sfs.c)
+    reserve(0x00200000, 0x00200000 + 1024 * 1024);        // ramdisk (kernel/sfs.c)
     reserve(0x01000000, 0x01C00000);                     // task-0 user area
     reserve(0x03000000, 0x04000000);                     // shared slab window
     unsigned int fb_addr = 0, fb_size = 0;

@@ -16,6 +16,8 @@ static void cmd_format(void) {
 
     extern void load_embedded_programs(void);
     load_embedded_programs();
+    extern void load_embedded_data(void);
+    load_embedded_data();
 
     terminal_print(" done");
 }
