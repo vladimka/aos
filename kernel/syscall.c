@@ -232,7 +232,7 @@ void syscall_handler(struct registers *r) {
         if (task_current_pid() == 0)
             user_program_exit();
         else
-            task_exit_current();
+            task_exit_current(r->ebx);
         break;
     case SYS_YIELD:
         r->eax = 0;
@@ -363,6 +363,24 @@ void syscall_handler(struct registers *r) {
     case SYS_GETEVENT:
         r->eax = task_event_pid();
         break;
+    case SYS_SLEEP:
+        task_sleep(r->ebx);
+        r->eax = 0;
+        break;
+    case SYS_WAITPID:
+        r->eax = task_waitpid(r->ebx);
+        break;
+    case SYS_GET_CHILDREN: {
+        unsigned int max = r->ecx;
+        if (max > MAX_TASKS) max = MAX_TASKS;
+        if (in_user((void *)r->ebx, max * 4)) {
+            int n = task_get_children((unsigned int *)r->ebx, max);
+            r->eax = n;
+        } else {
+            r->eax = -5;
+        }
+        break;
+    }
     default:
         r->eax = -1;
         break;

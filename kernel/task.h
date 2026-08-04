@@ -3,9 +3,12 @@
 
 #define MAX_TASKS 24
 
-#define TASK_FREE   0
-#define TASK_READY  1
+#define TASK_FREE    0
+#define TASK_READY   1
 #define TASK_RUNNING 2
+#define TASK_SLEEPING 3   // blocked until tick >= wake_tick
+#define TASK_WAITING  4   // blocked until child (wait_pid) exits
+#define TASK_ZOMBIE   5   // exited, exit_code retained, awaiting waitpid
 
 enum task_abi { ABI_AOS = 0, ABI_LINUX = 1 };
 
@@ -17,6 +20,10 @@ struct task {
     unsigned char *kstack;
     unsigned int kstack_top;
     unsigned int sink;
+    unsigned int parent;      // pid that spawned this task (0 = kernel)
+    unsigned int wake_tick;   // TASK_SLEEPING: wake when tick >= wake_tick
+    unsigned int wait_pid;    // TASK_WAITING: child pid being waited on
+    unsigned int exit_code;   // TASK_ZOMBIE: exit code to hand to waitpid
     unsigned int *pd;           // task's own page directory page
     unsigned int *pts[3];       // the 3 user-area page table pages
     unsigned int *lpts[32];     // Linux window (PD 32..63) page-table pages
@@ -31,7 +38,10 @@ struct task {
 void task_init(void);
 unsigned int task_switch_kernel(unsigned int cur_esp);
 int task_spawn(const char *path, const char *args, unsigned int sink, unsigned int *out_pid);
-void task_exit_current(void);
+void task_exit_current(unsigned int code);
+void task_sleep(unsigned int ms);
+int  task_waitpid(unsigned int pid);
+int  task_get_children(unsigned int *buf, unsigned int max);
 
 unsigned int task_current_pid(void);
 unsigned int task_current_sink(void);

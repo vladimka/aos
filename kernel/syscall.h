@@ -33,6 +33,9 @@
 #define SYS_SETOUT       27
 #define SYS_SPAWN        28
 #define SYS_GETEVENT     29
+#define SYS_SLEEP        30
+#define SYS_WAITPID      31
+#define SYS_GET_CHILDREN 32
 
 void syscall_set_args(const char *args);
 void route_text(const char *s, unsigned int len);

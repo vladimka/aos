@@ -56,7 +56,7 @@ static void linux_exit(void) {
         linux_ctx_init(task_current_lctx());
         user_program_exit();
     }
-    task_exit_current();
+    task_exit_current(0);   // Linux exit codes are ignored for now
 }
 
 void linux_ctx_init(struct linux_ctx *lc) {
