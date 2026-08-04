@@ -23,6 +23,10 @@ PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdo
 PROG_ELFS = $(addprefix programs/, $(addsuffix .elf, $(PROGRAMS)))
 PROG_OBJS = $(addprefix programs/, $(addsuffix .o, $(PROGRAMS))) programs/libaos.o programs/ico.o
 
+LINUX_CC  = tools/musl-i686/bin/i686-linux-musl-gcc
+LINUX_SRCS = $(wildcard tools/linux/*.c)
+LINUX_BINS = $(patsubst tools/linux/%.c,build/linux/%,$(LINUX_SRCS))
+
 all: aos.iso
 
 boot/%.o: boot/%.S
@@ -56,8 +60,14 @@ programs/wm.elf: programs/wm.o programs/ico.o programs/libaos.o programs/program
 scripts/demo.ico: scripts/gen_ico.py
 	$(PYTHON) scripts/gen_ico.py > $@
 
-kernel/progs.c: $(PROG_ELFS) scripts/demo.ico scripts/gen_progs.py
-	$(PYTHON) scripts/gen_progs.py $(PROG_ELFS) --data demo.ico=scripts/demo.ico > $@
+build/linux/%: tools/linux/%.c
+	@mkdir -p build/linux
+	$(LINUX_CC) -static -no-pie -Os -o $@ $<
+
+kernel/progs.c: $(PROG_ELFS) scripts/demo.ico scripts/gen_progs.py $(LINUX_BINS)
+	$(PYTHON) scripts/gen_progs.py $(PROG_ELFS) --data demo.ico=scripts/demo.ico \
+		--data lin/hello=build/linux/hello --data lin/ls=build/linux/ls \
+		--data lin/cat=build/linux/cat --data lin/test.txt=tools/linux/test.txt > $@
 
 compile_commands.json: scripts/gen_compile_commands.py $(wildcard kernel/*.c drivers/*.c arch/i386/*.c boot/*.c programs/*.c)
 	$(PYTHON) scripts/gen_compile_commands.py
@@ -78,6 +88,7 @@ clean:
 	rm -f $(KERNEL_OBJS) $(PROG_ELFS) $(PROG_OBJS) *.elf *.bin *.iso kernel/progs.c
 	rm -f $(KERNEL_OBJS:.o=.d) $(PROG_OBJS:.o=.d)
 	rm -rf iso
+	rm -rf build
 
 -include $(KERNEL_OBJS:.o=.d) $(PROG_OBJS:.o=.d)
 
