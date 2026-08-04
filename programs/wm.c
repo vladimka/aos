@@ -618,6 +618,8 @@ static void refresh_files(void) {
         // Programs live in the dock; keep the desktop for data files.
         if (nm[0] == 'b' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == '/')
             continue;
+        if (nm[0] == 'l' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == '/')
+            continue;
         int len = 0;
         while (nm[len]) len++;
         int kind;
