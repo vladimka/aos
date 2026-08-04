@@ -2,6 +2,7 @@ ENTRY(start)
 
 SECTIONS {
     . = 1M;
+    _start = .;
 
     .text : {
         *(.text)
@@ -19,4 +20,7 @@ SECTIONS {
         *(COMMON)
         *(.bss)
     }
+
+    . = ALIGN(4096);
+    _end = .;
 }
