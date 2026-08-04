@@ -32,10 +32,10 @@ Classic binary buddy over 4 KB frames:
 - **Buddy state**: one free-list per order 0..16 (256 MB = 2^16 pages). A free
   block stores its next free-list link in its own first 4 bytes; buddy index is
   `page_index ^ (1 << order)`.
-- **Per-frame metadata**: `struct pframe { u8 order; u8 flags; }` indexed by
-  physical page number (`PM_NR_MAX = 65536`, ~128 KB BSS). Needed so `kfree` can
-  recover the order of a large buddy block and to enable later sub-projects
-  (demand paging, mmap).
+- **Per-frame metadata**: `struct pframe { u8 order; u8 flags; u8 slab_class; }`
+  indexed by physical page number (`PM_NR_MAX = 65536`, ~192 KB BSS). Needed so
+  `kfree` can recover the size class or buddy order of an allocated block and to
+  enable later sub-projects (demand paging, mmap).
 - **Reserved regions** are subtracted from available ranges before buddy
   insertion:
   1. `[0x00000000, 0x00100000)` — first MB (BIOS, multiboot structures)
@@ -66,12 +66,16 @@ Slab-lite size-class allocator backed by buddy pages:
 
 - **Size classes**: 16, 32, 64, 128, 256, 512, 1024, 2048, 4096. Each class has
   its own free-list. A miss allocates one buddy page, carves it into objects of
-  the class size, and links them into the class free-list.
-- **Header**: a `u32` class stored at `ptr - 4` so `kfree` knows which list.
+  the class size, and links them into the class free-list. Objects are carved
+  directly at offsets `0, class, 2*class, ...` so data is naturally aligned to
+  the class size (>= 16 bytes) and no per-object header is needed.
+- **Class recovery for `kfree`**: the slab page's frame keeps its size class in
+  `pframe.slab_class` and a `PF_SLAB` flag bit; the free-list link of an object
+  is stored in the object's own first word.
 - **Large allocations** (> 4096): one contiguous buddy block of
-  `order = ceil(log2(size / 4096))`; the order is recorded in `pframe` of the
-  block's first frame; `kfree` recovers it via the frame index. No header inside
-  the block, so no adjacent-free-page clobbering.
+  `order = ceil(log2(size / 4096))`; the order is recorded in `pframe.order` of
+  the block's first frame; `kfree` recovers it via the frame index. No header
+  inside the block, so no adjacent-free-page clobbering.
 - All operations under an IF-preserving critical section.
 
 API:
