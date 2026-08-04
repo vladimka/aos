@@ -6,6 +6,7 @@
 #include "interrupts.h"
 #include "paging.h"
 #include "pmm.h"
+#include "kmm.h"
 #include "user.h"
 #include "task.h"
 #include "printf.h"
@@ -86,7 +87,9 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     printf("IDT initialized.\n");
 
     pmm_init(__saved_mb_info);
+    kmm_init();
     pmm_selftest();
+    kmm_selftest();
 
     paging_init();
     user_init();
