@@ -3,6 +3,7 @@
 
 Usage:
   guitester.py click <x> <y>          move cursor to (x,y) and left-click
+  guitester.py rclick <x> <y>         move cursor to (x,y) and right-click
   guitester.py snap <file.ppm>        screendump to file
   guitester.py pixel <x> <y>          print "r g b" of the pixel
   guitester.py check <x> <y> <r> <g> <b>   assert pixel color, exit 1 on mismatch
@@ -110,6 +111,13 @@ def main():
         cmd("mouse_button 1")
         time.sleep(0.4)
         cmd("mouse_button 0")
+    elif a[0] == "rclick":
+        x, y = int(a[1]), int(a[2])
+        move_abs(x, y)
+        time.sleep(0.3)
+        cmd("mouse_button 2")
+        time.sleep(0.4)
+        cmd("mouse_button 0")
     elif a[0] == "resetmouse":
         write_state(int(a[1]), int(a[2]))
     elif a[0] == "snap":
@@ -126,7 +134,7 @@ def main():
             sys.exit(1)
         print("OK pixel(%d,%d)=%s" % (x, y, got))
     else:
-        sys.exit("usage: guitester click|snap|pixel|check|resetmouse ...")
+        sys.exit("usage: guitester click|rclick|snap|pixel|check|resetmouse ...")
 
 
 if __name__ == "__main__":

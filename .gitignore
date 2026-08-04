@@ -8,3 +8,4 @@ kernel/progs.c
 iso/
 .worktrees/
 .superpowers/
+scripts/__pycache__/
