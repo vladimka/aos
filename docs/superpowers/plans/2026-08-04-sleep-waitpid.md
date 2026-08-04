@@ -197,8 +197,9 @@ def hmp(command):
         return data.decode(errors="replace")
 
 def send_text(text):
+    keys = {"\n": "ret", " ": "spc"}
     for ch in text:
-        hmp("sendkey " + ch)
+        hmp("sendkey " + keys.get(ch, ch))
         time.sleep(0.04)
 
 def ppm_data(path):
@@ -385,6 +386,11 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         if (ep > 0 && ep < MAX_TASKS && ep != dead->pid && ep != sink &&
             task_alive(ep))
             task_mailbox_send(ep, MSG_TYPE_EXIT, dead->pid, 0, 0, 0);
+        // Reap this task's own zombie children: nobody can waitpid them now
+        // (only a parent may wait on its children, and we are exiting).
+        for (int i = 1; i < MAX_TASKS; i++)
+            if (tasks[i].parent == dead->pid && tasks[i].state == TASK_ZOMBIE)
+                tasks[i].state = TASK_FREE;
     }
 
     struct task *next = 0;
@@ -682,7 +688,7 @@ git commit -m "test: add sleeptest to make test; docs: 33 syscalls, process bloc
 - waitpid/exit status retention via zombies → Task 2 Steps 3, 6 (`TASK_ZOMBIE`, `exit_code`, `task_waitpid`), Step 7 (Linux exit calls with 0), Step 8 (`SYS_EXIT` reads `%ebx`).
 - get_children → Task 2 Steps 5 (`parent`) and 6 (`task_get_children`), Step 8 (`SYS_GET_CHILDREN`).
 - Blocking wait lives in handler, never scheduler → save-rule/promote code comments + `task_sleep`/`task_waitpid` `sti;hlt;cli` loops; scheduler keeps the `next = current_task` fallback.
-- Zombie awareness: `task_alive` (Step 6), `task_mailbox_send` zombie reject (Step 6), `task_set_sink` (Step 6), exit-path recipient checks via `task_alive` (Step 3), spawn free-slot reaping with wait guard (Step 5).
+- Zombie awareness: `task_alive` (Step 6), `task_mailbox_send` zombie reject (Step 6), `task_set_sink` (Step 6), exit-path recipient checks via `task_alive` (Step 3), spawn free-slot reaping with wait guard (Step 5), parent-exit reaping of zombie children (Step 3).
 - libaos wrappers + `sleeptest`/`exitto` + `sleeptest.py` → Task 1.
 - `make test` regression incl. `sleeptest` → Task 3 Steps 1–2.
 - AGENTS.md updates → Task 3 Step 3.
