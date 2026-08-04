@@ -9,7 +9,7 @@
 #include "string.h"
 #include "syscall.h"
 
-static char lin_str[1024] __attribute__((unused));
+static char lin_str[1024];
 
 static struct linux_ctx *cur_lctx(void) {
     return task_current_lctx();
@@ -21,7 +21,6 @@ static int in_luser(const void *p, unsigned int n) {
     return a >= lc->win_lo && n <= lc->win_hi - a;
 }
 
-static int copy_lin_str(const void *usr, char *dst, unsigned int max) __attribute__((unused));
 static int copy_lin_str(const void *usr, char *dst, unsigned int max) {
     unsigned int a = (unsigned int)usr;
     struct linux_ctx *lc = cur_lctx();
@@ -37,7 +36,6 @@ static int copy_lin_str(const void *usr, char *dst, unsigned int max) {
     return i;
 }
 
-static int lc_alloc_fd(struct linux_ctx *lc, const char *name) __attribute__((unused));
 static int lc_alloc_fd(struct linux_ctx *lc, const char *name) {
     if (!fs_exists(name)) return -1;
     for (int i = 3; i < LINUX_FDS; i++) {
@@ -65,6 +63,35 @@ void linux_ctx_init(struct linux_ctx *lc) {
     memset(lc, 0, sizeof(struct linux_ctx));
     for (int i = 0; i < LINUX_FDS; i++)
         lc->fds[i] = i <= 2 ? i : -1;   // 0,1,2 = std; >=3 free
+}
+
+// i386 musl struct stat (see toolchain bits/stat.h): 108 bytes.
+static void fill_stat64(struct linux_ctx *lc, unsigned int size, unsigned char *st) {
+    (void)lc;
+    memset(st, 0, 108);
+    *(unsigned int *)(st + 8)  = 1;                        // __st_ino_truncated
+    *(unsigned int *)(st + 12) = 0x81A4;                   // st_mode S_IFREG|0644
+    *(unsigned int *)(st + 16) = 1;                        // st_nlink
+    *(unsigned int *)(st + 20) = 0;                        // st_uid
+    *(unsigned int *)(st + 24) = 0;                        // st_gid
+    *(unsigned long long *)(st + 36) = size;               // st_size
+    *(unsigned int *)(st + 44) = 4096;                     // st_blksize
+    *(unsigned long long *)(st + 48) = (unsigned long long)(size + 511) / 512; // st_blocks
+    *(unsigned int *)(st + 80) = 1;                        // st_ino
+}
+
+// linux_dirent64: u64 d_ino, i64 d_off, u16 d_reclen, u8 d_type, char d_name[]
+static void put_dirent64(unsigned char *dst, unsigned long long ino,
+                         unsigned long long off, unsigned char type,
+                         const char *name) {
+    unsigned int len = (unsigned int)strlen(name);
+    unsigned short reclen = (unsigned short)(19 + len);
+    *(unsigned long long *)(dst + 0) = ino;
+    *(unsigned long long *)(dst + 8) = off;
+    *(unsigned short *)(dst + 16) = reclen;
+    dst[18] = type;
+    for (unsigned int i = 0; i < len; i++)
+        dst[19 + i] = (unsigned char)name[i];
 }
 
 void linux_syscall_handler(struct registers *r) {
@@ -176,6 +203,195 @@ void linux_syscall_handler(struct registers *r) {
     case 258:    // set_tid_address(ptr) — no kernel pid stored; tid is 0
         r->eax = 0;
         break;
+
+    case 3: {  // read(fd, buf, count)
+        int fd = r->ebx;
+        char *buf = (char *)r->ecx;
+        unsigned int count = r->edx;
+        if (fd == 0) { r->eax = -11; break; }                 // -EAGAIN
+        if (fd < 0 || fd >= LINUX_FDS || lc->fds[fd] < 0 || fd <= 2) { r->eax = -9; break; }
+        if (!in_luser(buf, count)) { r->eax = -14; break; }
+        int n = fs_read_at(lc->fd_name[fd], buf, count, lc->fd_off[fd]);
+        if (n < 0) { r->eax = -2; break; }                    // -ENOENT
+        lc->fd_off[fd] += (unsigned int)n;
+        r->eax = n;
+        break;
+    }
+
+    case 5:   // open(path, flags, mode)
+    case 295: { // openat(dirfd, path, flags, mode)
+        const void *pp = (n == 295) ? (const void *)r->ecx : (const void *)r->ebx;
+        if (copy_lin_str(pp, lin_str, sizeof(lin_str)) < 0) { r->eax = -14; break; }
+        int fd = lc_alloc_fd(lc, lin_str);
+        r->eax = (fd < 0) ? (fd == -24 ? -24 : -2) : fd;
+        break;
+    }
+
+    case 6: {  // close(fd)
+        int fd = r->ebx;
+        if (fd < 0 || fd >= LINUX_FDS || lc->fds[fd] < 0) { r->eax = -9; break; }
+        lc->fds[fd] = -1;
+        r->eax = 0;
+        break;
+    }
+
+    case 10:   // unlink(path)
+        if (copy_lin_str((const void *)r->ebx, lin_str, sizeof(lin_str)) < 0) {
+            r->eax = -14;
+        } else {
+            r->eax = fs_delete(lin_str) == 0 ? 0 : -2;
+        }
+        break;
+
+    case 19:   // lseek(fd, offset, whence)
+    case 140: { // _llseek(fd, off_hi, off_lo, res, whence)
+        int fd = r->ebx;
+        if (fd < 0 || fd >= LINUX_FDS || lc->fds[fd] < 0 || fd <= 2) { r->eax = -9; break; }
+        unsigned int off, whence;
+        unsigned int *res = 0;
+        if (n == 140) {
+            off = r->edx;              // off_lo
+            res = (unsigned int *)r->esi;
+            whence = r->edi;
+            if (!in_luser(res, 4)) { r->eax = -14; break; }
+        } else {
+            off = r->ecx;
+            whence = r->edx;
+        }
+        int sz = fs_get_size(lc->fd_name[fd]);
+        unsigned int cur = lc->fd_off[fd];
+        unsigned int newoff = cur;
+        if (whence == 0) newoff = off;
+        else if (whence == 1) newoff = cur + off;
+        else if (whence == 2) newoff = (sz < 0 ? 0 : (unsigned int)sz) + off;
+        if (newoff > 0x7FFFFFFF) newoff = 0x7FFFFFFF;
+        lc->fd_off[fd] = newoff;
+        if (n == 140)
+            *res = newoff;
+        r->eax = (n == 140) ? 0 : newoff;
+        break;
+    }
+
+    case 33:   // access(path, mode)
+        if (copy_lin_str((const void *)r->ebx, lin_str, sizeof(lin_str)) < 0) {
+            r->eax = -14;
+        } else {
+            r->eax = fs_exists(lin_str) ? 0 : -2;
+        }
+        break;
+
+    case 13:   // time(t) — return 0
+    case 20:   // getpid
+        if (n == 20) { r->eax = task_current_pid(); break; }
+        r->eax = 0;
+        break;
+
+    case 24:   // getuid
+    case 47:   // getgid
+    case 49:   // geteuid
+    case 50:   // getegid
+        r->eax = 0;
+        break;
+
+    case 54:   // ioctl — no ttys
+        r->eax = -25;                                       // -ENOTTY
+        break;
+
+    case 78: {  // gettimeofday(tv, tz)
+        void *tv = (void *)r->ebx;
+        if (tv) {
+            if (!in_luser(tv, 8)) { r->eax = -14; break; }
+            memset(tv, 0, 8);
+        }
+        r->eax = 0;
+        break;
+    }
+
+    case 122: {  // uname(struct utsname*)
+        unsigned char *u = (unsigned char *)r->ebx;
+        if (!in_luser(u, 390)) { r->eax = -14; break; }
+        memset(u, 0, 390);
+        strncpy((char *)(u + 0),   "Linux", 65);
+        strncpy((char *)(u + 65),  "aos", 65);
+        strncpy((char *)(u + 130), "5.0.0", 65);
+        strncpy((char *)(u + 195), "#1", 65);
+        strncpy((char *)(u + 260), "i686", 65);
+        strncpy((char *)(u + 325), "aos", 65);
+        r->eax = 0;
+        break;
+    }
+
+    case 162: {  // nanosleep(req, rem) — spin on the PIT tick
+        extern volatile unsigned int tick;
+        const unsigned char *req = (const unsigned char *)r->ebx;
+        if (!in_luser(req, 8)) { r->eax = -14; break; }
+        unsigned int sec, nsec;
+        memcpy(&sec, req, 4);
+        memcpy(&nsec, req + 4, 4);
+        unsigned int ms = sec * 1000 + nsec / 1000000u;
+        unsigned int start = tick;
+        while (tick - start < ms);
+        r->eax = 0;
+        break;
+    }
+
+    case 265: {  // clock_gettime(clockid, timespec*)
+        void *ts = (void *)r->ecx;
+        if (!in_luser(ts, 8)) { r->eax = -14; break; }
+        memset(ts, 0, 8);
+        r->eax = 0;
+        break;
+    }
+
+    case 195:   // stat64(path, st)
+    case 300: { // fstatat64(dirfd, path, st, flags)
+        const void *pp = (n == 300) ? (const void *)r->ecx : (const void *)r->ebx;
+        unsigned char *st = (unsigned char *)r->edx;
+        if (copy_lin_str(pp, lin_str, sizeof(lin_str)) < 0) { r->eax = -14; break; }
+        if (!in_luser(st, 108)) { r->eax = -14; break; }
+        int size = fs_get_size(lin_str);
+        if (size < 0) { r->eax = -2; break; }
+        fill_stat64(lc, (unsigned int)size, st);
+        r->eax = 0;
+        break;
+    }
+
+    case 197: {  // fstat64(fd, st)
+        int fd = r->ebx;
+        unsigned char *st = (unsigned char *)r->ecx;
+        if (fd < 0 || fd >= LINUX_FDS || lc->fds[fd] < 0 || fd <= 2) { r->eax = -9; break; }
+        if (!in_luser(st, 108)) { r->eax = -14; break; }
+        int size = fs_get_size(lc->fd_name[fd]);
+        if (size < 0) size = 0;
+        fill_stat64(lc, (unsigned int)size, st);
+        r->eax = 0;
+        break;
+    }
+
+    case 220: {  // getdents64(fd, buf, count)
+        int fd = r->ebx;
+        unsigned char *buf = (unsigned char *)r->ecx;
+        unsigned int count = r->edx;
+        if (fd < 0 || fd >= LINUX_FDS || lc->fds[fd] < 0 || fd <= 2) { r->eax = -9; break; }
+        if (!in_luser(buf, count)) { r->eax = -14; break; }
+        unsigned int idx = lc->fd_off[fd];   // reused as the SFS entry cursor
+        unsigned int written = 0;
+        for (; idx < SFS_MAX_FILES; idx++) {
+            char name[32];
+            unsigned int size;
+            if (sfs_get_entry(idx, name, &size) != 0) continue;
+            unsigned int len = (unsigned int)strlen(name);
+            unsigned int reclen = 19 + len;
+            if (written + reclen > count) break;
+            unsigned char type = (name[len - 1] == '/') ? 4 : 8;
+            put_dirent64(buf + written, (unsigned long long)idx + 1,
+                         (unsigned long long)(written + reclen), type, name);
+            written += reclen;
+            lc->fd_off[fd] = idx + 1;
+        }
+        r->eax = written;
+        break;
+    }
 
     default:
         r->eax = -38;   // -ENOSYS
