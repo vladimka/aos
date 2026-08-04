@@ -5,6 +5,7 @@
 #include "pmm.h"
 #include "interrupts.h"
 #include "vrng.h"
+#include "vblk.h"
 
 static struct virtio_dev *dev_list;
 
@@ -145,8 +146,11 @@ int virtio_probe_pci(struct virtio_dev *d, unsigned int device_id) {
     return -1;
 }
 
-// Task 1: transport probe only — logs every virtio device found on the bus.
-// Later tasks replace this body with calls to vrng_init/vblk_init/vnet_init.
+// sfs_set_disk is defined in the SFS disk backend (Task 5); declared here until
+// sfs.h exposes it.
+void sfs_set_disk(int present);
+
+// Logs every virtio device found on the bus, then initializes each driver.
 void virtio_init(void) {
     struct pci_dev list[8];
     int n = pci_find_all(list, 8);
@@ -159,4 +163,6 @@ void virtio_init(void) {
         serial_print("\n");
     }
     vrng_init();
+    vblk_init();
+    sfs_set_disk(vblk_present());
 }

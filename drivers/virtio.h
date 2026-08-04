@@ -73,6 +73,7 @@ void virtio_init(void);
 int virtio_legacy_probe(unsigned int bar);
 int virtio_dev_init(struct virtio_dev *d, unsigned int supported,
                     unsigned int *features_out);
+void virtio_ready(struct virtio_dev *d);
 int virtio_setup_queue(struct virtio_dev *d, unsigned int qidx, unsigned int n);
 void virtio_register(struct virtio_dev *d);
 int virtio_probe_pci(struct virtio_dev *d, unsigned int device_id);
