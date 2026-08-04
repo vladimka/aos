@@ -233,7 +233,12 @@ int terminal_scan_event(unsigned char scancode) {
     if (scancode == 0x01) return 27;    // Escape
 
     unsigned short cp = map_scancode(scancode);
-    return cp ? (int)cp : -1;
+    if (!cp) return -1;
+    // Ctrl+letter emits the classic ASCII control code (Ctrl+S -> 0x13).
+    // Applies to Latin letters only; GUI apps use these (notepad: Ctrl+S).
+    if (ctrl_pressed && ((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z')))
+        return (int)(cp & 0x1F);
+    return (int)cp;
 }
 
 // ---- Line redraw ----
