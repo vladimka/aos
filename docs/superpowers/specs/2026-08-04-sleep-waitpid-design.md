@@ -75,18 +75,26 @@ New syscall `SYS_SLEEP` (30). Handler (kernel/syscall.c):
 case SYS_SLEEP:
     current_task->wake_tick = tick + (r->ebx & 0x7FFFFFFF); // clamp ms
     current_task->state = TASK_SLEEPING;
+    while ((int)(tick - current_task->wake_tick) < 0) {
+        __asm__ volatile("sti; hlt; cli");
+    }
+    current_task->wake_tick = 0;
     r->eax = 0;
     break;
 ```
 
-(The handler runs on the task's own kernel stack; when it returns, the
-`switch_and_restore` path in boot/isr.S invokes `task_switch_kernel`, which now
-sees the `TASK_SLEEPING` state and does not resume this task.)
+The handler runs on the task's own kernel stack and blocks there with the
+documented `sti; hlt; cli` pattern (AGENTS.md, read_key precedent): each timer
+IRQ re-enters `task_switch_kernel` via `switch_and_restore`, which may switch to
+other tasks; when this task is resumed, the loop re-checks `tick`. The task
+cannot return to ring 3 until the handler returns, so `sleep` is atomic from
+the program's perspective.
 
 Scheduler changes in `task_switch_kernel`:
 
 - **Save rule** (task.c:120–121): only force `TASK_READY` if the task is not
-  blocked:
+  blocked, so a blocked task is skipped by the round-robin scan instead of
+  being picked for work:
   ```c
   current_task->kernel_esp = cur_esp;
   if (current_task->state != TASK_SLEEPING &&
@@ -107,18 +115,17 @@ Scheduler changes in `task_switch_kernel`:
   }
   if (t->state == TASK_READY) { next = t; break; }
   ```
-- **All-blocked fallback** (task.c:144): if no task is READY and the current
-  task is itself blocked (sleeping/waiting) with no other runnable task, the
-  naive `next = current_task` would resume it early. Two cases:
-  - Task 0 idle loop is normally READY/RUNNING, so it is picked and idles via
-    `hlt`; on the next timer IRQ the scheduler runs again and promotes the
-    sleeper. This covers the common WM environment.
-  - Rare case: the *only* candidate is the current (blocked) task — e.g. a
-    single serial-console program calling sleep with no WM. Fall back to an
-    idle wait: `sti; hlt; cli` loop until a READY task exists, protected by a
-    `static int in_idle_wait` guard against the timer IRQ re-entering
-    `task_switch_kernel` recursively. This mirrors the documented read_key
-    blocking pattern.
+- **All-blocked fallback** (task.c:144): when no task is READY, the existing
+  `next = current_task` fallback is now safe. If the current task is the one
+  that called sleep/waitpid, resuming it just iret's back into its own handler
+  wait loop, which re-checks and hlts again. If the current task is the idle
+  loop (task 0) and some other task is blocked, the scheduler returns to the
+  idle `hlt` (kernel.c:135) and the next timer IRQ re-promotes the sleeper.
+  **No `sti;hlt;cli` wait inside `task_switch_kernel` itself** — the timer IRQ
+  that would wake such a wait also runs the scheduler (via `switch_and_restore`),
+  which would re-enter the wait and overwrite `kernel_esp` while an outer
+  scheduler frame is still on the stack (the zombie-stack hazard). The wait
+  always lives in the syscall handler, never in the scheduler.
 - **Zombie bookkeeping** stays as-is: a dying task's kstack is freed via the
   zombie list; the slot itself is retained as `TASK_ZOMBIE` (see §3).
 
@@ -134,7 +141,10 @@ Scheduler changes in `task_switch_kernel`:
       break;
   ```
 - `task_exit_current(unsigned int code)` stores the code and sets the
-  `current_exited` flag (as before).
+  `current_exited` flag (as before). The code rides the same path as
+  `current_exited`: a new `static unsigned int current_exit_code`, set by
+  `task_exit_current`, read by the exit path in `task_switch_kernel` (mirrors
+  `current_exited` at task.c:119) and cleared alongside it.
 - In the exit path (task.c:124–137): instead of `dead->state = TASK_FREE`,
   keep the slot:
   ```c
@@ -158,12 +168,12 @@ Scheduler changes in `task_switch_kernel`:
   - `pid` not a child of caller → `-1` (ESRCH-like).
   - child already `TASK_ZOMBIE` → reap immediately, return `exit_code`.
 - child alive → mark current `TASK_WAITING` with `wait_pid = pid`, then loop
-  `sti; hlt; cli` until the child's state is ZOMBIE/FREE, then reap. The loop
-  re-checks the child state via the syscall argument (local `pid`), **not** the
-  TCB `wait_pid` field (the scheduler clears it on promote). While blocked, the
-  task is `TASK_WAITING` and invisible to the round-robin scan; the promote rule
-  wakes it, and the scheduler iret's back into the spin loop, which re-checks
-  and reaps.
+  `sti; hlt; cli` (in the handler, as in §2) until the child's state is
+  ZOMBIE/FREE, then reap. The loop re-checks the child state via the syscall
+  argument (local `pid`), **not** the TCB `wait_pid` field (the scheduler
+  clears it on promote). While blocked, the task is `TASK_WAITING` and
+  invisible to the round-robin scan; the promote rule wakes it, and the
+  scheduler iret's back into the spin loop, which re-checks and reaps.
 - The scheduler's promote rule (§2) wakes a `TASK_WAITING` task once
   `task_done(child)` (child is ZOMBIE or FREE).
 - No children tracking structure beyond `parent`; waitpid does a linear scan of
@@ -235,9 +245,9 @@ shows `SLEEPTEST PASS`. Added to the `TESTS` list in the Makefile.
 
 | Case | Behavior |
 |---|---|
-| `sleep_ms(0)` | wake_tick = tick → scheduler promotes immediately on next pass; effectively a yield |
+| `sleep_ms(0)` | wake_tick = tick → handler loop exits immediately; effectively a yield |
 | `wake_tick` wraparound | compared as signed diff; safe for < ~49 days of ticks |
-| All tasks sleeping, no task-0 | guarded `sti;hlt;cli` idle wait in scheduler |
+| All tasks blocked, no task-0 | `next = current_task` fallback resumes the blocked handler loop, which re-hlts (safe, no scheduler recursion) |
 | `waitpid` on non-child pid | `-1` (no block) |
 | `waitpid` on reaped/free pid | `-1` (no block) |
 | Child exits before waitpid called | already ZOMBIE → reap immediately |
