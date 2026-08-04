@@ -6,6 +6,7 @@
 #include "interrupts.h"
 #include "vrng.h"
 #include "vblk.h"
+#include "vnet.h"
 #include "sfs.h"
 
 static struct virtio_dev *dev_list;
@@ -182,5 +183,6 @@ void virtio_init(void) {
     }
     vrng_init();
     vblk_init();
+    vnet_init();
     sfs_set_disk(vblk_present());
 }

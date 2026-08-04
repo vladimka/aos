@@ -11,7 +11,7 @@ LDFLAGS = -T linker.ld -m elf_i386 -nostdlib --no-warn-rwx-segments
 
 KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               drivers/serial.o drivers/mouse.o drivers/pci.o drivers/uhci.o drivers/virtio.o \
-              drivers/vrng.o drivers/vblk.o \
+              drivers/vrng.o drivers/vblk.o drivers/vnet.o \
               kernel/terminal.o kernel/commands.o \
               kernel/sfs.o kernel/string.o arch/i386/gdt.o arch/i386/idt.o \
               kernel/interrupts.o kernel/elf.o kernel/syscall.o \
@@ -85,15 +85,23 @@ aos.iso: aos.elf
 	printf 'set timeout=0\nmenuentry "AOS" {\n  insmod all_video\n  multiboot2 /boot/aos.elf\n}\n' > iso/boot/grub/grub.cfg
 	grub-mkrescue -o $@ iso
 
-run: aos.iso
-	qemu-system-i386 -m 256 -display gtk,grab-on-hover=on -cdrom $<
+disk.img:
+	truncate -s 4M $@
+
+run: aos.iso disk.img
+	qemu-system-i386 -m 256 -display gtk,grab-on-hover=on -cdrom $< \
+	  -drive file=disk.img,format=raw,if=none,id=d0 \
+	  -device virtio-blk-pci,disable-modern=on,drive=d0 \
+	  -device virtio-rng-pci,disable-modern=on \
+	  -netdev socket,id=n0,listen=127.0.0.1:9400 \
+	  -device virtio-net-pci,disable-modern=on,mac=52:54:00:12:34:56,netdev=n0
 
 # Headless regression suite: each script boots aos.iso under QEMU, drives the
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
 # linhello/lincat need the musl Linux payload, so they are included only when
 # the musl toolchain is installed.
 LINUX_TESTS = $(if $(LINUX_BINS),linhello lincat)
-TESTS = ipctest manytest notepadtest sleeptest $(LINUX_TESTS)
+TESTS = ipctest manytest notepadtest sleeptest rngtest blktest virtiotest netlooptest $(LINUX_TESTS)
 
 test: aos.iso
 	@set -e; for t in $(TESTS); do \
@@ -103,7 +111,7 @@ test: aos.iso
 	@echo "ALL $(words $(TESTS)) TESTS PASSED"
 
 clean:
-	rm -f $(KERNEL_OBJS) $(PROG_ELFS) $(PROG_OBJS) *.elf *.bin *.iso kernel/progs.c
+	rm -f $(KERNEL_OBJS) $(PROG_ELFS) $(PROG_OBJS) *.elf *.bin *.iso disk.img kernel/progs.c
 	rm -f $(KERNEL_OBJS:.o=.d) $(PROG_OBJS:.o=.d)
 	rm -rf iso
 	rm -rf build
