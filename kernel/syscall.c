@@ -12,10 +12,11 @@
 #include "aosipc.h"
 #include "linux_syscall.h"
 #include "vrng.h"
+#include "kmm.h"
 
 extern volatile unsigned int tick;
 
-static char prog_args[256];
+static char *prog_args;
 
 // User memory regions (see paging.c): program area + shared window slabs
 #define USER_LO 0x01000000
@@ -35,33 +36,32 @@ static int in_user_area(const void *p, unsigned int n) {
     return 0;
 }
 
-static char user_str[1024];
-static char user_str2[256];
-
-// Copy a NUL-terminated user string into a kernel buffer, bounded.
-static int copy_user_str_buf(const void *usr, char *dst, unsigned int max) {
+static char *copy_user_str_alloc(const void *usr) {
     unsigned int a = (unsigned int)usr;
-    if (a < USER_LO) return -1;
-    unsigned int i = 0;
-    while (i < max - 1) {
-        if (a + i >= USER_HI) break;
-        char c = *(const char *)(a + i);
-        dst[i++] = c;
-        if (c == '\0') return i;
+    if (a < USER_LO) return 0;
+    unsigned int len = 0;
+    while (a + len < USER_HI) {
+        if (((const char *)a)[len] == '\0') break;
+        len++;
     }
-    dst[i] = '\0';
-    return i;
+    char *dst = kmalloc(len + 1);
+    if (!dst) return 0;
+    for (unsigned int i = 0; i <= len; i++)
+        dst[i] = ((const char *)a)[i];   // copies the NUL too
+    return dst;
 }
 
-static int copy_user_str(const void *usr) {
-    return copy_user_str_buf(usr, user_str, sizeof(user_str));
+static char *copy_user_str(const void *usr) {
+    return copy_user_str_alloc(usr);
 }
 
-static int copy_user_str2(const void *usr) {
-    return copy_user_str_buf(usr, user_str2, sizeof(user_str2));
+static char *copy_user_str2(const void *usr) {
+    return copy_user_str_alloc(usr);
 }
 
 void syscall_set_args(const char *args) {
+    if (!prog_args) prog_args = kmalloc(256);
+    if (!prog_args) return;             // OOM: keep args empty, don't crash
     unsigned int i;
     for (i = 0; i < 255 && args[i]; i++)
         prog_args[i] = args[i];
@@ -138,12 +138,16 @@ void syscall_handler(struct registers *r) {
     }
 
     switch (n) {
-    case SYS_PRINT:
-        if (copy_user_str((const void *)r->ebx) >= 0)
-            route_text(user_str, strlen(user_str));
-        else
+    case SYS_PRINT: {
+        char *s = copy_user_str((const void *)r->ebx);
+        if (s) {
+            route_text(s, strlen(s));
+            kfree(s);
+        } else {
             r->eax = -5;
+        }
         break;
+    }
     case SYS_PRINT_HEX:
         route_hex(r->ebx);
         break;
@@ -155,38 +159,58 @@ void syscall_handler(struct registers *r) {
         route_text(&c, 1);
         break;
     }
-    case SYS_FS_WRITE:
-        if (copy_user_str((const void *)r->ebx) >= 0 &&
-            in_user((const void *)r->ecx, r->edx))
-            r->eax = fs_write(user_str, (const char *)r->ecx, r->edx);
-        else
+    case SYS_FS_WRITE: {
+        char *s = copy_user_str((const void *)r->ebx);
+        if (s && in_user((const void *)r->ecx, r->edx)) {
+            r->eax = fs_write(s, (const char *)r->ecx, r->edx);
+            kfree(s);
+        } else {
+            if (s) kfree(s);
             r->eax = -5;
+        }
         break;
-    case SYS_FS_READ:
-        if (copy_user_str((const void *)r->ebx) >= 0 &&
-            in_user((const void *)r->ecx, r->edx))
-            r->eax = fs_read(user_str, (char *)r->ecx, r->edx);
-        else
+    }
+    case SYS_FS_READ: {
+        char *s = copy_user_str((const void *)r->ebx);
+        if (s && in_user((const void *)r->ecx, r->edx)) {
+            r->eax = fs_read(s, (char *)r->ecx, r->edx);
+            kfree(s);
+        } else {
+            if (s) kfree(s);
             r->eax = -5;
+        }
         break;
-    case SYS_FS_DELETE:
-        if (copy_user_str((const void *)r->ebx) >= 0)
-            r->eax = fs_delete(user_str);
-        else
+    }
+    case SYS_FS_DELETE: {
+        char *s = copy_user_str((const void *)r->ebx);
+        if (s) {
+            r->eax = fs_delete(s);
+            kfree(s);
+        } else {
             r->eax = -5;
+        }
         break;
-    case SYS_FS_SIZE:
-        if (copy_user_str((const void *)r->ebx) >= 0)
-            r->eax = fs_get_size(user_str);
-        else
+    }
+    case SYS_FS_SIZE: {
+        char *s = copy_user_str((const void *)r->ebx);
+        if (s) {
+            r->eax = fs_get_size(s);
+            kfree(s);
+        } else {
             r->eax = -5;
+        }
         break;
-    case SYS_FS_EXISTS:
-        if (copy_user_str((const void *)r->ebx) >= 0)
-            r->eax = fs_exists(user_str);
-        else
+    }
+    case SYS_FS_EXISTS: {
+        char *s = copy_user_str((const void *)r->ebx);
+        if (s) {
+            r->eax = fs_exists(s);
+            kfree(s);
+        } else {
             r->eax = -5;
+        }
         break;
+    }
     case SYS_FS_LIST_GET:
         if (in_user((void *)r->ecx, 28) && in_user((void *)r->edx, 4))
             r->eax = sfs_get_entry(r->ebx, (char *)r->ecx, (unsigned int *)r->edx);
@@ -217,7 +241,7 @@ void syscall_handler(struct registers *r) {
         if (in_user(dst, maxlen) && maxlen > 0) {
             const char *args = task_current_pid() > 0 ? task_current_args() : prog_args;
             unsigned int i;
-            for (i = 0; i < maxlen - 1 && args[i]; i++)
+            for (i = 0; i < maxlen - 1 && args && args[i]; i++)
                 dst[i] = args[i];
             dst[i] = '\0';
             r->eax = i;
@@ -316,11 +340,14 @@ void syscall_handler(struct registers *r) {
     }
     case SYS_TEXT: {
         struct aos_render_req *req = (struct aos_render_req *)r->ebx;
-        if (in_user(req, sizeof(struct aos_render_req)) &&
-            in_user_area(req->buf, 1) &&
-            copy_user_str_buf(req->str, user_str, sizeof(user_str)) >= 0) {
+        char *s = (in_user(req, sizeof(struct aos_render_req)) &&
+                   in_user_area(req->buf, 1))
+                      ? copy_user_str_alloc(req->str)
+                      : 0;
+        if (s) {
             vga_render_text_buffer(req->buf, req->pitch, req->x, req->y,
-                                   user_str, req->fg, req->bg);
+                                   s, req->fg, req->bg);
+            kfree(s);
             r->eax = 0;
         } else {
             r->eax = -5;
@@ -343,18 +370,18 @@ void syscall_handler(struct registers *r) {
         r->eax = task_set_sink(r->ebx);
         break;
     case SYS_SPAWN: {
-        if (copy_user_str((const void *)r->ebx) >= 0) {
-            const char *args = 0;
-            if (r->ecx) {
-                if (copy_user_str2((const void *)r->ecx) >= 0)
-                    args = user_str2;
-                else {
-                    r->eax = -5;
-                    break;
-                }
+        char *s = copy_user_str((const void *)r->ebx);
+        if (s) {
+            char *a = r->ecx ? copy_user_str2((const void *)r->ecx) : 0;
+            if (r->ecx && !a) {
+                kfree(s);
+                r->eax = -5;
+                break;
             }
             unsigned int pid;
-            int rc = task_spawn(user_str, args, r->edx, &pid);
+            int rc = task_spawn(s, a, r->edx, &pid);
+            kfree(s);
+            if (a) kfree(a);
             r->eax = rc == 0 ? (int)pid : rc;
         } else {
             r->eax = -5;
