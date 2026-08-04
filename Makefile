@@ -86,7 +86,7 @@ run: aos.iso
 
 # Headless regression suite: each script boots aos.iso under QEMU, drives the
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
-TESTS = linhello lincat ipctest manytest notepadtest
+TESTS = linhello lincat ipctest manytest notepadtest sleeptest
 
 test: aos.iso
 	@set -e; for t in $(TESTS); do \

@@ -6,7 +6,7 @@
 - **P2** — крупная/долгосрочная работа (обычно требует новых подсистем).
 
 Справочные факты о текущем состоянии (чтобы не предлагать уже сделанное):
-30 syscalls (`int $0x80`, `kernel/syscall.c`), планировщик round-robin на `MAX_TASKS=24`; buddy-аллокатор страниц (`kernel/pmm.c`) и kmalloc (`kernel/kmm.c`), ресурсы задач выделяются динамически (`kernel/task.c`), SFS-ramdisk 160 КБ / 64 файла (`kernel/sfs.c`), PIT 1000 Гц, PS/2 клавиатура+мышь, framebuffer 1024×768×32, UHCI-энумерация USB-планшета QEMU (`drivers/uhci.c`), пользовательский heap — bump-аллокатор, программы грузятся из `bin/` в ramdisk.
+33 syscalls (`int $0x80`, `kernel/syscall.c`), планировщик round-robin на `MAX_TASKS=24` (есть блокирующие `sleep`/`waitpid` с зомби и кодами выхода, `kernel/task.c`); buddy-аллокатор страниц (`kernel/pmm.c`) и kmalloc (`kernel/kmm.c`), ресурсы задач выделяются динамически (`kernel/task.c`), SFS-ramdisk 160 КБ / 64 файла (`kernel/sfs.c`), PIT 1000 Гц, PS/2 клавиатура+мышь, framebuffer 1024×768×32, UHCI-энумерация USB-планшета QEMU (`drivers/uhci.c`), пользовательский heap — bump-аллокатор, программы грузятся из `bin/` в ramdisk.
 
 **Linux ELF (step 1, готово)**: статические musl i386-бинарники (ET_EXEC, no INTERP) исполняются как user-программы — `lin/hello`, `lin/ls`, `lin/cat` (из `tools/linux/*.c`, musl-toolchain). Адресное пространство `0x08000000..0x10000000` (окно Linux), TLS через GDT-слот 6 (musl-селектор `0x33`), syscalls `int 0x80` в `kernel/linux_syscall.c` (write/writev, open/read/close, brk, mmap2, stat64/getdents64, TLS и др.). См. AGENTS.md → «Linux ELF execution (step 1)». Возможные следующие шаги — шаги 2+: stdin из терминала, больше syscalls (dup/exec/fork), сигналы, пайпы между AOS/Linux.
 
@@ -27,8 +27,8 @@
 
 ### 1.2 Процессы и планировщик
 
-- [ ] **P0 — syscalls `sleep(ms)`, `nanosleep`.** Сейчас нет способа уснуть из пользователя, кроме busy-loop на `get_tick()`. Добавить поле «время пробуждения» в TCB и учитывать его в планировщике (пропуск задач, чьё время ещё не пришло).
-- [ ] **P0 — `waitpid`/статус выхода и `get_children`.** WM получает `MSG_EXIT`, но пользовательская программа не может дождаться завершения дочерней. Добавить syscall ожидания + хранение кода возврата.
+- [x] **P0 — syscalls `sleep(ms)`, `nanosleep`.** Сейчас нет способа уснуть из пользователя, кроме busy-loop на `get_tick()`. Добавить поле «время пробуждения» в TCB и учитывать его в планировщике (пропуск задач, чьё время ещё не пришло). (`SYS_SLEEP` 30 готов: блокировка в syscall-обработчике через `sti;hlt;cli`, планировщик пропускает `TASK_SLEEPING` и будит по `tick >= wake_tick`; `nanosleep` в AOS ABI не нужен, Linux ABI имеет свой spin)
+- [x] **P0 — `waitpid`/статус выхода и `get_children`.** WM получает `MSG_EXIT`, но пользовательская программа не может дождаться завершения дочерней. Добавить syscall ожидания + хранение кода возврата. (готово: `SYS_WAITPID` 31 + `SYS_GET_CHILDREN` 32, зомби с `exit_code` до `waitpid`, реклайминг зомби при нехватке слотов; проверено `scripts/sleeptest.py`)
 - [ ] **P1 — Сигналы (упрощённые): `kill(pid, sig)`, обработчики.** Как минимум `SIGTERM` (убить), `SIGKILL`, `SIGCHLD`. В терминале даст Ctrl+C, в WM — корректное закрытие зависших окон.
 - [ ] **P1 — Приоритеты и time slices.** Round-robin сейчас сканирует по кругу без квантов (`kernel/task.c: task_switch_kernel`). Добавить уровни приоритета (WM выше фоновых), настраиваемый квант, статистику `cpu_time` на задачу (для `ps`/`top`).
 - [ ] **P1 — `fork()` + `exec()` классические.** Сейчас есть только `spawn()` (загрузка ELF в новую задачу). Добавить fork/exec/wait-триаду поверх 1.1 (COW) для будущего «настоящего» шелла с пайпами.

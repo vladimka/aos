@@ -8,7 +8,7 @@
 - **UTF-8 output**: `insert_codepoint()` encodes codepoint as 1–3 byte UTF-8 sequence into `line_buf`; `line_redraw_from()` re-renders from a given byte offset
 - **Caps Lock** (`scancode 0x3A`): toggles `caps_lock` flag, affects only US layout letters
 - **Serial console input**: `timer_handler` (`kernel/kernel.c`) drains the COM1 FIFO (`serial_available`/`serial_read`) into `terminal_serial_byte()`. While a user program is running, serial bytes are pushed to the key queue (`key_queue_push`) instead of the line buffer
-- **Key queue**: circular `key_queue[64]` for user programs. When `user_program_active()`, printable keys (and serial bytes) push to the queue; `terminal_read_key()` pops (returns -1 when empty). `SYS_READ_KEY` blocks in the kernel via `sti; hlt; cli` loop
+- **Key queue**: circular `key_queue[64]` for user programs. When `user_program_active()`, printable keys (and serial bytes) push to the queue; `terminal_read_key()` pops (returns -1 when empty). `SYS_READ_KEY` is **non-blocking**; `read_key()` blocks in userland by spinning + `yield()`
 
 # AOS — minimal x86 kernel
 
@@ -32,7 +32,7 @@ No dedicated test, lint, or typecheck commands.
 - No libc; own `string.c` (`strcmp`, `strncpy`, `strlen`)
 - Include paths: `-Ikernel -Idrivers -Iarch/i386 -Iboot`
 - **160 KB ramdisk at `0x200000`** — flat SFS (Simple File System), `SFS_MAX_FILES=64`
-- **30 syscalls via `int 0x80`** (DPL 3 gate, `idt_install_irq_flags(0x80, isr128, 0xEE)`), R/O user-level interface in `programs/libaos.c`
+- **33 syscalls via `int 0x80`** (DPL 3 gate, `idt_install_irq_flags(0x80, isr128, 0xEE)`), R/O user-level interface in `programs/libaos.c`
 - `printf()` in `kernel/printf.c` writes to **both** VGA and COM1 (used for all kernel banners)
 - **Privilege separation**: paging enabled (`kernel/paging.c`), user programs run in **ring 3** via TSS (`arch/i386/gdt.c`, `kernel/user.c`/`user_tramp.S`), kernel stays in ring 0
 
@@ -60,7 +60,8 @@ No dedicated test, lint, or typecheck commands.
 
 - All pointers validated: `in_user()` checks `p` is within `0x01000000..0x01804000`, `copy_user_str()` copies a bounded NUL-terminated string to `user_str[1024]`
 - Invalid pointers return `-5` instead of crashing the kernel (verified by `test`)
-- `SYS_READ_KEY` blocks with `sti; hlt; cli` (the `int 0x80` gate clears IF, so IF must be re-enabled or the keyboard IRQ can never wake it)
+- `SYS_READ_KEY` is **non-blocking** (returns `-1` when the queue is empty); `read_key()` blocks in userland by spinning + `yield()`
+- **Process syscalls** (`SYS_SLEEP` 30, `SYS_WAITPID` 31, `SYS_GET_CHILDREN` 32): `SYS_SLEEP`/`SYS_WAITPID` block **in the syscall handler** via `sti; hlt; cli` (`task_sleep`/`task_waitpid`, `kernel/task.c`) — the scheduler skips `TASK_SLEEPING`/`TASK_WAITING` tasks and promotes them when `tick >= wake_tick` or the waited child dies. `SYS_EXIT` (16) reads the exit code from `%ebx`; the exiting task stays as `TASK_ZOMBIE` holding `exit_code` until `waitpid` reaps it (its address space/mbox are freed as before, only the slot scalars are kept). `TASK_ZOMBIE` slots are reclaimed by `task_spawn` when no free slot exists (never one a live `TASK_WAITING` task waits on)
 
 ### ELF loader (`kernel/elf.c`)
 
