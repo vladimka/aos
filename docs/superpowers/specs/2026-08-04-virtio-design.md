@@ -70,8 +70,6 @@ New files:
 - `drivers/vrng.h`, `drivers/vrng.c` — virtio-rng entropy fill.
 - `drivers/vnet.h`, `drivers/vnet.c` — virtio-net TX/RX.
 - `programs/random.c` — `random` command (prints hex entropy via `SYS_RANDOM`).
-- `programs/nettest.c` — sends one probe frame + prints TX/RX counters
-  (serial-only assertions, used by the net loopback test).
 
 Modified:
 
@@ -107,24 +105,26 @@ Device API:
   ACKNOWLEDGE, DRIVER, read HOST_FEATURES, AND with `supported_features`,
   write GUEST_FEATURES, DRIVER_OK. Returns the negotiated set.
 - `int virtio_setup_queue(dev, idx, n)` — QUEUE_SEL=idx; read QUEUE_NUM;
-  require `QUEUE_NUM >= n`; `page_alloc_zero()` three pages (desc table,
-  avail ring, used ring — each independently page-aligned, no contiguity
-  requirement beyond each ring); write `QUEUE_PFN = (u32)desc_table`
-  (physical == virtual under the identity map).
-- Descriptor helpers: `vq_alloc_desc`, `vq_add_desc(addr, len, flags)`,
-  `vq_kick`, `vq_used_pop(dev, &id, &len)`.
+  require `QUEUE_NUM >= n`; allocate one **contiguous** block via
+  `page_alloc_order(2)` (4 pages, 16 KiB — the smallest power-of-two block
+  covering the 12 KiB vring); lay out desc table at `base`, avail ring at
+  `base + 4096`, used ring at `base + 8192` (the device computes these
+  offsets itself from QUEUE_PFN, so the three rings MUST be contiguous in
+  legacy mode); write `QUEUE_PFN = (u32)base >> 12` (page frame number).
+  `page_alloc_order` guarantees the block is naturally aligned and identity
+  mapped, so physical == virtual.
 
 Queue layout (legacy vring, queue of `n` descriptors):
 
-- page 0: `vring_desc[n]` — `u64 addr; u32 len; u16 flags; u16 next`
+- offset +0x000: `vring_desc[n]` — `u64 addr; u32 len; u16 flags; u16 next`
   (flags: NEXT=1, WRITE=2), `free_head` linked list.
-- page 1: `vring_avail` — `u16 flags; u16 idx; u16 ring[n]`.
-- page 2: `vring_used` — `u16 flags; u16 idx; struct{v u32 id, len} ring[n]`.
+- offset +0x1000: `vring_avail` — `u16 flags; u16 idx; u16 ring[n]`.
+- offset +0x2000: `vring_used` — `u16 flags; u16 idx; struct{v u32 id, len} ring[n]`.
 
-Queue pages stay allocated for the driver's lifetime (never freed); they land
-below 0x08000000 because the buddy allocates low-first (out of the Linux
-task window). Each page is a separate `page_alloc()` with its own
-`pmm_frames[]` entry — nothing special is required of the allocator.
+For `n = 16` each ring fits one page; the 4th page of the order-2 block is
+unused. Queue pages stay allocated for the driver's lifetime (never freed);
+they land below 0x08000000 because the buddy allocates low-first (out of the
+Linux task window).
 
 ### IRQ dispatch (shared lines)
 
@@ -172,11 +172,9 @@ Used by `SYS_RANDOM`: `sys_random(char *ubuf, u32 maxlen)` copies up to
 
 - **RX**: `RX_BUFS=8` 2048-byte buffers (one `page_alloc()` page each) laid
   as WRITE descriptors. On a queue interrupt (`dev->on_irq`), drain
-  `vq_used_pop()`: for each completed RX descriptor, hand the frame to
-  `net_rx_frame(dev, data, len)` — copies into a kernel ring buffer (8 x
-  2048), bumps `vnet_rx_count`, logs `net: RX frame len=%u` at serial when a
-  probe is active — then re-submit a fresh WRITE descriptor and kick. If the
-  frame is dropped (ring full), the buffer is still recycled.
+  `vq_used_pop()`: for each completed RX descriptor, copy the frame to the
+  kernel log (`net: RX frame len=%u`), then **echo it back via TX** (loopback
+  test needs no GUI interaction) and re-submit a fresh WRITE descriptor, kick.
 - **TX**: `vnet_send(frame, len)` — one descriptor chain `[virtio_net_hdr(10
   bytes, zeroed)|READ] [frame|READ]`, kick, return immediately; descriptors
   are reclaimed lazily from the used ring on the next send or interrupt.
@@ -230,14 +228,16 @@ on serial log; persistence test reuses a raw disk image across two boots):
    - Boot A with `-drive file=<tmp>.img` (4 MiB raw). After boot, host-side
      assert the image contains `SFS1` at offset 0 and a `bin/hello` filename
      string somewhere (proves flush wrote the FS to disk). Boot B with the
-     same image: assert serial `ls bin` output still lists the programs
-     (proves the FS was mounted from disk, not reformatted empty).
-2. **rng** — boot with `-device virtio-rng-pci`; run `random`; assert serial
-   output has 16+ hex digits and is not all zeros.
+     same image: assert the serial log shows `SFS mounted from disk` (not
+     "formatted") — proves the FS was loaded from disk.
+2. **rngtest.py** — boot with `-device virtio-rng-pci`; assert serial output
+   has `rng: selftest OK` (vrng_init fetches 16 bytes at boot and prints a
+   non-zero hex).
 3. **netlooptest.py** — boot with `-netdev socket,listen=127.0.0.1:PORT` +
-   `virtio-net-pci`. A host Python client connects, sends one 60-byte
-   Ethernet frame -> assert serial `net: RX frame len=60`; then run
-   `nettest` in the guest -> assert the host socket receives a frame.
+   `virtio-net-pci`. A host Python client connects and sends one 60-byte
+   Ethernet frame; the guest logs `net: RX frame len=60`, then **echoes the
+   frame back** — assert the host socket receives the identical bytes. This
+   proves RX (IRQ + pool) and TX (send + header) with no GUI interaction.
 4. Existing `linhello lincat ipctest manytest notepadtest` stay green
    (boot without a drive -> RAM SFS unchanged).
 
