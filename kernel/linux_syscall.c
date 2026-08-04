@@ -118,6 +118,24 @@ void linux_syscall_handler(struct registers *r) {
         break;
     }
 
+    case 146: {  // writev(fd, iov, count)
+        int fd = r->ebx;
+        unsigned int count = r->edx;
+        if (fd > 2) { r->eax = -9; break; }                   // -EBADF
+        struct { unsigned int base; unsigned int len; } iov;
+        unsigned int total = 0;
+        int err = 0;
+        for (unsigned int i = 0; i < count && i < 1024; i++) {
+            if (!in_luser((const void *)(r->ecx + i * 8), 8)) { err = -14; break; }
+            memcpy(&iov, (const void *)(r->ecx + i * 8), 8);
+            if (!in_luser((const void *)iov.base, iov.len)) { err = -14; break; }
+            route_text((const char *)iov.base, iov.len);
+            total += iov.len;
+        }
+        r->eax = err ? (unsigned int)err : total;
+        break;
+    }
+
     case 45: {  // brk(addr)
         unsigned int addr = r->ebx;
         if (addr == 0) { r->eax = lc->brk_cur; break; }
@@ -171,7 +189,8 @@ void linux_syscall_handler(struct registers *r) {
         lc->tls_gran_pages = (bitfield >> 4) & 1;
         ldt_set_tls(lc->tls_base, lc->tls_limit,
                     lc->tls_seg32, lc->tls_ro, lc->tls_gran_pages);
-        *(unsigned int *)r->ebx = 0;   // entry_number = 0 -> selector 0x03
+        *(unsigned int *)r->ebx = TLS_ENTRY;   // entry_number -> GDT TLS slot 0x33
+        tls_reload_gs();
         r->eax = 0;
         break;
     }
@@ -194,7 +213,8 @@ void linux_syscall_handler(struct registers *r) {
             lc->tls_gran_pages = (ld.flags >> 4) & 1;
             ldt_set_tls(lc->tls_base, lc->tls_limit,
                         lc->tls_seg32, lc->tls_ro, lc->tls_gran_pages);
-            *(unsigned int *)r->ecx = 0;
+            *(unsigned int *)r->ecx = TLS_ENTRY;
+            tls_reload_gs();
         }
         r->eax = 0;
         break;

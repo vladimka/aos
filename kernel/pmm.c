@@ -30,21 +30,19 @@ static int is_reserved(unsigned int addr, unsigned int len) {
     return 0;
 }
 
-// Largest order whose block fits inside [base,end) AND is aligned at base.
-static unsigned int max_order_for(unsigned int base, unsigned int end) {
-    unsigned int o = 0;
-    while (o < MAX_ORDER) {
-        unsigned int block = PAGE_SIZE << (o + 1);
-        if ((base & (block - 1)) != 0) break;
-        if (base + block > end) break;
-        o++;
-    }
-    return o;
-}
-
+// Insert a block into its order's free list, keeping the list sorted by
+// ascending address. The head is therefore always the LOWEST free block, so
+// allocations are globally low-first. Kernel structures (task PDs, kstacks,
+// page tables, kmalloc slabs) must stay below 0x08000000: a spawned Linux
+// task's PD re-points PDEs 32..63 (0x08000000..0x10000000) at empty user page
+// tables, unmapping any of its own frames that the buddy would otherwise hand
+// out from the top of RAM.
 static void push_block(unsigned int base, unsigned int order) {
-    *(unsigned int *)base = (unsigned int)free_lists[order];
-    free_lists[order] = (void *)base;
+    unsigned int **link = (unsigned int **)&free_lists[order];
+    while (*link && (unsigned int)*link < base)
+        link = (unsigned int **)*link;
+    *(unsigned int *)base = (unsigned int)*link;
+    *link = (void *)base;
     free_pages += 1u << order;
 }
 
@@ -79,13 +77,35 @@ static void buddy_free(unsigned int base, unsigned int order) {
     push_block(base, order);
 }
 
+// Largest order whose block fits inside [base,end) AND is aligned at base.
+static unsigned int max_order_for(unsigned int base, unsigned int end) {
+    unsigned int o = 0;
+    while (o < MAX_ORDER) {
+        unsigned int block = PAGE_SIZE << (o + 1);
+        if ((base & (block - 1)) != 0) break;
+        if (base + block > end) break;
+        o++;
+    }
+    return o;
+}
+
 // Decompose [base,end) into maximal aligned power-of-two blocks and free each.
+// Blocks are pushed high-to-low so the lowest block ends up at the head of
+// each free list: allocations are low-first. Kernel structures (task PDs,
+// kstacks, page tables, kmalloc slabs) must stay below 0x08000000 because a
+// spawned Linux task's PD re-points PDEs 32..63 (0x08000000..0x10000000) at
+// empty user page tables, unmapping any of its own frames that the buddy
+// would otherwise hand out from the top of RAM.
 static void buddy_free_range(unsigned int base, unsigned int end) {
+    struct { unsigned int b; unsigned int o; } blocks[64];
+    int n = 0;
     while (base < end) {
         unsigned int o = max_order_for(base, end);
-        push_block(base, o);
+        if (n < 64) { blocks[n].b = base; blocks[n].o = o; n++; }
         base += PAGE_SIZE << o;
     }
+    for (int i = n - 1; i >= 0; i--)
+        push_block(blocks[i].b, blocks[i].o);
 }
 
 // Add an available physical range, cutting out any reserved regions.
@@ -107,15 +127,20 @@ static void add_available(unsigned int base, unsigned int end) {
 
 void *page_alloc_order(unsigned int order) {
     if (order > MAX_ORDER) return 0;
-    unsigned int b = pop_block(order);
-    if (b) {
-        pmm_frames[b >> 12].order = (unsigned char)order;
-        return (void *)b;
-    }
-    unsigned int o = order + 1;
-    while (o <= MAX_ORDER && !free_lists[o]) o++;
-    if (o > MAX_ORDER) return 0;
-    unsigned int big = pop_block(o);
+    // Pick the lowest-address free block across all orders >= order. Ordering
+    // by address (not by order number) keeps allocations low-first: without
+    // this, a big low block (e.g. order-14 at 0x4000000) is ignored while the
+    // order-0 head at 0xF32F000 is handed out, and kernel structures land
+    // inside a spawned Linux task's window (0x08000000..0x10000000).
+    unsigned int best_o = MAX_ORDER + 1, best_addr = ~0u;
+    for (unsigned int o = order; o <= MAX_ORDER; o++)
+        if (free_lists[o]) {
+            unsigned int addr = (unsigned int)free_lists[o];
+            if (addr < best_addr) { best_addr = addr; best_o = o; }
+        }
+    if (best_o > MAX_ORDER) return 0;
+    unsigned int big = pop_block(best_o);
+    unsigned int o = best_o;
     while (o > order) {
         o--;
         push_block(big + (PAGE_SIZE << o), o);

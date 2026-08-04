@@ -129,6 +129,14 @@ static void do_enter(void) {
     render();
     int pid = spawn(path, args, getpid());
     if (pid < 0) {
+        // Fallback: try the raw path (e.g. lin/hello, or any explicit path),
+        // mirroring the kernel shell's PATH search.
+        i = 0;
+        for (int j = 0; j < clen; j++) path[i++] = p[j];
+        path[i] = 0;
+        pid = spawn(path, args, getpid());
+    }
+    if (pid < 0) {
         static const char err[] = "cannot run command\n";
         for (int j = 0; err[j]; j++) put_char(err[j]);
         child_active = 0;

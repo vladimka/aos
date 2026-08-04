@@ -34,9 +34,8 @@ struct tss {
 } __attribute__((packed));
 
 // 0: null, 1: kernel code, 2: kernel data, 3: user code, 4: user data, 5: TSS,
-// 6: LDT descriptor
+// 6: TLS descriptor (current Linux task's thread-local storage, GDT_ENTRY_TLS_MIN)
 static struct gdt_entry gdt[7];
-static struct gdt_entry ldt[8];      // LDT: entry 0 = current task's TLS
 static struct gdt_ptr   gp;
 static struct tss       tss_entry;
 
@@ -45,7 +44,8 @@ static struct tss       tss_entry;
 #define SEL_UCODE 0x18
 #define SEL_UDATA 0x20
 #define SEL_TSS   0x28
-#define LDT_SEL   0x30               // GDT index 6, RPL 0
+#define TLS_ENTRY 6                  // GDT index of the TLS descriptor
+#define TLS_SEL   0x33               // TLS_ENTRY<<3 | 3, RPL 3 (matches musl)
 
 static void seg_set(struct gdt_entry *e, unsigned int base, unsigned int limit,
                     unsigned char access, unsigned char gran) {
@@ -75,7 +75,11 @@ void ldt_set_tls(unsigned int base, unsigned int limit,
     unsigned char access = read_exec_only ? 0xF0 : 0xF2;
     unsigned char gran = (seg_32bit ? 0x40 : 0x00) |
                          (limit_in_pages ? 0x80 : 0x00);
-    seg_set(&ldt[0], base, limit, access, gran);
+    seg_set(&gdt[TLS_ENTRY], base, limit, access, gran);
+}
+
+void tls_reload_gs(void) {
+    __asm__ volatile("mov %0, %%gs" : : "r"((unsigned short)TLS_SEL) : "memory");
 }
 
 void gdt_init(void) {
@@ -91,9 +95,8 @@ void gdt_init(void) {
     for (unsigned int i = 0; i < sizeof(struct tss) / 4; i++)
         ((unsigned int *)&tss_entry)[i] = 0;
     gdt_set_gate(5, (unsigned int)&tss_entry, sizeof(struct tss) - 1, 0x89, 0x00);
-    gdt_set_gate(6, (unsigned int)&ldt, sizeof(ldt) - 1, 0x82, 0x00);
-    for (unsigned int i = 0; i < sizeof(ldt) / 4; i++)
-        ((unsigned int *)&ldt)[i] = 0;
+    // TLS slot starts empty (base 0, 4 GB, user data); set per-Linux-task.
+    gdt_set_gate(TLS_ENTRY, 0, 0xFFFFF, 0xF2, 0xCF);
 
     __asm__ volatile("lgdt %0" : : "m"(gp));
     __asm__ volatile(
@@ -111,5 +114,4 @@ void gdt_init(void) {
     );
 
     __asm__ volatile("ltr %0" : : "r"((unsigned short)SEL_TSS));
-    __asm__ volatile("lldt %0" : : "r"((unsigned short)LDT_SEL));
 }

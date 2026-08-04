@@ -111,7 +111,16 @@ static void stack_build(struct linux_ctx *lc, const char *prog,
         while (*p && *p != ' ') p++;
     }
 
-    unsigned char *s = (unsigned char *)lc->stack_top;
+    // Compute the footprint first so the layout can be 16-aligned: musl's
+    // _start keeps the *original* ESP (pointing at argc) in %eax and realigns
+    // %esp itself, so stack_sp must point exactly at argc AND be 16-aligned.
+    unsigned int el = strlen(prog);
+    unsigned int str_len = 0;
+    for (int i = 0; i < argc; i++)
+        str_len += strlen(argv[i]) + 1;
+    unsigned int total = 16 + (el + 1) + str_len + 13 * 8 + 4 + (argc + 1) * 4 + 4;
+    unsigned int pad = total & 0xF;   // pad at top so final ESP is 16-aligned
+    unsigned char *s = (unsigned char *)lc->stack_top - pad;
 
     // AT_RANDOM: 16 pseudo-random bytes
     unsigned char rnd[16];
@@ -122,7 +131,6 @@ static void stack_build(struct linux_ctx *lc, const char *prog,
     unsigned int rand_addr = (unsigned int)s;
 
     // AT_EXECFN string
-    unsigned int el = strlen(prog);
     s -= el + 1;
     memcpy(s, prog, el + 1);
     unsigned int execfn_addr = (unsigned int)s;
@@ -170,7 +178,7 @@ static void stack_build(struct linux_ctx *lc, const char *prog,
     s -= 4;
     *(unsigned int *)s = (unsigned int)argc;
 
-    lc->stack_sp = ((unsigned int)s) & ~0xFu;
+    lc->stack_sp = (unsigned int)s;
 }
 
 void *elf_load_linux(const char *path, const char *args, struct linux_ctx *lc) {

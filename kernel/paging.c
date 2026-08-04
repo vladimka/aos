@@ -101,6 +101,7 @@ int paging_map_user_page(unsigned int vaddr) {
     unsigned int pdi = vaddr >> 22;
     unsigned int pti = (vaddr >> 12) & 0x3FF;
     unsigned int *pd = (unsigned int *)paging_get_cr3();
+    if (pdi >= 1024) return -1;
     if (!(pd[pdi] & PTE_PRESENT)) return -1;
     unsigned int *pt = (unsigned int *)(pd[pdi] & 0xFFFFF000);
     if (pt[pti] & PTE_PRESENT) return 0;

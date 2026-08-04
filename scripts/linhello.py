@@ -37,9 +37,9 @@ def hmp(command):
         return data.decode(errors="replace")
 
 def send_text(text):
-    keys = {"\n": "ret", " ": "spc"}
+    keys = {"\n": "ret", " ": "spc", "/": "slash"}
     for ch in text:
-        key = keys.get(ch, ch)
+        key = keys.get(ch, ch) or ch
         hmp("sendkey " + key)
         time.sleep(0.04)
 
@@ -97,6 +97,8 @@ def main():
             raise AssertionError("window manager did not produce a framebuffer dump")
         before_txt = count_text_pixels(BEFORE, TXT_X0, TXT_Y0, TXT_X1, TXT_Y1)
         after_txt = count_text_pixels(PPM, TXT_X0, TXT_Y0, TXT_X1, TXT_Y1)
+        if "cannot run command" in log or "Unknown command" in log:
+            raise AssertionError("spawn failed: %r" % log.strip().splitlines()[-1])
         if after_txt - before_txt <= TXT_THRESHOLD:
             raise AssertionError(
                 "terminal did not render lin/hello output (band text grew %d, want > %d)"

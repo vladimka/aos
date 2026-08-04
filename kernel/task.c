@@ -149,12 +149,14 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         tss_set_esp0(next->kstack_top);
         if (next->cr3 != paging_get_cr3())
             paging_set_cr3(next->cr3);
-        // A Linux task that installed TLS (tls_seg32 is set) must see the
-        // descriptor again when it resumes: %gs reloads pull from the LDT.
-        if (next->abi == ABI_LINUX && next->lctx && next->lctx->tls_seg32)
+        // A Linux task that installed TLS must see the descriptor again when
+        // it resumes: %gs is reloaded from the GDT TLS slot (selector 0x33).
+        if (next->abi == ABI_LINUX && next->lctx && next->lctx->tls_seg32) {
             ldt_set_tls(next->lctx->tls_base, next->lctx->tls_limit,
                         next->lctx->tls_seg32, next->lctx->tls_ro,
                         next->lctx->tls_gran_pages);
+            tls_reload_gs();
+        }
     } else {
         current_task->state = TASK_RUNNING;
     }
