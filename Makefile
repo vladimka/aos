@@ -84,6 +84,17 @@ aos.iso: aos.elf
 run: aos.iso
 	qemu-system-i386 -m 256 -display gtk,grab-on-hover=on -cdrom $<
 
+# Headless regression suite: each script boots aos.iso under QEMU, drives the
+# GUI via the monitor socket, and asserts on serial log + PPM screenshots.
+TESTS = linhello lincat ipctest manytest notepadtest
+
+test: aos.iso
+	@set -e; for t in $(TESTS); do \
+		echo "===== $$t ====="; \
+		$(PYTHON) scripts/$$t.py; \
+	done
+	@echo "ALL $(words $(TESTS)) TESTS PASSED"
+
 clean:
 	rm -f $(KERNEL_OBJS) $(PROG_ELFS) $(PROG_OBJS) *.elf *.bin *.iso kernel/progs.c
 	rm -f $(KERNEL_OBJS:.o=.d) $(PROG_OBJS:.o=.d)
@@ -94,4 +105,4 @@ clean:
 
 .SECONDARY: $(KERNEL_OBJS) $(PROG_OBJS) $(PROG_ELFS)
 
-.PHONY: all run clean
+.PHONY: all run test clean
