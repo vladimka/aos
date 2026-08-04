@@ -8,8 +8,7 @@
 #include "gdt.h"
 #include "string.h"
 #include "syscall.h"
-
-static char lin_str[1024];
+#include "kmm.h"
 
 static struct linux_ctx *cur_lctx(void) {
     return task_current_lctx();
@@ -21,19 +20,22 @@ static int in_luser(const void *p, unsigned int n) {
     return a >= lc->win_lo && n <= lc->win_hi - a;
 }
 
-static int copy_lin_str(const void *usr, char *dst, unsigned int max) {
+// Copy a Linux-window user string into a fresh kmalloc'd buffer (no 1024 cap).
+// Returns 0 on bad pointer or kmalloc failure.
+static char *copy_lin_str(const void *usr) {
     unsigned int a = (unsigned int)usr;
     struct linux_ctx *lc = cur_lctx();
-    if (a < lc->win_lo) return -1;
-    unsigned int i = 0;
-    while (i < max - 1) {
-        if (a + i >= lc->win_hi) break;
-        char c = *(const char *)(a + i);
-        dst[i++] = c;
-        if (c == '\0') return i;
+    if (a < lc->win_lo) return 0;
+    unsigned int len = 0;
+    while (a + len < lc->win_hi) {
+        if (((const char *)a)[len] == '\0') break;
+        len++;
     }
-    dst[i] = '\0';
-    return i;
+    char *dst = kmalloc(len + 1);
+    if (!dst) return 0;
+    for (unsigned int i = 0; i <= len; i++)
+        dst[i] = ((const char *)a)[i];   // copies the NUL too
+    return dst;
 }
 
 static int lc_alloc_fd(struct linux_ctx *lc, const char *name) {
@@ -241,8 +243,10 @@ void linux_syscall_handler(struct registers *r) {
     case 5:   // open(path, flags, mode)
     case 295: { // openat(dirfd, path, flags, mode)
         const void *pp = (n == 295) ? (const void *)r->ecx : (const void *)r->ebx;
-        if (copy_lin_str(pp, lin_str, sizeof(lin_str)) < 0) { r->eax = -14; break; }
-        int fd = lc_alloc_fd(lc, lin_str);
+        char *p = copy_lin_str(pp);
+        if (!p) { r->eax = -14; break; }
+        int fd = lc_alloc_fd(lc, p);
+        kfree(p);
         r->eax = (fd < 0) ? (fd == -24 ? -24 : -2) : fd;
         break;
     }
@@ -255,13 +259,16 @@ void linux_syscall_handler(struct registers *r) {
         break;
     }
 
-    case 10:   // unlink(path)
-        if (copy_lin_str((const void *)r->ebx, lin_str, sizeof(lin_str)) < 0) {
+    case 10: {  // unlink(path)
+        char *p = copy_lin_str((const void *)r->ebx);
+        if (!p) {
             r->eax = -14;
         } else {
-            r->eax = fs_delete(lin_str) == 0 ? 0 : -2;
+            r->eax = fs_delete(p) == 0 ? 0 : -2;
+            kfree(p);
         }
         break;
+    }
 
     case 19:   // lseek(fd, offset, whence)
     case 140: { // _llseek(fd, off_hi, off_lo, res, whence)
@@ -292,13 +299,16 @@ void linux_syscall_handler(struct registers *r) {
         break;
     }
 
-    case 33:   // access(path, mode)
-        if (copy_lin_str((const void *)r->ebx, lin_str, sizeof(lin_str)) < 0) {
+    case 33: {  // access(path, mode)
+        char *p = copy_lin_str((const void *)r->ebx);
+        if (!p) {
             r->eax = -14;
         } else {
-            r->eax = fs_exists(lin_str) ? 0 : -2;
+            r->eax = fs_exists(p) ? 0 : -2;
+            kfree(p);
         }
         break;
+    }
 
     case 13:   // time(t) — return 0
     case 20:   // getpid
@@ -367,9 +377,11 @@ void linux_syscall_handler(struct registers *r) {
     case 300: { // fstatat64(dirfd, path, st, flags)
         const void *pp = (n == 300) ? (const void *)r->ecx : (const void *)r->ebx;
         unsigned char *st = (unsigned char *)r->edx;
-        if (copy_lin_str(pp, lin_str, sizeof(lin_str)) < 0) { r->eax = -14; break; }
-        if (!in_luser(st, 108)) { r->eax = -14; break; }
-        int size = fs_get_size(lin_str);
+        char *p = copy_lin_str(pp);
+        if (!p) { r->eax = -14; break; }
+        if (!in_luser(st, 108)) { kfree(p); r->eax = -14; break; }
+        int size = fs_get_size(p);
+        kfree(p);
         if (size < 0) { r->eax = -2; break; }
         fill_stat64(lc, (unsigned int)size, st);
         r->eax = 0;
