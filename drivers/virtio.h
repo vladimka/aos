@@ -83,6 +83,7 @@ void virtio_desc_set(struct virtio_dev *d, unsigned int qidx, unsigned int idx,
 void virtio_desc_link(struct virtio_dev *d, unsigned int qidx,
                       unsigned int from, unsigned int to);
 void virtio_submit(struct virtio_dev *d, unsigned int qidx, unsigned int head);
+void virtio_free_chain(struct virtio_dev *d, unsigned int qidx, unsigned int head);
 int virtio_used_pop(struct virtio_dev *d, unsigned int qidx,
                     unsigned int *id, unsigned int *len);
 

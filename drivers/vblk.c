@@ -19,7 +19,7 @@ extern volatile unsigned int tick;
 static struct virtio_dev *gdev;
 static struct virtio_blk_req req;
 static unsigned char databuf[SECTOR_SIZE];
-static unsigned char status_byte;
+static volatile unsigned char status_byte;
 static unsigned long long capacity_bytes;
 
 static int vblk_request(unsigned int type, unsigned int sector) {
@@ -44,16 +44,28 @@ static int vblk_request(unsigned int type, unsigned int sector) {
     unsigned int start = tick;
     for (;;) {
         unsigned int id, len;
-        while (virtio_used_pop(gdev, 0, &id, &len) == 0) {
-            struct virtio_vq *vq = &gdev->vq[0];
-            vq->desc[id].next = vq->free_head;
-            vq->free_head = id;
-        }
-        if (status_byte == 0) return 0;
-        if (status_byte == 0xFF) {
-            if ((int)(tick - start) >= 500) return -2;
-        } else {
+        while (virtio_used_pop(gdev, 0, &id, &len) == 0)
+            virtio_free_chain(gdev, 0, id);
+        // QEMU completes virtio-blk I/O asynchronously (AIO); a timer IRQ may
+        // land between two reads of the status byte. Read it exactly once so
+        // both tests observe a consistent value.
+        unsigned char st = status_byte;
+        if (st == 0) return 0;
+        if (st != 0xFF) {
+            serial_print("vblk: dev err status=");
+            serial_print_hex(st);
+            serial_print("\n");
             return -3;   // device-reported error
+        }
+        if ((int)(tick - start) >= 500) {
+            serial_print("vblk: timeout used_idx=");
+            serial_print_hex(gdev->vq[0].used->idx);
+            serial_print(" avail_idx=");
+            serial_print_hex(gdev->vq[0].avail->idx);
+            serial_print(" isr=");
+            serial_print_hex(inb(gdev->bar + VIRTIO_PCI_ISR));
+            serial_print("\n");
+            return -2;
         }
     }
 }
@@ -99,7 +111,8 @@ void vblk_init(void) {
     gdev = &d;
     unsigned int lo = inl(d.bar + VIRTIO_PCI_DEV_CFG);
     unsigned int hi = inl(d.bar + VIRTIO_PCI_DEV_CFG + 4);
-    capacity_bytes = ((unsigned long long)hi << 32) | lo;
+    // virtio-blk reports capacity in 512-byte sectors.
+    capacity_bytes = (((unsigned long long)hi << 32) | lo) * SECTOR_SIZE;
     serial_print("vblk: ready, capacity=");
     serial_print_hex((unsigned int)(capacity_bytes >> 20));
     serial_print(" MiB\n");

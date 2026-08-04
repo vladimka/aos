@@ -1,10 +1,43 @@
 #include "sfs.h"
 #include "string.h"
+#include "vblk.h"
+#include "serial.h"
 
 #define FS_MEM   ((unsigned char *)0x200000)
 #define FS_SIZE  (1024 * 1024)
 
+#define FS_SECTORS (FS_SIZE / 512)
+
 static struct sfs_header *hdr = (struct sfs_header *)FS_MEM;
+
+static int disk_present;
+static unsigned char dirty_bits[FS_SECTORS / 8];
+
+void sfs_set_disk(int present) {
+    disk_present = present;
+}
+
+static void sfs_touch(unsigned int off, unsigned int len) {
+    if (!disk_present || len == 0) return;
+    unsigned int s0 = off / 512;
+    unsigned int s1 = (off + len - 1) / 512;
+    if (s1 >= FS_SECTORS) s1 = FS_SECTORS - 1;
+    for (unsigned int s = s0; s <= s1; s++)
+        dirty_bits[s / 8] |= (unsigned char)(1 << (s % 8));
+}
+
+void sfs_flush(void) {
+    if (!disk_present) return;
+    static unsigned char sector[512];
+    for (unsigned int s = 0; s < FS_SECTORS; s++) {
+        if (!(dirty_bits[s / 8] & (1 << (s % 8)))) continue;
+        for (unsigned int j = 0; j < 512; j++)
+            sector[j] = FS_MEM[s * 512 + j];
+        if (vblk_write(s, sector) != 0)
+            serial_print("sfs: flush sector fail\n");
+        dirty_bits[s / 8] &= (unsigned char)~(1 << (s % 8));
+    }
+}
 
 static struct sfs_entry *entry_at(unsigned int i) {
     return (struct sfs_entry *)(FS_MEM + sizeof(struct sfs_header) + i * sizeof(struct sfs_entry));
@@ -31,9 +64,29 @@ void fs_format(void) {
         e->offset = 0;
         e->flags = 0;
     }
+    sfs_touch(0, FS_SIZE);
+    sfs_flush();
 }
 
 void fs_init(void) {
+    if (disk_present) {
+        static unsigned char sector[512];
+        unsigned int s;
+        for (s = 0; s < FS_SECTORS; s++) {
+            if (vblk_read(s, sector) != 0) break;
+            for (unsigned int j = 0; j < 512; j++)
+                FS_MEM[s * 512 + j] = sector[j];
+        }
+        if (s == FS_SECTORS && hdr->magic[0] == 'S' && hdr->magic[1] == 'F' &&
+            hdr->magic[2] == 'S' && hdr->magic[3] == '1') {
+            serial_print("SFS mounted from disk.\n");
+            return;
+        }
+        serial_print("SFS formatting new disk.\n");
+        fs_format();
+        sfs_flush();
+        return;
+    }
     if (hdr->magic[0] != 'S' || hdr->magic[1] != 'F' ||
         hdr->magic[2] != 'S' || hdr->magic[3] != '1') {
         fs_format();
@@ -92,6 +145,8 @@ int fs_create(const char *name) {
     e->offset = next_data();
     e->flags = 1;
     hdr->entry_count++;
+    sfs_touch(0, data_start());
+    sfs_flush();
     return 0;
 }
 
@@ -105,6 +160,8 @@ int fs_delete(const char *name) {
     e->offset = 0;
     e->flags = 0;
     hdr->entry_count--;
+    sfs_touch(0, data_start());
+    sfs_flush();
     return 0;
 }
 
@@ -165,6 +222,8 @@ int fs_write(const char *name, const char *data, unsigned int size) {
         dst[j] = data[j];
 
     e->size = size;
+    sfs_touch(off, size);
+    sfs_flush();
     return size;
 }
 

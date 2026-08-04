@@ -6,6 +6,7 @@
 #include "interrupts.h"
 #include "vrng.h"
 #include "vblk.h"
+#include "sfs.h"
 
 static struct virtio_dev *dev_list;
 
@@ -35,26 +36,31 @@ void virtio_ready(struct virtio_dev *d) {
 
 int virtio_setup_queue(struct virtio_dev *d, unsigned int qidx, unsigned int n) {
     outw(d->bar + VIRTIO_PCI_QUEUE_SEL, qidx);
-    unsigned short qnum = inw(d->bar + VIRTIO_PCI_QUEUE_NUM);
-    if (qnum < n) n = qnum;                  // device caps the queue; shrink to fit
-    if (n == 0) return -1;
-    // Legacy vring layout QEMU computes from QUEUE_PFN (virtio_queue_update_rings,
-    // align = VIRTIO_PCI_VRING_ALIGN 4096): desc at base, avail right after the
-    // descriptor table, used at the next 4096 boundary.
-    unsigned int avail_off = n * sizeof(struct vring_desc);
-    unsigned int used_off = 4096;
-    unsigned int base = (unsigned int)page_alloc_order(2);   // 16 KiB, contiguous
+    unsigned int qnum = inw(d->bar + VIRTIO_PCI_QUEUE_NUM);
+    if (qnum == 0) return -1;
+    // QEMU lays the vring out using the device's own queue size (num), read
+    // back via QUEUE_NUM: desc table of num*16 bytes, avail right after it,
+    // used at the next 4096 boundary (virtio_queue_update_rings). Using any
+    // other size (e.g. a capped n) puts avail/used at the wrong offsets and
+    // the device never sees the request. n here is just a minimum hint.
+    if (qnum < n) n = qnum;
+    unsigned int avail_off = qnum * sizeof(struct vring_desc);
+    unsigned int used_off = (avail_off + 4 + 2 * qnum + 4095) & ~4095u;
+    unsigned int need = used_off + 8 * qnum + 8;
+    int order = 0;
+    while ((4096u << order) < need) order++;
+    unsigned int base = (unsigned int)page_alloc_order(order);
     if (!base) return -2;
     struct virtio_vq *vq = &d->vq[qidx];
     vq->desc = (volatile struct vring_desc *)base;
     vq->avail = (volatile struct vring_avail *)(base + avail_off);
     vq->used = (volatile struct vring_used *)(base + used_off);
-    vq->size = n;
-    for (unsigned int i = 0; i < n; i++) {
+    vq->size = qnum;
+    for (unsigned int i = 0; i < qnum; i++) {
         vq->desc[i].addr = 0;
         vq->desc[i].len = 0;
         vq->desc[i].flags = 0;
-        vq->desc[i].next = (i + 1 < n) ? i + 1 : 0xFFFF;
+        vq->desc[i].next = (i + 1 < qnum) ? i + 1 : 0xFFFF;
     }
     vq->free_head = 0;
     vq->last_used = 0;
@@ -93,6 +99,22 @@ void virtio_submit(struct virtio_dev *d, unsigned int qidx, unsigned int head) {
     vq->avail->ring[vq->avail->idx % vq->size] = head;
     vq->avail->idx++;
     outw(d->bar + VIRTIO_PCI_QUEUE_NOTIFY, qidx);
+}
+
+// The used ring only records the chain head, so returning just the head to the
+// free list would leak every other descriptor of a multi-descriptor request.
+// Walk the chain (via the NEXT flag) and free each element.
+void virtio_free_chain(struct virtio_dev *d, unsigned int qidx, unsigned int head) {
+    struct virtio_vq *vq = &d->vq[qidx];
+    unsigned int i = head;
+    while (i != 0xFFFF) {
+        unsigned int next = vq->desc[i].next;
+        unsigned short flags = vq->desc[i].flags;
+        vq->desc[i].next = vq->free_head;
+        vq->free_head = i;
+        if (!(flags & VRING_DESC_F_NEXT)) break;
+        i = next;
+    }
 }
 
 int virtio_used_pop(struct virtio_dev *d, unsigned int qidx,
@@ -145,10 +167,6 @@ int virtio_probe_pci(struct virtio_dev *d, unsigned int device_id) {
     }
     return -1;
 }
-
-// sfs_set_disk is defined in the SFS disk backend (Task 5); declared here until
-// sfs.h exposes it.
-void sfs_set_disk(int present);
 
 // Logs every virtio device found on the bus, then initializes each driver.
 void virtio_init(void) {

@@ -22,5 +22,7 @@ struct sfs_entry {
 void fs_format(void);
 void fs_init(void);
 int  sfs_get_entry(unsigned int idx, char *name_buf, unsigned int *size_out);
+void sfs_set_disk(int present);
+void sfs_flush(void);
 
 #endif

@@ -11,7 +11,7 @@ LDFLAGS = -T linker.ld -m elf_i386 -nostdlib --no-warn-rwx-segments
 
 KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               drivers/serial.o drivers/mouse.o drivers/pci.o drivers/uhci.o drivers/virtio.o \
-              drivers/vrng.o \
+              drivers/vrng.o drivers/vblk.o \
               kernel/terminal.o kernel/commands.o \
               kernel/sfs.o kernel/string.o arch/i386/gdt.o arch/i386/idt.o \
               kernel/interrupts.o kernel/elf.o kernel/syscall.o \
