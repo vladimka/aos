@@ -24,9 +24,13 @@ PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdo
 PROG_ELFS = $(addprefix programs/, $(addsuffix .elf, $(PROGRAMS)))
 PROG_OBJS = $(addprefix programs/, $(addsuffix .o, $(PROGRAMS))) programs/libaos.o programs/ico.o
 
+# The Linux ELF payload (lin/*) is built with a static musl i386 toolchain.
+# If it is not installed, the payload is skipped: the kernel still builds and
+# the AOS programs run, only the musl binaries are not embedded in the ramdisk.
 LINUX_CC  = tools/musl-i686/bin/i686-linux-musl-gcc
 LINUX_SRCS = $(wildcard tools/linux/*.c)
-LINUX_BINS = $(patsubst tools/linux/%.c,build/linux/%,$(LINUX_SRCS))
+LINUX_BINS = $(if $(wildcard $(LINUX_CC)),$(patsubst tools/linux/%.c,build/linux/%,$(LINUX_SRCS)))
+LINUX_EMBED = $(if $(LINUX_BINS),--data lin/hello=build/linux/hello --data lin/ls=build/linux/ls --data lin/cat=build/linux/cat --data lin/test.txt=tools/linux/test.txt)
 
 all: aos.iso
 
@@ -67,8 +71,7 @@ build/linux/%: tools/linux/%.c
 
 kernel/progs.c: $(PROG_ELFS) scripts/demo.ico scripts/gen_progs.py $(LINUX_BINS)
 	$(PYTHON) scripts/gen_progs.py $(PROG_ELFS) --data demo.ico=scripts/demo.ico \
-		--data lin/hello=build/linux/hello --data lin/ls=build/linux/ls \
-		--data lin/cat=build/linux/cat --data lin/test.txt=tools/linux/test.txt > $@
+		$(LINUX_EMBED) > $@
 
 compile_commands.json: scripts/gen_compile_commands.py $(wildcard kernel/*.c drivers/*.c arch/i386/*.c boot/*.c programs/*.c)
 	$(PYTHON) scripts/gen_compile_commands.py
@@ -87,7 +90,10 @@ run: aos.iso
 
 # Headless regression suite: each script boots aos.iso under QEMU, drives the
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
-TESTS = linhello lincat ipctest manytest notepadtest sleeptest
+# linhello/lincat need the musl Linux payload, so they are included only when
+# the musl toolchain is installed.
+LINUX_TESTS = $(if $(LINUX_BINS),linhello lincat)
+TESTS = ipctest manytest notepadtest sleeptest $(LINUX_TESTS)
 
 test: aos.iso
 	@set -e; for t in $(TESTS); do \
