@@ -271,10 +271,10 @@ static void parse_memmap(unsigned char *mbi, unsigned int *starts,
         unsigned int size = *(unsigned int *)(tag + 4);
         if (type == 0) break;
         if (type == 6) {
-            unsigned int es = *(unsigned int *)(tag + 8);
-            unsigned char *e = tag + 12;
+            unsigned int es = *(unsigned int *)(tag + 8);   // entry_size
+            unsigned char *e = tag + 16;                    // after entry_version
             unsigned char *tend = tag + size;
-            while (e + 24 <= tend) {
+            while (e + es <= tend) {
                 unsigned long long base = *(unsigned long long *)e;
                 unsigned long long len = *(unsigned long long *)(e + 8);
                 unsigned int etype = *(unsigned int *)(e + 16);
@@ -288,7 +288,7 @@ static void parse_memmap(unsigned char *mbi, unsigned int *starts,
                         (*navail)++;
                     }
                 }
-                e += es ? es : 24;
+                e += es;
             }
             return;
         }
@@ -648,7 +648,7 @@ struct task {
     unsigned int sink;
     unsigned int *pd;           // task's own page directory page
     unsigned int *pts[3];       // the 3 user-area page table pages
-    unsigned int *mbox;         // mailbox ring buffer (kmalloc'd)
+    unsigned int (*mbox)[5];    // mailbox ring buffer (kmalloc'd): MSG_CAP x 5 words
     unsigned int mbox_head;
     unsigned int mbox_tail;
     char *args;                 // argument buffer (kmalloc'd)
@@ -848,7 +848,7 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     unsigned int *pd = page_alloc_zero();
     unsigned int *pts[3];
     for (int i = 0; i < 3; i++) pts[i] = page_alloc_zero();
-    unsigned int *mbox = kmalloc(MSG_CAP * 5 * 4);
+    unsigned int (*mbox)[5] = (unsigned int (*)[5])kmalloc(MSG_CAP * 5 * 4);
     char *argsb = kmalloc(256);
     if (!ks || !pd || !pts[0] || !pts[1] || !pts[2] || !mbox || !argsb) {
         if (ks) kfree(ks);
