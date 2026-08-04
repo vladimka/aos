@@ -1,6 +1,7 @@
 #include "paging.h"
 #include "vga.h"
 #include "serial.h"
+#include "pmm.h"
 
 #define PTE_PRESENT  0x1
 #define PTE_WRITABLE 0x2
@@ -40,6 +41,13 @@ void paging_init(void) {
     // Every task's address space clones these PDEs, so all apps see the same
     // physical window buffers at the same virtual addresses.
     for (int t = SLAB_PD_LO; t <= SLAB_PD_HI; t++) {
+        page_dir[t] |= PTE_USER;
+        for (int p = 0; p < 1024; p++)
+            page_tables[t][p] |= PTE_USER;
+    }
+
+    // Task-0 Linux window: 0x08000000 .. 0x08800000 identity-mapped, user-accessible.
+    for (int t = 32; t <= 33; t++) {
         page_dir[t] |= PTE_USER;
         for (int p = 0; p < 1024; p++)
             page_tables[t][p] |= PTE_USER;
@@ -87,4 +95,17 @@ unsigned int paging_get_cr3(void) {
 
 void paging_set_cr3(unsigned int cr3) {
     __asm__ volatile("movl %0, %%cr3" :: "r"(cr3) : "memory");
+}
+
+int paging_map_user_page(unsigned int vaddr) {
+    unsigned int pdi = vaddr >> 22;
+    unsigned int pti = (vaddr >> 12) & 0x3FF;
+    unsigned int *pd = (unsigned int *)paging_get_cr3();
+    if (!(pd[pdi] & PTE_PRESENT)) return -1;
+    unsigned int *pt = (unsigned int *)(pd[pdi] & 0xFFFFF000);
+    if (pt[pti] & PTE_PRESENT) return 0;
+    unsigned int frame = (unsigned int)page_alloc_zero();
+    if (!frame) return -1;
+    pt[pti] = frame | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+    return 0;
 }
