@@ -16,7 +16,7 @@
 
 ```
 make           # aos.iso (GRUB2 rescue ISO)
-make run       # qemu-system-i386 -cdrom aos.iso
+make run       # qemu-system-i386 -m 256 -cdrom aos.iso
 make clean     # full clean, removes kernel/progs.c too
 ```
 
@@ -31,14 +31,26 @@ No dedicated test, lint, or typecheck commands.
 - All kernel C code compiled `-ffreestanding -nostdlib -fno-builtin -fno-stack-protector -mno-sse -mno-mmx -mno-80387`
 - No libc; own `string.c` (`strcmp`, `strncpy`, `strlen`)
 - Include paths: `-Ikernel -Idrivers -Iarch/i386 -Iboot`
-- **64 KB ramdisk at `0x200000`** — flat SFS (Simple File System), `SFS_MAX_FILES=64`
-- **18 syscalls via `int 0x80`** (DPL 3 gate, `idt_install_irq_flags(0x80, isr128, 0xEE)`), R/O user-level interface in `programs/libaos.c`
+- **160 KB ramdisk at `0x200000`** — flat SFS (Simple File System), `SFS_MAX_FILES=64`
+- **30 syscalls via `int 0x80`** (DPL 3 gate, `idt_install_irq_flags(0x80, isr128, 0xEE)`), R/O user-level interface in `programs/libaos.c`
 - `printf()` in `kernel/printf.c` writes to **both** VGA and COM1 (used for all kernel banners)
 - **Privilege separation**: paging enabled (`kernel/paging.c`), user programs run in **ring 3** via TSS (`arch/i386/gdt.c`, `kernel/user.c`/`user_tramp.S`), kernel stays in ring 0
 
 ### Memory model (after `paging_init`)
 
 - Identity map 0..256 MB via 64 page tables; PDEs + PTEs for the user area carry the user bit
+- **Physical memory**: `kernel/pmm.c` — binary buddy page allocator over the multiboot
+  memory map (reserved: low MB, kernel `[_start,_end)`, ramdisk, task-0 user area,
+  slab window, framebuffer). `page_alloc`/`page_free` are IRQ-safe; per-frame
+  metadata in `pmm_frames[]` (`order`/`flags`/`slab_class`, see `kernel/pmm.h`)
+- **Kernel heap**: `kernel/kmm.c` — slab-lite `kmalloc`/`kfree` (size classes
+  16..4096 backed by buddy pages; larger blocks as contiguous buddy blocks).
+  Class/order recovered from `pmm_frames[]` on free
+- **Tasks**: up to `MAX_TASKS=24` (RAM-bound: ~18 GUI tasks of 12 MB at 256 MB).
+  Each task's kstack/PD/3 PTs/mailbox/args are `kmalloc`/`page_alloc`'d at spawn
+  and freed at exit; the dying task's kstack is freed lazily via a zombie list
+  because `switch_and_restore` restores `%esp` only after `task_switch_kernel`
+  returns (running on the dead stack)
 - **User area** `0x01000000..0x01C00000` (PD 4..6): program text/rodata/data load at `0x01000000`, bump-allocator heap at `0x01100000`, user stack top at `0x01804000`
 - TSS (`SEL_TSS` = 0x28) `esp0` = top of `sys_stack[8192]`; CPU switches to it on any ring 3 → ring 0 transition
 - `launch_user_asm` (`kernel/user_tramp.S`) pushes SS/ESP/EFLAGS/CS/EIP (EFLAGS=0x202) and `iret`s to ring 3; `user_exit_asm` restores the saved kernel `esp` and `ret`s back into the shell as if the launch never happened
