@@ -164,7 +164,7 @@ def main():
             pass
     write_state(*MOUSE_BOOT)
     qemu = subprocess.Popen([
-        "qemu-system-i386", "-cdrom", ISO, "-display", "none",
+        "qemu-system-i386", "-m", "256", "-cdrom", ISO, "-display", "none",
         "-serial", "file:" + SER, "-monitor", "unix:" + MON + ",server,nowait",
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:

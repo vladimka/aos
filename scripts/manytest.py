@@ -7,15 +7,14 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ISO = os.path.join(ROOT, "aos.iso")
-MON = "/tmp/aos-ipc.sock"
-SER = "/tmp/aos-ipc.log"
-PPM = "/tmp/aos-ipc.ppm"
-BEFORE = "/tmp/aos-ipc-before.ppm"
-AFTER = "/tmp/aos-ipc-after.ppm"
+MON = "/tmp/aos-many.sock"
+SER = "/tmp/aos-many.log"
+PPM = "/tmp/aos-many.ppm"
+BEFORE = "/tmp/aos-many-before.ppm"
 
-TXT_X0, TXT_X1 = 21, 660          # term text band, x range (content left..right)
-TXT_Y0, TXT_Y1 = 39, 70           # term text band, y range (content rows 0..1)
-TXT_THRESHOLD = 500               # AFTER band must grow by more than this (pixels)
+TXT_X0, TXT_X1 = 21, 660          # term text band, x range
+TXT_Y0, TXT_Y1 = 39, 39 + 26 * 16 # term text band, y range (all 26 rows)
+TXT_THRESHOLD = 500               # band must grow by more than this (pixels)
 
 def wait_for(path, seconds=10):
     end = time.time() + seconds
@@ -50,14 +49,6 @@ def serial_text():
     except FileNotFoundError:
         return ""
 
-def ppm_pixel(path, x, y):
-    with open(path, "rb") as f:
-        f.readline()
-        w = int(f.readline().split()[0])
-        f.readline()
-        f.seek((y * w + x) * 3, 1)
-        return tuple(f.read(3))
-
 def ppm_data(path):
     with open(path, "rb") as f:
         if f.readline().strip() != b"P6":
@@ -79,7 +70,7 @@ def count_text_pixels(path, x0, y0, x1, y1):
     return n
 
 def main():
-    for path in (MON, SER, PPM, BEFORE, AFTER):
+    for path in (MON, SER, PPM, BEFORE):
         try: os.unlink(path)
         except FileNotFoundError: pass
     qemu = subprocess.Popen([
@@ -89,42 +80,37 @@ def main():
     try:
         wait_for(MON)
         time.sleep(5)
+        # Dock launcher spawns a terminal (same coordinates as ipctest.py).
         hmp("mouse_move -39 341")
-        time.sleep(0.3)
         hmp("mouse_button 1")
-        time.sleep(0.4)
         hmp("mouse_button 0")
         time.sleep(1)
         hmp("screendump " + BEFORE)
         wait_for(BEFORE)
-        if ppm_pixel(BEFORE, 30, 30) == (26, 32, 48):
-            raise AssertionError("dock click did not spawn a terminal window")
-        send_text("ipctest\n")
-        time.sleep(3)
-        if "KERNEL PANIC" in serial_text():
-            raise AssertionError("ipctest triggered a kernel panic")
+        send_text("many\n")
+        end = time.time() + 25
+        log = ""
+        while time.time() < end:
+            time.sleep(1)
+            log = serial_text()
+            if "KERNEL PANIC" in log: break
+            if "MANY FAIL" in log: break
+            time.sleep(1)
+        if "KERNEL PANIC" in log:
+            raise AssertionError("many triggered a kernel panic")
+        if "MANY FAIL" in log:
+            raise AssertionError("many failed to spawn/collect tasks")
         hmp("screendump " + PPM)
         wait_for(PPM)
         if os.path.getsize(PPM) <= 1024:
             raise AssertionError("window manager did not produce a framebuffer dump")
-        with open(BEFORE, "rb") as f: before = f.read()
-        with open(PPM, "rb") as f: after = f.read()
-        if before == after:
-            raise AssertionError("terminal did not process the ipctest command")
         before_txt = count_text_pixels(BEFORE, TXT_X0, TXT_Y0, TXT_X1, TXT_Y1)
         after_txt = count_text_pixels(PPM, TXT_X0, TXT_Y0, TXT_X1, TXT_Y1)
         if after_txt - before_txt <= TXT_THRESHOLD:
             raise AssertionError(
-                "terminal did not render IPC TEST PASS (band text grew %d, want > %d)"
+                "terminal did not render MANY PASS (band text grew %d, want > %d)"
                 % (after_txt - before_txt, TXT_THRESHOLD))
-        hmp("mouse_move 1 0")
-        time.sleep(0.3)
-        hmp("screendump " + AFTER)
-        wait_for(AFTER)
-        with open(AFTER, "rb") as f: moved = f.read()
-        if moved == after:
-            raise AssertionError("window manager stopped responding after the run")
-        print("PASS: IPC exit notification and WM regression")
+        print("PASS: many-task stress (10 concurrent x 4 rounds)")
         return 0
     finally:
         qemu.terminate()

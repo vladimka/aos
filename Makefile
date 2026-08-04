@@ -19,7 +19,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               kernel/user_tramp.o kernel/printf.o kernel/progs.o \
               kernel/task.o
 
-PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock ipctest notepad
+PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock ipctest notepad many
 PROG_ELFS = $(addprefix programs/, $(addsuffix .elf, $(PROGRAMS)))
 PROG_OBJS = $(addprefix programs/, $(addsuffix .o, $(PROGRAMS))) programs/libaos.o programs/ico.o
 
@@ -72,7 +72,7 @@ aos.iso: aos.elf
 	grub-mkrescue -o $@ iso
 
 run: aos.iso
-	qemu-system-i386 -display gtk,grab-on-hover=on -cdrom $<
+	qemu-system-i386 -m 256 -display gtk,grab-on-hover=on -cdrom $<
 
 clean:
 	rm -f $(KERNEL_OBJS) $(PROG_ELFS) $(PROG_OBJS) *.elf *.bin *.iso kernel/progs.c
