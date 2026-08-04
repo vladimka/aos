@@ -4,6 +4,9 @@
 #define ELF_MAGIC 0x464C457F
 
 #define PT_LOAD 1
+#define ET_DYN 3
+#define LINUX_ENTRY_MIN 0x01100000
+#define LINUX_BASE 0x08048000
 
 struct elf_header {
     unsigned int   magic;
@@ -40,5 +43,10 @@ struct elf_prog_header {
 };
 
 void *elf_load(const char *path);
+
+struct linux_ctx;
+
+int elf_probe(const char *path, int *abi);
+void *elf_load_linux(const char *path, const char *args, struct linux_ctx *lc);
 
 #endif

@@ -10,6 +10,7 @@
 #include "task.h"
 #include "mouse.h"
 #include "aosipc.h"
+#include "linux_syscall.h"
 
 extern volatile unsigned int tick;
 
@@ -68,7 +69,7 @@ void syscall_set_args(const char *args) {
 
 // Stdout routing: a task with a mailbox sink delivers output as MSG_DATA
 // messages (up to 12 bytes each); otherwise output goes to the kernel terminal.
-static void route_text(const char *s, unsigned int len) {
+void route_text(const char *s, unsigned int len) {
     unsigned int pid = task_current_pid();
     unsigned int sink = task_current_sink();
     if (pid > 0 && sink > 0 && task_alive(sink)) {
@@ -129,6 +130,11 @@ static void route_dec(unsigned int n) {
 
 void syscall_handler(struct registers *r) {
     unsigned int n = r->eax;
+
+    if (task_current_abi() == ABI_LINUX) {
+        linux_syscall_handler(r);
+        return;
+    }
 
     switch (n) {
     case SYS_PRINT:

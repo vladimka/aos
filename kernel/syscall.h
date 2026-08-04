@@ -35,5 +35,6 @@
 #define SYS_GETEVENT     29
 
 void syscall_set_args(const char *args);
+void route_text(const char *s, unsigned int len);
 
 #endif

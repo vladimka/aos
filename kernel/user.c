@@ -13,6 +13,7 @@ unsigned int saved_esp;
 static int program_active = 0;
 
 void launch_user_asm(void (*entry)(void));
+void launch_user_linux(void (*entry)(void), unsigned int esp);
 void user_exit_asm(void) __attribute__((noreturn));
 
 void user_init(void) {
@@ -31,6 +32,11 @@ int user_program_active(void) {
 void user_program_start(void (*entry)(void)) {
     program_active = 1;
     launch_user_asm(entry);
+}
+
+void user_program_start_linux(void (*entry)(void), unsigned int esp) {
+    program_active = 1;
+    launch_user_linux(entry, esp);
 }
 
 void user_program_exit(void) {

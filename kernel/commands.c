@@ -7,6 +7,8 @@
 #include "fs.h"
 #include "progload.h"
 #include "user.h"
+#include "task.h"
+#include "linux_syscall.h"
 
 char command_path[PATH_MAX] = "bin";
 
@@ -30,7 +32,10 @@ void commands_set_path(const char *p) {
 static int try_exec(const char *full_path, const char *arg) {
     void (*entry)(void) = program_load(full_path, arg);
     if (entry) {
-        user_program_start(entry);
+        if (task_current_abi() == ABI_LINUX)
+            user_program_start_linux(entry, task_current_lctx()->stack_sp);
+        else
+            user_program_start(entry);
         terminal_set_prompt();  // runs after the program exits
         return 1;
     }
