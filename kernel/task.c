@@ -8,6 +8,7 @@
 #include "user.h"
 #include "kmm.h"
 #include "pmm.h"
+#include "linux_syscall.h"
 
 #define PTE_PRESENT  0x1
 #define PTE_WRITABLE 0x2
@@ -93,6 +94,9 @@ void task_init(void) {
     tasks[0].mbox = kmalloc(MSG_CAP * 5 * 4);
     tasks[0].mbox_head = 0;
     tasks[0].mbox_tail = 0;
+    tasks[0].abi = ABI_AOS;
+    tasks[0].lctx = kmalloc(sizeof(struct linux_ctx));
+    linux_ctx_init(tasks[0].lctx);
     current_task = &tasks[0];
     tss_set_esp0(tasks[0].kstack_top);
 }
@@ -143,6 +147,8 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         task_free_addrspace(dead);
         kfree(dead->mbox);
         kfree(dead->args);
+        kfree(dead->lctx);
+        dead->lctx = 0;
         dead->mbox = 0;
         dead->args = 0;
         if (nzombies < MAX_TASKS)
@@ -190,6 +196,16 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     t->mbox_tail = 0;
     t->args = argsb;
 
+    t->abi = ABI_AOS;
+    t->lctx = kmalloc(sizeof(struct linux_ctx));
+    if (!t->lctx) {
+        kfree(ks); page_free(pd); kfree(mbox); kfree(argsb);
+        for (int i = 0; i < 3; i++) page_free(pts[i]);
+        t->state = TASK_FREE;
+        return -1;
+    }
+    linux_ctx_init(t->lctx);
+
     unsigned int *kpd = paging_kernel_pd();
     for (int i = 0; i < 1024; i++)
         pd[i] = kpd[i];
@@ -203,6 +219,7 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
                 kfree(t->kstack);
                 kfree(t->mbox);
                 kfree(t->args);
+                kfree(t->lctx); t->lctx = 0;
                 t->kstack = 0; t->mbox = 0; t->args = 0;
                 t->state = TASK_FREE;
                 return -1;
@@ -228,6 +245,7 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
         kfree(t->kstack);
         kfree(t->mbox);
         kfree(t->args);
+        kfree(t->lctx); t->lctx = 0;
         t->kstack = 0; t->mbox = 0; t->args = 0;
         t->state = TASK_FREE;
         return -2;
@@ -341,4 +359,17 @@ int task_set_event_pid(void) {
     int old = event_pid;
     event_pid = (int)current_task->pid;
     return old;
+}
+
+unsigned int task_current_abi(void) {
+    return current_task->abi;
+}
+
+int task_set_abi_current(unsigned int abi) {
+    current_task->abi = abi;
+    return 0;
+}
+
+struct linux_ctx *task_current_lctx(void) {
+    return current_task->lctx;
 }
