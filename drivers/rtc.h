@@ -6,5 +6,6 @@ struct aos_time {
 };
 
 int rtc_get(struct aos_time *t);
+void rtc_set_tz(int minutes);
 
 #endif

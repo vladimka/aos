@@ -1,6 +1,33 @@
 #include "ports.h"
 #include "rtc.h"
 
+static int tz_min;
+
+void rtc_set_tz(int minutes) { tz_min = minutes; }
+
+// Howard Hinnant's days-from-civil / civil-from-days (proleptic Gregorian).
+static int days_from_civil(int y, unsigned int m, unsigned int d) {
+    y -= (int)(m <= 2);
+    int era = (y >= 0 ? y : y - 399) / 400;
+    unsigned int yoe = (unsigned int)(y - era * 400);
+    unsigned int doy = (153 * (m + (m > 2 ? 0u : 9u)) + 2) / 5 + d - 1;
+    unsigned int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int)doe - 719468;
+}
+
+static void civil_from_days(int z, int *y, unsigned int *m, unsigned int *d) {
+    z += 719468;
+    int era = (z >= 0 ? z : z - 146096) / 146097;
+    unsigned int doe = (unsigned int)(z - era * 146097);
+    unsigned int yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    *y = (int)yoe + era * 400;
+    unsigned int doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    unsigned int mp = (5 * doy + 2) / 153;
+    *d = doy - (153 * mp + 2) / 5 + 1;
+    *m = mp + (mp < 10 ? 3u : (unsigned int)-9);
+    if (*m <= 2) *y += 1;
+}
+
 static unsigned char rtc_read(unsigned char reg) {
     outb(0x70, (unsigned char)(reg | 0x80));   // NMI masked
     return inb(0x71);
@@ -42,5 +69,22 @@ int rtc_get(struct aos_time *t) {
     }
     t->year = year; t->month = (int)mon; t->day = (int)day;
     t->hour = (int)hr; t->minute = (int)min; t->second = (int)sec;
+
+    if (tz_min != 0) {
+        long total = (long)days_from_civil(year, (unsigned int)mon,
+                                           (unsigned int)day) * 86400L +
+                     (long)hr * 3600L + (long)min * 60L + (long)sec + tz_min;
+        if (total < 0) total = 0;
+        int days = (int)(total / 86400L);
+        int rem = (int)(total % 86400L);
+        hr = (unsigned char)(rem / 3600);
+        min = (unsigned char)((rem % 3600) / 60);
+        sec = (unsigned char)(rem % 60);
+        unsigned int mo, da;
+        civil_from_days(days, &year, &mo, &da);
+        t->month = (int)mo;
+        t->day = (int)da;
+    }
+
     return 0;
 }
