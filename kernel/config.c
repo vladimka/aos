@@ -101,7 +101,7 @@ void config_load(void) {
 
     rtc_set_tz(tz_min);
     if (tz_min != 0)
-        printf("config: timezone %d\n", tz_min);
+        printf("config: timezone %s%d\n", tz_min > 0 ? "+" : "", tz_min);
 }
 
 int config_tz_min(void) { return tz_min; }

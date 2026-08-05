@@ -101,7 +101,7 @@ run: aos.iso disk.img
 # linhello/lincat need the musl Linux payload, so they are included only when
 # the musl toolchain is installed.
 LINUX_TESTS = $(if $(LINUX_BINS),linhello lincat)
-TESTS = ipctest manytest notepadtest sleeptest rngtest blktest virtiotest netlooptest rtctest $(LINUX_TESTS)
+TESTS = ipctest manytest notepadtest sleeptest rngtest blktest virtiotest netlooptest rtctest configtest $(LINUX_TESTS)
 
 test: aos.iso
 	@set -e; for t in $(TESTS); do \
