@@ -4,8 +4,8 @@
 #include "serial.h"
 #include "kmm.h"
 
-#define FS_MEM   ((unsigned char *)0x200000)
-#define FS_SIZE  (1024 * 1024)
+#define FS_MEM   ((unsigned char *)SFS_BASE)
+#define FS_SIZE  SFS_SIZE
 
 #define FS_SECTORS (FS_SIZE / 512)
 

@@ -1,4 +1,5 @@
 #include "pmm.h"
+#include "sfs.h"
 #include "string.h"
 #include "printf.h"
 #include "vga.h"
@@ -237,7 +238,7 @@ void pmm_init(unsigned int mb_info_addr) {
 
     reserve(0x00000000, 0x00100000);                     // low MB (BIOS/multiboot)
     reserve(0x00100000, (unsigned int)&_end);            // kernel image
-    reserve(0x00200000, 0x00200000 + 1024 * 1024);        // ramdisk (kernel/sfs.c)
+    reserve(SFS_BASE, SFS_BASE + SFS_SIZE);                // ramdisk (kernel/sfs.c)
     reserve(0x01000000, 0x01C00000);                     // task-0 user area
     reserve(0x03000000, 0x04000000);                     // shared slab window
     reserve(0x08000000, 0x08800000);                     // task-0 Linux window

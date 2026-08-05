@@ -13,6 +13,10 @@
 #define COL_TITLE_TEXT   0xFFFFFF
 #define COL_CURSOR       0xFFFFFF
 
+// Desktop gradient colors; overridden from sys/config.cfg if present.
+static unsigned int wp_top = COL_DESKTOP;
+static unsigned int wp_bot = 0x0E1620;
+
 // ---- dock ----------------------------------------------------------------
 
 #define DOCK_H       52
@@ -308,6 +312,11 @@ static void int2str(char *buf, int v) {
     buf[i] = 0;
 }
 
+static int strequal(const char *a, const char *b) {
+    while (*a && *b && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
 // ---- framebuffer drawing --------------------------------------------------
 
 static void fb_fill(int x, int y, int w, int h, unsigned int rgb) {
@@ -320,6 +329,86 @@ static void fb_fill(int x, int y, int w, int h, unsigned int rgb) {
     for (int yy = y0; yy < y1; yy++)
         for (int xx = x0; xx < x1; xx++)
             fb[(unsigned)yy * pitch + (unsigned)xx] = rgb;
+}
+
+static unsigned int parse_hex_cfg(const char *s) {
+    unsigned int v = 0;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
+    while (*s) {
+        char c = *s;
+        unsigned int d;
+        if (c >= '0' && c <= '9') d = (unsigned int)(c - '0');
+        else if (c >= 'a' && c <= 'f') d = (unsigned int)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') d = (unsigned int)(c - 'A' + 10);
+        else break;
+        v = v * 16 + d;
+        s++;
+    }
+    return v;
+}
+
+static void load_wallpaper_config(void) {
+    char buf[512];
+    int sz = fs_read("sys/config.cfg", buf, sizeof(buf) - 1);
+    if (sz <= 0) return;
+    buf[sz] = 0;
+    char *p = buf;
+    while (p && *p) {
+        char *eol = p;
+        while (*eol && *eol != '\n') eol++;
+        char line[80];
+        int n = (int)(eol - p);
+        if (n > 79) n = 79;
+        for (int i = 0; i < n; i++) line[i] = p[i];
+        line[n] = 0;
+        if (n > 0 && line[n - 1] == '\r') line[n - 1] = 0;
+        int k = 0;
+        while (line[k] == ' ' || line[k] == '\t') k++;
+        if (line[k] != '#' && line[k] != 0) {
+            char *eq = line;
+            while (*eq && *eq != '=') eq++;
+            if (*eq == '=') {
+                *eq = 0;
+                const char *val = eq + 1;
+                while (*val == ' ' || *val == '\t') val++;
+                if (strequal(line + k, "wallpaper_top")) wp_top = parse_hex_cfg(val);
+                else if (strequal(line + k, "wallpaper_bot")) wp_bot = parse_hex_cfg(val);
+            }
+        }
+        if (*eol == '\n') p = eol + 1;
+        else break;
+    }
+}
+
+// Vertical gradient from wp_top to wp_bot over the full screen height.
+// One u32 fill per row; per-row delta is accumulated (no per-pixel division).
+// Partial damage rects are handled by seeding the fixed-point value at the
+// rect's absolute y0, so MSG_UPDATE regions keep the correct colors.
+static void draw_desktop_gradient(int x0, int y0, int x1, int y1) {
+    int w = x1 - x0, h = y1 - y0;
+    if (w <= 0 || h <= 0) return;
+    unsigned int *fb = (unsigned int *)fb_addr;
+    unsigned int pitch = fb_pitch >> 2;
+    int fbh = (int)fb_h;
+    if (fbh <= 0) fbh = h;
+    int rt = (int)((wp_top >> 16) & 0xFF), gt = (int)((wp_top >> 8) & 0xFF),
+        bt = (int)(wp_top & 0xFF);
+    int rb = (int)((wp_bot >> 16) & 0xFF), gb = (int)((wp_bot >> 8) & 0xFF),
+        bb = (int)(wp_bot & 0xFF);
+    int dr = (((rb - rt) << 16) / fbh);
+    int dg = (((gb - gt) << 16) / fbh);
+    int db = (((bb - bt) << 16) / fbh);
+    int cr = (rt << 16) + dr * y0;
+    int cg = (gt << 16) + dg * y0;
+    int cb = (bt << 16) + db * y0;
+    for (int y = 0; y < h; y++) {
+        unsigned int rgb = ((unsigned int)((cr >> 16) & 0xFF) << 16) |
+                           ((unsigned int)((cg >> 16) & 0xFF) << 8) |
+                           ((unsigned int)((cb >> 16) & 0xFF));
+        unsigned int *row = fb + (unsigned)(y0 + y) * pitch + (unsigned)x0;
+        for (int x = 0; x < w; x++) row[x] = rgb;
+        cr += dr; cg += dg; cb += db;
+    }
 }
 
 static void draw_close_btn(const struct win *wn);
@@ -395,7 +484,7 @@ static void composite_rect(int x0, int y0, int x1, int y1) {
     if (y1 > (int)fb_h) y1 = (int)fb_h;
     if (x0 >= x1 || y0 >= y1) return;
     clip_x0 = x0; clip_y0 = y0; clip_x1 = x1; clip_y1 = y1;
-    fb_fill(x0, y0, x1 - x0, y1 - y0, COL_DESKTOP);
+    draw_desktop_gradient(x0, y0, x1, y1);
     draw_desktop_icons();
     for (int k = 0; k < nz; k++) {
         struct win *wn = &wins[zorder[k]];
@@ -619,6 +708,8 @@ static void refresh_files(void) {
         if (nm[0] == 'b' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == '/')
             continue;
         if (nm[0] == 'l' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == '/')
+            continue;
+        if (nm[0] == 's' && nm[1] == 'y' && nm[2] == 's' && nm[3] == '/')
             continue;
         int len = 0;
         while (nm[len]) len++;
@@ -905,6 +996,7 @@ void main(void) {
     }
     scratch = (unsigned int *)AOS_SLAB_BASE;
     register_events();
+    load_wallpaper_config();
 
     int last_mx = 0, last_my = 0, last_mb = 0;
     int drag_i = -1, drag_dx = 0, drag_dy = 0;
