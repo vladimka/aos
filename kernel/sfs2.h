@@ -78,7 +78,7 @@ int sfs2_remove_dirent(struct sfs2_fs *fs, unsigned int dir_ino,
                        const char *name, unsigned int *out_child_ino);
 int sfs2_mkdir(struct sfs2_fs *fs, unsigned int parent_ino, const char *name,
                unsigned int *out_ino);
-int sfs2_rmdir(struct sfs2_fs *fs, unsigned int dir_ino);
+int sfs2_rmdir(struct sfs2_fs *fs, unsigned int parent_ino, const char *name);
 int sfs2_unlink(struct sfs2_fs *fs, unsigned int dir_ino, const char *name);
 int sfs2_readdir(struct sfs2_fs *fs, unsigned int dir_ino, unsigned int idx,
                  char *name_out, unsigned int *ino_out);

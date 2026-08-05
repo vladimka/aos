@@ -432,19 +432,24 @@ int sfs2_mkdir(struct sfs2_fs *fs, unsigned int parent_ino, const char *name,
     return 0;
 }
 
-int sfs2_rmdir(struct sfs2_fs *fs, unsigned int dir_ino) {
-    struct sfs2_inode *in = sfs2_get_inode(fs, dir_ino);
-    if (!in || in->type == SFS2_TYPE_FREE) return SFS2_ERR_ENOENT;
-    if (in->type != SFS2_TYPE_DIR) return SFS2_ERR_ENOTDIR;
+int sfs2_rmdir(struct sfs2_fs *fs, unsigned int parent_ino, const char *name) {
+    unsigned int child;
+    int r = sfs2_lookup(fs, parent_ino, name, &child);
+    if (r < 0) return r;
+    struct sfs2_inode *in = sfs2_get_inode(fs, child);
+    if (!in || in->type != SFS2_TYPE_DIR) return SFS2_ERR_ENOTDIR;
     unsigned int idx = 0;
     for (;;) {
         struct sfs2_dirent rec;
-        int n = sfs2_read_at(fs, dir_ino, &rec, SFS2_DIRENT_SIZE,
+        int n = sfs2_read_at(fs, child, &rec, SFS2_DIRENT_SIZE,
                              idx * SFS2_DIRENT_SIZE);
-        if (n != SFS2_DIRENT_SIZE) return 0;
+        if (n != SFS2_DIRENT_SIZE) break;
         if (rec.ino != 0) return SFS2_ERR_ENOTEMPTY;
         idx++;
     }
+    r = sfs2_remove_dirent(fs, parent_ino, name, &child);
+    if (r < 0) return r;
+    return sfs2_free_inode(fs, child);
 }
 
 int sfs2_unlink(struct sfs2_fs *fs, unsigned int dir_ino, const char *name) {
@@ -463,6 +468,12 @@ void sfs2_flush(struct sfs2_fs *fs) {
 }
 
 // ---- selftest (isolated RAM device, never touches the real backend) ----
+
+// The inode table and bitmap are shared global buffers; the selftest must
+// save/restore them so the live filesystem metadata survives the run.
+static unsigned char saved_inode_mem[SFS2_INODES * SFS2_INODE_SIZE];
+static unsigned char saved_bitmap_mem[SFS2_BITMAP_MAX * BLOCK_SIZE];
+static unsigned char saved_super_mem[BLOCK_SIZE];
 
 static unsigned char *selftest_ram;
 static struct sdev selftest_sdev;
@@ -490,16 +501,21 @@ int sfs2_selftest(void) {
         return -1;
     }
     memset(selftest_ram, 0, 1024 * 1024);
+    memcpy(saved_inode_mem, inode_mem, sizeof(saved_inode_mem));
+    memcpy(saved_bitmap_mem, bitmap_mem, sizeof(saved_bitmap_mem));
+    memcpy(saved_super_mem, super_mem, sizeof(saved_super_mem));
     selftest_sdev.read = selftest_read;
     selftest_sdev.write = selftest_write;
     selftest_sdev.present = 1;
     selftest_sdev.capacity_sectors = RAMDISK_SECTORS;
 
     struct sdev *saved = block_get_sdev();
+    block_flush();                    // push dirty live-fs blocks to the real device
     block_set_sdev(&selftest_sdev);
     block_reset();
 
     struct sfs2_fs fs;
+    memset(&fs, 0, sizeof(fs));
     if (sfs2_init(&fs) != 0) {
         selftest_fail("(init)");
         goto done;
@@ -570,8 +586,8 @@ int sfs2_selftest(void) {
         selftest_fail("(unlink left entry)");
         goto done;
     }
-    if (sfs2_rmdir(&fs, dir_ino) != 0) {
-        selftest_fail("(rmdir nonempty)");
+    if (sfs2_rmdir(&fs, 1, "dir") != 0) {
+        selftest_fail("(rmdir)");
         goto done;
     }
     sfs2_flush(&fs);
@@ -580,6 +596,9 @@ int sfs2_selftest(void) {
 done:
     block_reset();
     block_set_sdev(saved);
+    memcpy(inode_mem, saved_inode_mem, sizeof(saved_inode_mem));
+    memcpy(bitmap_mem, saved_bitmap_mem, sizeof(saved_bitmap_mem));
+    memcpy(super_mem, saved_super_mem, sizeof(saved_super_mem));
     page_free_order(selftest_ram, 8);
     return 0;
 }

@@ -3,7 +3,6 @@
 #include "terminal.h"
 #include "vga.h"
 #include "fs.h"
-#include "sfs.h"
 #include "string.h"
 #include "ports.h"
 #include "user.h"

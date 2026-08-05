@@ -1,4 +1,4 @@
-#include "fs.h"
+#include "vfs.h"
 #include "elf.h"
 #include "terminal.h"
 #include "syscall.h"
@@ -19,8 +19,9 @@ extern const struct embedded_file {
 
 static void write_if_absent(const char *name, const unsigned char *data,
                             unsigned int size) {
-    if (fs_exists(name)) return;
-    int ret = fs_write(name, (const char *)data, size);
+    struct aos_stat st;
+    if (vfs_kernel_stat(name, &st) == 0) return;
+    int ret = vfs_kernel_write(name, (const char *)data, size, 0);
     if (ret < 0)
         terminal_print("write failed: ");
 }

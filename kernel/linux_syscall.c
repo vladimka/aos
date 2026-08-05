@@ -3,7 +3,6 @@
 #include "task.h"
 #include "user.h"
 #include "fs.h"
-#include "sfs.h"
 #include "paging.h"
 #include "gdt.h"
 #include "string.h"
@@ -406,9 +405,9 @@ void linux_syscall_handler(struct registers *r) {
         unsigned int count = r->edx;
         if (fd < 0 || fd >= LINUX_FDS || lc->fds[fd] < 0 || fd <= 2) { r->eax = -9; break; }
         if (!in_luser(buf, count)) { r->eax = -14; break; }
-        unsigned int idx = lc->fd_off[fd];   // reused as the SFS entry cursor
+        unsigned int idx = lc->fd_off[fd];   // reused as the entry cursor
         unsigned int written = 0;
-        for (; idx < SFS_MAX_FILES; idx++) {
+        for (; idx < 4096; idx++) {
             char name[32];
             unsigned int size;
             if (sfs_get_entry(idx, name, &size) != 0) continue;

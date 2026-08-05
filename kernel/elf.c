@@ -1,7 +1,7 @@
 #include "elf.h"
 #include "vga.h"
 #include "serial.h"
-#include "fs.h"
+#include "vfs.h"
 #include "string.h"
 #include "paging.h"
 #include "task.h"
@@ -18,12 +18,12 @@ static void elf_error(const char *msg) {
 }
 
 void *elf_load(const char *path) {
-    int sz = fs_get_size(path);
-    if (sz <= 0) { elf_error("not found: "); serial_print(path); return 0; }
+    struct aos_stat st;
+    if (vfs_kernel_stat(path, &st) < 0) { elf_error("not found: "); serial_print(path); return 0; }
 
     // ELF header + program header table
     char buf[4096];
-    int got = fs_read_at(path, buf, sizeof(buf), 0);
+    int got = vfs_kernel_read(path, buf, sizeof(buf), 0);
     if (got <= 0) { elf_error("read failed"); return 0; }
 
     struct elf_header *ehdr = (struct elf_header *)buf;
@@ -66,7 +66,7 @@ void *elf_load(const char *path) {
         char *dst = (char *)vaddr;
 
         if (filesz > 0) {
-            if (fs_read_at(path, dst, filesz, offset) <= 0) {
+            if (vfs_kernel_read(path, dst, filesz, offset) <= 0) {
                 elf_error("segment read failed");
                 return 0;
             }
@@ -79,10 +79,10 @@ void *elf_load(const char *path) {
 }
 
 int elf_probe(const char *path, int *abi) {
-    int sz = fs_get_size(path);
-    if (sz <= 0) return -1;
+    struct aos_stat st;
+    if (vfs_kernel_stat(path, &st) < 0) return -1;
     char buf[128];
-    if (fs_read_at(path, buf, sizeof(buf), 0) <= 0) return -1;
+    if (vfs_kernel_read(path, buf, sizeof(buf), 0) <= 0) return -1;
     struct elf_header *ehdr = (struct elf_header *)buf;
     if (ehdr->magic != ELF_MAGIC || ehdr->arch != 1 || ehdr->machine != 3)
         return -1;
@@ -182,11 +182,11 @@ static void stack_build(struct linux_ctx *lc, const char *prog,
 }
 
 void *elf_load_linux(const char *path, const char *args, struct linux_ctx *lc) {
-    int sz = fs_get_size(path);
-    if (sz <= 0) { elf_error("linux: not found"); return 0; }
+    struct aos_stat st;
+    if (vfs_kernel_stat(path, &st) < 0) { elf_error("linux: not found"); return 0; }
 
     char buf[4096];
-    int got = fs_read_at(path, buf, sizeof(buf), 0);
+    int got = vfs_kernel_read(path, buf, sizeof(buf), 0);
     if (got <= 0) { elf_error("linux: read failed"); return 0; }
 
     struct elf_header *ehdr = (struct elf_header *)buf;
@@ -239,7 +239,7 @@ void *elf_load_linux(const char *path, const char *args, struct linux_ctx *lc) {
 
         char *dst = (char *)vaddr;
         if (filesz > 0) {
-            if (fs_read_at(path, dst, filesz, offset) <= 0) {
+            if (vfs_kernel_read(path, dst, filesz, offset) <= 0) {
                 elf_error("linux: segment read failed");
                 return 0;
             }

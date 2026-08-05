@@ -2,8 +2,7 @@
 #include "vga.h"
 #include "serial.h"
 #include "commands.h"
-#include "fs.h"
-#include "sfs.h"
+#include "vfs.h"
 #include "string.h"
 #include "user.h"
 
@@ -340,6 +339,7 @@ static void tab_complete(void) {
         strncpy(path_copy, command_path, PATH_MAX - 1);
         path_copy[PATH_MAX - 1] = '\0';
 
+        struct vfs_inode *root = vfs_get_root();
         char *dir = path_copy;
         while (*dir && tab_match_count < 40) {
             char *next = dir;
@@ -349,18 +349,27 @@ static void tab_complete(void) {
             *next = '\0';
 
             if (dir_len > 0) {
-                for (unsigned int i = 0; i < SFS_MAX_FILES && tab_match_count < 40; i++) {
-                    char name[28];
-                    unsigned int sz;
-                    if (sfs_get_entry(i, name, &sz) != 0) continue;
-                    if (strncmp(name, dir, dir_len) == 0 && name[dir_len] == '/' && tab_match(word, name + dir_len + 1))
-                        strncpy(tab_matches[tab_match_count++], name + dir_len + 1, 27);
+                struct vfs_inode *d = vfs_resolve(root, dir, 0);
+                if (d && d->type == 2) {
+                    char nbuf[VFS_NAME_MAX + 1];
+                    unsigned int pos = 0;
+                    while (tab_match_count < 40) {
+                        unsigned int ino;
+                        int r = d->fs->readdir(d->fs, d->ino, pos, nbuf, &ino);
+                        if (r <= 0) break;
+                        pos++;
+                        if (ino == 0) continue;
+                        if (tab_match(word, nbuf))
+                            strncpy(tab_matches[tab_match_count++], nbuf, 27);
+                    }
                 }
+                if (d) vfs_put(d);
             }
 
             if (!has_sep) break;
             dir = next + 1;
         }
+        if (root) vfs_put(root);
 
         if (tab_match_count == 0) return;
 

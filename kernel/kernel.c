@@ -11,14 +11,13 @@
 #include "task.h"
 #include "printf.h"
 #include "ports.h"
-#include "fs.h"
 #include "progload.h"
 #include "config.h"
 #include "mouse.h"
 #include "uhci.h"
 #include "virtio.h"
+#include "vfs.h"
 #include "sfs2.h"
-#include "string.h"
 #include "aosipc.h"
 
 volatile unsigned int tick = 0;
@@ -121,21 +120,11 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
 
     virtio_init();
 
-    fs_init();
+    vfs_init();
     printf("Filesystem ready.\n");
-
-    struct sfs2_fs fs2;
-    memset(&fs2, 0, sizeof(fs2));
-    if (sfs2_init(&fs2) != 0)
-        printf("sfs2: init failed\n");
-    else
-        printf("sfs2: init ok\n");
     sfs2_selftest();
 
     config_load();
-
-    load_embedded_programs();
-    load_embedded_data();
 
     terminal_init();
 

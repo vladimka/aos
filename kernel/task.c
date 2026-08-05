@@ -2,7 +2,6 @@
 #include "gdt.h"
 #include "paging.h"
 #include "elf.h"
-#include "fs.h"
 #include "string.h"
 #include "serial.h"
 #include "user.h"

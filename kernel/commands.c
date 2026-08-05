@@ -4,23 +4,17 @@
 #include "string.h"
 #include "elf.h"
 #include "syscall.h"
-#include "fs.h"
+#include "vfs.h"
 #include "progload.h"
 #include "user.h"
 #include "task.h"
 #include "linux_syscall.h"
 
-char command_path[PATH_MAX] = "bin";
+char command_path[PATH_MAX] = "/bin";
 
 static void cmd_format(void) {
     terminal_print("\nFormatting filesystem...");
-    fs_format();
-
-    extern void load_embedded_programs(void);
-    load_embedded_programs();
-    extern void load_embedded_data(void);
-    load_embedded_data();
-
+    vfs_format();
     terminal_print(" done");
 }
 
@@ -81,6 +75,7 @@ void commands_execute(const char *line) {
     }
 
     // Search PATH for command
+    struct aos_stat st2;
     char path_copy[PATH_MAX];
     strncpy(path_copy, command_path, PATH_MAX - 1);
     path_copy[PATH_MAX - 1] = '\0';
@@ -105,7 +100,7 @@ void commands_execute(const char *line) {
             }
             full_path[i] = '\0';
 
-            if (fs_exists(full_path))
+            if (vfs_kernel_stat(full_path, &st2) == 0)
                 if (try_exec(full_path, arg)) return;
         }
 
@@ -114,7 +109,7 @@ void commands_execute(const char *line) {
     }
 
     // Fallback: try cmd as raw path
-    if (fs_exists(cmd))
+    if (vfs_kernel_stat(cmd, &st2) == 0)
         if (try_exec(cmd, arg)) return;
 
     terminal_print("\nUnknown command: ");

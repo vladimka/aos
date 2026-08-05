@@ -13,7 +13,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               drivers/serial.o drivers/mouse.o drivers/pci.o drivers/uhci.o drivers/virtio.o \
               drivers/vrng.o drivers/vblk.o drivers/vnet.o drivers/rtc.o \
               kernel/terminal.o kernel/commands.o \
-              kernel/sfs.o kernel/string.o arch/i386/gdt.o arch/i386/idt.o \
+              kernel/vfs.o kernel/vfscompat.o kernel/procfs.o kernel/string.o arch/i386/gdt.o arch/i386/idt.o \
               kernel/interrupts.o kernel/elf.o kernel/syscall.o \
               kernel/progload.o kernel/paging.o kernel/pmm.o kernel/kmm.o \
               kernel/config.o kernel/user.o \

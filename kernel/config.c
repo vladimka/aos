@@ -1,5 +1,5 @@
 #include "config.h"
-#include "fs.h"
+#include "vfs.h"
 #include "rtc.h"
 #include "printf.h"
 #include "string.h"
@@ -64,13 +64,14 @@ void config_load(void) {
     wp_top = DEFAULT_TOP;
     wp_bot = DEFAULT_BOT;
 
-    if (!fs_exists(CONFIG_PATH)) {
+    struct aos_stat st;
+    if (vfs_kernel_stat(CONFIG_PATH, &st) < 0) {
         static const char def[] =
             "# AOS system config\n"
             "timezone=0\n"
             "wallpaper_top=0x1A2030\n"
             "wallpaper_bot=0x0E1620\n";
-        if (fs_write(CONFIG_PATH, def, sizeof(def) - 1) >= 0)
+        if (vfs_kernel_write(CONFIG_PATH, def, sizeof(def) - 1, 0) >= 0)
             printf("config: created %s\n", CONFIG_PATH);
         else
             printf("config: create %s failed\n", CONFIG_PATH);
@@ -80,7 +81,7 @@ void config_load(void) {
 
     char *buf = kmalloc(512);
     if (buf) {
-        int sz = fs_read(CONFIG_PATH, buf, 511);
+        int sz = vfs_kernel_read(CONFIG_PATH, buf, 511, 0);
         if (sz > 0) {
             buf[sz] = 0;
             char *p = buf;

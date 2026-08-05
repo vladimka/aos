@@ -164,25 +164,91 @@ def assert_pixel(path, x, y, want, what):
     print("  ok: %s at (%d,%d)=%s" % (what, x, y, got))
 
 
-def build_sfs(entries):
-    """Build a 1 MB SFS image matching kernel/sfs.h layout exactly.
+def build_sfs(entries, block_count=8192):
+    """Build an SFS2 disk image matching kernel/sfs2.{h,c} layout.
 
-    header: magic[4] + total_size + entry_count = 12 bytes
-    entry:  name[28] + size + offset + flags + pad[3] = 40 bytes
-    data starts at 12 + 64 * 40 = 2572.
+    Block 0: super (magic "SFS2", layout offsets). Blocks 1..: inode table
+    (256 x 48 B), then the block bitmap (bit=1 free, 0 used), then data.
+    ``entries`` is a list of (path, bytes); parent dirs are created as needed.
     """
-    FS_SIZE = 1024 * 1024
-    MAX_FILES = 64
-    data_start = 12 + MAX_FILES * 40
-    out = bytearray(FS_SIZE)
-    struct.pack_into("<4sII", out, 0, b"SFS1", FS_SIZE - data_start, len(entries))
-    off = data_start
-    for i, (name, data) in enumerate(entries):
-        e = 12 + i * 40
-        struct.pack_into("<28sII", out, e, name.encode(), len(data), off)
-        out[e + 36] = 1                    # flags = used
-        out[off:off + len(data)] = data
-        off += len(data)
+    BS = 512
+    INODES = 256
+    INO_SIZE = 48
+    DIRENT = 32
+    DIRENTS_PER_BLOCK = BS // DIRENT          # 16
+    inode_blocks = (INODES * INO_SIZE + BS - 1) // BS
+    bitmap_blocks = (block_count - (1 + inode_blocks)) // (BS * 8) + 1
+    inode_start = 1
+    bitmap_start = inode_start + inode_blocks
+    data_start = bitmap_start + bitmap_blocks
+    out = bytearray(block_count * BS)
+    struct.pack_into("<4sIIIIIII", out, 0, b"SFS2", 1, block_count, INODES,
+                     1, bitmap_start, data_start, 1)
+
+    used = {0}
+    used.update(range(1, inode_blocks + 1))
+    used.update(range(bitmap_start, bitmap_start + bitmap_blocks))
+    next_block = data_start
+    next_ino = 2
+
+    def alloc_block():
+        nonlocal next_block
+        b = next_block
+        next_block += 1
+        used.add(b)
+        return b
+
+    def put_inode(ino, itype, size, first_block):
+        o = bitmap_start * 0 + inode_start * BS + ino * INO_SIZE
+        struct.pack_into("<BBHII", out, o, itype, 0, 1, size, 0)
+        struct.pack_into("<I", out, o + 12, first_block)
+
+    def add_dirent(dir_ino, child_ino, name):
+        o = inode_start * BS + dir_ino * INO_SIZE
+        size = struct.unpack_from("<I", out, o + 4)[0]
+        idx = size // DIRENT
+        blk_i = idx // DIRENTS_PER_BLOCK
+        blk = struct.unpack_from("<I", out, o + 12 + 4 * blk_i)[0]
+        if blk == 0:
+            blk = alloc_block()
+            struct.pack_into("<I", out, o + 12 + 4 * blk_i, blk)
+        off = blk * BS + (idx % DIRENTS_PER_BLOCK) * DIRENT
+        struct.pack_into("<I", out, off, child_ino)
+        struct.pack_into("<28s", out, off + 4, name.encode())
+        struct.pack_into("<I", out, o + 4, size + DIRENT)
+
+    dirs = {"": 1}
+    put_inode(1, 2, 0, alloc_block())        # root dir
+
+    def ensure_dir(path):
+        if path in dirs:
+            return dirs[path]
+        parent = ensure_dir(path.rsplit("/", 1)[0]) if "/" in path else 1
+        name = path.rsplit("/", 1)[1] if "/" in path else path
+        nonlocal next_ino
+        ino = next_ino
+        next_ino += 1
+        put_inode(ino, 2, 0, alloc_block())
+        add_dirent(parent, ino, name)
+        dirs[path] = ino
+        return ino
+
+    for path, content in entries:
+        name = path.rsplit("/", 1)[1]
+        parent = ensure_dir(path.rsplit("/", 1)[0]) if "/" in path else 1
+        ino = next_ino
+        next_ino += 1
+        put_inode(ino, 1, len(content), alloc_block())
+        blk = struct.unpack_from("<I", out, inode_start * BS + ino * INO_SIZE + 12)[0]
+        out[blk * BS:blk * BS + len(content)] = content
+        add_dirent(parent, ino, name)
+
+    # bitmap: set all bits free (1), clear the used ones
+    bm_base = bitmap_start * BS
+    for b in range(0, block_count, 8):
+        out[bm_base + b // 8] = 0xFF
+    for b in used:
+        out[bm_base + b // 8] &= ~(1 << (b & 7))
     return out
 
 
