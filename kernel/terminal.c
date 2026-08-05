@@ -333,6 +333,12 @@ static void tab_complete(void) {
         if (tab_match(word, "setpath"))
             strncpy(tab_matches[tab_match_count++], "setpath", 27);
 
+        if (tab_match(word, "cd"))
+            strncpy(tab_matches[tab_match_count++], "cd", 27);
+
+        if (tab_match(word, "pwd"))
+            strncpy(tab_matches[tab_match_count++], "pwd", 27);
+
         // Search all PATH directories
         char path_copy[PATH_MAX];
         extern char command_path[PATH_MAX];

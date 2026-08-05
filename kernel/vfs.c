@@ -487,6 +487,11 @@ int vfs_dup_fd(int fd) {
     return fd2;
 }
 
+// Expose the underlying open_file for a given fd (used by the task fd table).
+struct open_file *vfs_ofile_ptr(int fd) {
+    return ofile_get(fd);
+}
+
 int vfs_read_fd(int fd, void *buf, unsigned int len) {
     struct open_file *of = ofile_get(fd);
     if (!of) return VFS_EBADF;

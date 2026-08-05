@@ -23,6 +23,78 @@ void commands_set_path(const char *p) {
     command_path[PATH_MAX - 1] = '\0';
 }
 
+// Resolve a (relative or absolute) input path against the caller's absolute
+// `cwd`, producing a normalized absolute path. Handles ".", "..", and runs /
+// trailing slashes. cwd must already be normalized ("/" for root).
+int path_norm(const char *cwd, const char *in, char *out, unsigned int outsz) {
+    char tmp[PATH_MAX + 1];
+    unsigned int t = 0;
+    if (in && *in == '/') {
+        tmp[t++] = '/';
+    } else {
+        unsigned int i = 0;
+        while (cwd && cwd[i] && t < sizeof(tmp) - 1) tmp[t++] = cwd[i++];
+        if (t == 0) tmp[t++] = '/';
+    }
+    const char *p = in ? in : "";
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        char comp[VFS_NAME_MAX + 2];
+        unsigned int clen = 0;
+        while (*p && *p != '/') {
+            if (clen < VFS_NAME_MAX) comp[clen] = *p;
+            clen++;
+            p++;
+        }
+        if (clen == 1 && comp[0] == '.') continue;
+        if (clen == 2 && comp[0] == '.' && comp[1] == '.') {
+            while (t > 0 && t - 1 > 0 && tmp[t - 1] != '/') t--;
+            if (t > 1) t--;              // drop the trailing slash (keep root '/')
+            continue;
+        }
+        if (clen > VFS_NAME_MAX) return -1;
+        if (t > 0 && tmp[t - 1] != '/') {
+            if (t >= sizeof(tmp) - 1) return -1;
+            tmp[t++] = '/';
+        }
+        if (t + clen >= sizeof(tmp)) return -1;
+        for (unsigned int k = 0; k < clen; k++) tmp[t++] = comp[k];
+    }
+    while (t > 1 && tmp[t - 1] == '/') t--;   // strip trailing slashes
+    if (t == 0) tmp[t++] = '/';
+    tmp[t] = '\0';
+    if (t >= outsz) return -1;
+    for (unsigned int i = 0; i <= t; i++) out[i] = tmp[i];
+    return 0;
+}
+
+static void cmd_cd(const char *path) {
+    if (!*path) {
+        terminal_print("\nusage: cd <path>");
+        return;
+    }
+    struct task *t = get_current_task();
+    char nb[PATH_MAX];
+    if (path_norm(t->cwd, path, nb, sizeof(nb)) < 0) {
+        terminal_print("\ncd: bad path");
+        return;
+    }
+    struct aos_stat st;
+    if (vfs_kernel_stat(nb, &st) != 0 || st.type != 2) {
+        terminal_print("\ncd: no such directory: ");
+        terminal_print(path);
+        return;
+    }
+    strncpy(t->cwd, nb, PATH_MAX);
+    t->cwd[PATH_MAX - 1] = '\0';
+}
+
+static void cmd_pwd(void) {
+    terminal_print("\n");
+    terminal_print(get_current_task()->cwd);
+}
+
 static int try_exec(const char *full_path, const char *arg) {
     void (*entry)(void) = program_load(full_path, arg);
     if (entry) {
@@ -70,6 +142,18 @@ void commands_execute(const char *line) {
             terminal_print("\nPATH=");
             terminal_print(command_path);
         }
+        terminal_set_prompt();
+        return;
+    }
+
+    if (strcmp(cmd, "cd") == 0) {
+        cmd_cd(arg);
+        terminal_set_prompt();
+        return;
+    }
+
+    if (strcmp(cmd, "pwd") == 0) {
+        cmd_pwd();
         terminal_set_prompt();
         return;
     }

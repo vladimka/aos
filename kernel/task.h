@@ -1,7 +1,12 @@
 #ifndef TASK_H
 #define TASK_H
 
+#include "commands.h"   // PATH_MAX
+
+struct open_file;   // forward decl (fully defined in vfs.h)
+
 #define MAX_TASKS 24
+#define TASK_MAX_FDS 64   // per-task open-file table size
 
 #define TASK_FREE    0
 #define TASK_READY   1
@@ -33,6 +38,8 @@ struct task {
     char *args;                 // argument buffer (kmalloc'd)
     unsigned int abi;           // ABI_AOS or ABI_LINUX
     struct linux_ctx *lctx;     // Linux runtime context (kmalloc'd)
+    struct open_file *fds[TASK_MAX_FDS];  // per-task open-file table (0/1/2 console)
+    char cwd[PATH_MAX];         // normalized absolute cwd ("/" = root)
 };
 
 void task_init(void);
@@ -58,5 +65,11 @@ int task_set_event_pid(void);
 unsigned int task_current_abi(void);
 int task_set_abi_current(unsigned int abi);
 struct linux_ctx *task_current_lctx(void);
+
+// Console pseudo-file shared by all tasks' fds 0/1/2 (inode NULL, O_RDWR).
+extern struct open_file console_open_file;
+
+// The currently-running task.
+struct task *get_current_task(void);
 
 #endif

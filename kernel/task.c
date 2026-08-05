@@ -8,8 +8,14 @@
 #include "kmm.h"
 #include "pmm.h"
 #include "linux_syscall.h"
+#include "vfs.h"
 
 extern volatile unsigned int tick;
+
+// Shared stdin/stdout/stderr pseudo-file. Every task's fds 0/1/2 point at it;
+// its inode is NULL (there is no backing file). Real fds (>= 3) point into the
+// VFS open-file table instead.
+struct open_file console_open_file = { .flags = VFS_O_RDWR, .inode = 0 };
 
 #define PTE_PRESENT  0x1
 #define PTE_WRITABLE 0x2
@@ -67,6 +73,16 @@ static void drain_zombies(void) {
     }
 }
 
+// Close every real (non-console) fd this task holds. Console fds 0/1/2 point at
+// the shared static console_open_file and need no close. Called on task exit.
+static void task_close_fds(struct task *t) {
+    for (int fd = 3; fd < TASK_MAX_FDS; fd++)
+        if (t->fds[fd]) {
+            vfs_close_fd(fd);
+            t->fds[fd] = 0;
+        }
+}
+
 // Free a task's user frames, its 3 user PTs, and its PD page.
 static void task_free_addrspace(struct task *t) {
     for (int pdn = USER_PD_LO; pdn <= USER_PD_HI; pdn++) {
@@ -112,6 +128,11 @@ void task_init(void) {
     tasks[0].abi = ABI_AOS;
     tasks[0].lctx = kmalloc(sizeof(struct linux_ctx));
     linux_ctx_init(tasks[0].lctx);
+    tasks[0].cwd[0] = '/';
+    tasks[0].cwd[1] = '\0';
+    tasks[0].fds[0] = &console_open_file;
+    tasks[0].fds[1] = &console_open_file;
+    tasks[0].fds[2] = &console_open_file;
     current_task = &tasks[0];
     tss_set_esp0(tasks[0].kstack_top);
 }
@@ -202,6 +223,7 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
     // active (CR3 switched above). Free everything except its kstack, which we
     // are still executing on: defer it to the zombie list.
     if (exited) {
+        task_close_fds(dead);
         task_free_addrspace(dead);
         kfree(dead->mbox);
         kfree(dead->args);
@@ -242,6 +264,15 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     t->pid = pid;
     t->sink = sink;
     t->parent = task_current_pid();
+
+    // The child inherits the parent's cwd and its console stdio fds 0/1/2
+    // (the shared console pseudo-file). fds >= 3 are NOT inherited (CLOEXEC:
+    // a fresh child starts with an empty real-fd table).
+    t->fds[0] = &console_open_file;
+    t->fds[1] = &console_open_file;
+    t->fds[2] = &console_open_file;
+    strncpy(t->cwd, current_task->cwd, PATH_MAX);
+    t->cwd[PATH_MAX - 1] = '\0';
 
     unsigned char *ks = kmalloc(TASK_KSTACK_SIZE);
     unsigned int *pd = page_alloc_zero();
@@ -527,4 +558,8 @@ int task_set_abi_current(unsigned int abi) {
 
 struct linux_ctx *task_current_lctx(void) {
     return current_task->lctx;
+}
+
+struct task *get_current_task(void) {
+    return current_task;
 }

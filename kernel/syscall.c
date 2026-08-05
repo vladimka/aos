@@ -10,6 +10,7 @@
 #include "mouse.h"
 #include "aosipc.h"
 #include "linux_syscall.h"
+#include "commands.h"
 #include "vrng.h"
 #include "kmm.h"
 #include "rtc.h"
@@ -18,10 +19,10 @@ extern volatile unsigned int tick;
 
 static char *prog_args;
 
-// Task 4: single global cwd (kernel_cwd, owned by vfs.c). Task 5 replaces this
-// accessor with one that reads the current task's cwd from its task struct.
+// Current task's cwd, resolved to a referenced inode. Callers must vfs_put()
+// the result. The task stores cwd as a normalized absolute path string.
 struct vfs_inode *current_task_cwd(void) {
-    return kernel_cwd;
+    return vfs_resolve(0, get_current_task()->cwd, 0);
 }
 
 // User memory regions (see paging.c): program area + shared window slabs
@@ -168,16 +169,35 @@ void syscall_handler(struct registers *r) {
     case SYS_OPEN: {
         char *s = copy_user_str((const void *)r->ebx);
         if (s) {
-            r->eax = vfs_open_fd(current_task_cwd(), s, (int)r->ecx);
+            struct vfs_inode *cwd = current_task_cwd();
+            int fd = vfs_open_fd(cwd, s, (int)r->ecx);
+            vfs_put(cwd);
+            if (fd >= 0 && fd < TASK_MAX_FDS)
+                get_current_task()->fds[fd] = vfs_ofile_ptr(fd);
+            r->eax = fd;
             kfree(s);
         } else {
             r->eax = -5;
         }
         break;
     }
-    case SYS_CLOSE:
-        r->eax = vfs_close_fd((int)r->ebx);
+    case SYS_CLOSE: {
+        int fd = (int)r->ebx;
+        struct task *t = get_current_task();
+        // Console pseudo-fds (0/1/2) live only in the task table; clearing the
+        // slot frees it. Real fds are closed through the VFS table.
+        if (fd >= 0 && fd < 3) {
+            if (fd < TASK_MAX_FDS && t->fds[fd] == &console_open_file)
+                t->fds[fd] = 0;
+            r->eax = 0;
+        } else {
+            int rc = vfs_close_fd(fd);
+            if (rc == 0 && fd >= 0 && fd < TASK_MAX_FDS)
+                t->fds[fd] = 0;
+            r->eax = rc;
+        }
         break;
+    }
     case SYS_READ: {
         int fd = (int)r->ebx;
         void *buf = (void *)r->ecx;
@@ -229,7 +249,9 @@ void syscall_handler(struct registers *r) {
     case SYS_MKDIR: {
         char *s = copy_user_str((const void *)r->ebx);
         if (s) {
-            r->eax = vfs_mkdir(current_task_cwd(), s);
+            struct vfs_inode *cwd = current_task_cwd();
+            r->eax = vfs_mkdir(cwd, s);
+            vfs_put(cwd);
             kfree(s);
         } else {
             r->eax = -5;
@@ -239,7 +261,9 @@ void syscall_handler(struct registers *r) {
     case SYS_RMDIR: {
         char *s = copy_user_str((const void *)r->ebx);
         if (s) {
-            r->eax = vfs_rmdir(current_task_cwd(), s);
+            struct vfs_inode *cwd = current_task_cwd();
+            r->eax = vfs_rmdir(cwd, s);
+            vfs_put(cwd);
             kfree(s);
         } else {
             r->eax = -5;
@@ -258,7 +282,20 @@ void syscall_handler(struct registers *r) {
     case SYS_CHDIR: {
         char *s = copy_user_str((const void *)r->ebx);
         if (s) {
-            r->eax = vfs_chdir(current_task_cwd(), s);
+            struct task *t = get_current_task();
+            char nb[PATH_MAX];
+            if (path_norm(t->cwd, s, nb, sizeof(nb)) == 0) {
+                struct aos_stat st;
+                if (vfs_kernel_stat(nb, &st) == 0 && st.type == 2) {
+                    strncpy(t->cwd, nb, PATH_MAX);
+                    t->cwd[PATH_MAX - 1] = '\0';
+                    r->eax = 0;
+                } else {
+                    r->eax = VFS_ENOTDIR;
+                }
+            } else {
+                r->eax = VFS_EINVAL;
+            }
             kfree(s);
         } else {
             r->eax = -5;
@@ -268,17 +305,27 @@ void syscall_handler(struct registers *r) {
     case SYS_GETCWD: {
         char *buf = (char *)r->ebx;
         unsigned int len = r->ecx;
-        if (in_user(buf, len))
-            r->eax = vfs_getcwd(buf, len);
-        else
+        if (in_user(buf, len)) {
+            const char *c = get_current_task()->cwd;
+            unsigned int i = 0;
+            while (c[i] && i + 1 < len) {
+                buf[i] = c[i];
+                i++;
+            }
+            buf[i] = '\0';
+            r->eax = 0;
+        } else {
             r->eax = -5;
+        }
         break;
     }
     case SYS_STAT: {
         char *s = copy_user_str((const void *)r->ebx);
         struct aos_stat *st = (struct aos_stat *)r->ecx;
         if (s && in_user(st, sizeof(struct aos_stat))) {
-            r->eax = vfs_stat(current_task_cwd(), s, st);
+            struct vfs_inode *cwd = current_task_cwd();
+            r->eax = vfs_stat(cwd, s, st);
+            vfs_put(cwd);
             kfree(s);
         } else {
             if (s) kfree(s);
@@ -297,7 +344,9 @@ void syscall_handler(struct registers *r) {
     case SYS_UNLINK: {
         char *s = copy_user_str((const void *)r->ebx);
         if (s) {
-            r->eax = vfs_unlink(current_task_cwd(), s);
+            struct vfs_inode *cwd = current_task_cwd();
+            r->eax = vfs_unlink(cwd, s);
+            vfs_put(cwd);
             kfree(s);
         } else {
             r->eax = -5;

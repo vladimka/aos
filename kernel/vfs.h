@@ -105,6 +105,7 @@ int vfs_read_fd(int fd, void *buf, unsigned int len);
 int vfs_write_fd(int fd, const void *buf, unsigned int len);
 int vfs_lseek_fd(int fd, int off, int whence);
 int vfs_dup_fd(int fd);
+struct open_file *vfs_ofile_ptr(int fd);   // open_file for fd, or 0 if not open
 int vfs_readdir_fd(int fd, char *name, unsigned int name_len);
 int vfs_fstat_fd(int fd, struct aos_stat *st);
 int vfs_stat(struct vfs_inode *cwd, const char *path, struct aos_stat *st);
