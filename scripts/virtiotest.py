@@ -50,6 +50,9 @@ def boot(expect_new_disk):
         tag = "SFS formatting new disk." if expect_new_disk else "SFS mounted from disk."
         if not wait_for_serial(tag):
             raise AssertionError("expected serial %r" % tag)
+        if not wait_for_serial("Terminal ready."):
+            raise AssertionError("kernel did not finish booting "
+                                 "(format flush incomplete)")
         log = open(SER, "r", errors="replace").read()
         if "KERNEL PANIC" in log:
             raise AssertionError("kernel panic during virtio boot")
