@@ -17,6 +17,8 @@
 #include "mouse.h"
 #include "uhci.h"
 #include "virtio.h"
+#include "sfs2.h"
+#include "string.h"
 #include "aosipc.h"
 
 volatile unsigned int tick = 0;
@@ -121,6 +123,14 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
 
     fs_init();
     printf("Filesystem ready.\n");
+
+    struct sfs2_fs fs2;
+    memset(&fs2, 0, sizeof(fs2));
+    if (sfs2_init(&fs2) != 0)
+        printf("sfs2: init failed\n");
+    else
+        printf("sfs2: init ok\n");
+    sfs2_selftest();
 
     config_load();
 

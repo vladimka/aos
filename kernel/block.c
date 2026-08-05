@@ -96,6 +96,11 @@ void block_unpin(unsigned int lba) {
     if (slot >= 0) cache_pin[slot] = 0;
 }
 
+void block_mark_dirty(unsigned int lba) {
+    int slot = cache_lookup(lba);
+    if (slot >= 0) cache_dirty[slot] = 1;
+}
+
 void block_flush(void) {
     if (!dev || !dev->write) return;
     for (unsigned int i = 0; i < BLOCK_CACHE_SECTORS; i++) {

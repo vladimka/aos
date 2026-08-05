@@ -17,6 +17,7 @@ struct sdev {
 int block_init(void);
 unsigned char *block_pin(unsigned int lba);
 void block_unpin(unsigned int lba);
+void block_mark_dirty(unsigned int lba);
 void block_flush(void);
 struct sdev *block_get_sdev(void);
 void block_set_sdev(struct sdev *d);

@@ -88,3 +88,10 @@ int rtc_get(struct aos_time *t) {
 
     return 0;
 }
+
+unsigned int rtc_epoch(struct aos_time *t) {
+    long total = (long)days_from_civil(t->year, (unsigned int)t->month,
+                                       (unsigned int)t->day) * 86400L +
+                 (long)t->hour * 3600L + (long)t->minute * 60L + (long)t->second;
+    return total < 0 ? 0u : (unsigned int)total;
+}

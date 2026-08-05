@@ -18,7 +18,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               kernel/progload.o kernel/paging.o kernel/pmm.o kernel/kmm.o \
               kernel/config.o kernel/user.o \
               kernel/user_tramp.o kernel/printf.o kernel/progs.o \
-              kernel/task.o kernel/linux_syscall.o kernel/block.o
+               kernel/task.o kernel/linux_syscall.o kernel/block.o kernel/sfs2.o
 
 PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest exitto random
 PROG_ELFS = $(addprefix programs/, $(addsuffix .elf, $(PROGRAMS)))
