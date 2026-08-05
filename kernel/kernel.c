@@ -13,6 +13,7 @@
 #include "ports.h"
 #include "fs.h"
 #include "progload.h"
+#include "config.h"
 #include "mouse.h"
 #include "uhci.h"
 #include "virtio.h"
@@ -120,6 +121,8 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
 
     fs_init();
     printf("Filesystem ready.\n");
+
+    config_load();
 
     load_embedded_programs();
     load_embedded_data();

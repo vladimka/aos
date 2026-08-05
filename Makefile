@@ -16,7 +16,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               kernel/sfs.o kernel/string.o arch/i386/gdt.o arch/i386/idt.o \
               kernel/interrupts.o kernel/elf.o kernel/syscall.o \
               kernel/progload.o kernel/paging.o kernel/pmm.o kernel/kmm.o \
-              kernel/user.o \
+              kernel/config.o kernel/user.o \
               kernel/user_tramp.o kernel/printf.o kernel/progs.o \
               kernel/task.o kernel/linux_syscall.o
 
