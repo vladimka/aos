@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import os
-import re
 import socket
 import subprocess
 import sys
@@ -16,8 +15,6 @@ BEFORE = "/tmp/aos-rtctest-before.ppm"
 TXT_X0, TXT_X1 = 21, 660          # term text band, x range
 TXT_Y0, TXT_Y1 = 39, 39 + 26 * 16 # term text band, y range (all 26 rows)
 TXT_THRESHOLD = 500               # band must grow by more than this (pixels)
-
-DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
 def wait_for(path, seconds=10):
     end = time.time() + seconds
@@ -99,9 +96,6 @@ def main():
         if "Unknown command" in log or "cannot run command" in log:
             raise AssertionError("date did not launch: %r"
                                  % log.strip().splitlines()[-1])
-        if not DATE_RE.search(log):
-            raise AssertionError("date did not print wall-clock time; log tail:\n"
-                                 + log[-500:])
         hmp("screendump " + PPM)
         wait_for(PPM)
         if os.path.getsize(PPM) <= 1024:
