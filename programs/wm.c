@@ -349,7 +349,10 @@ static unsigned int parse_hex_cfg(const char *s) {
 
 static void load_wallpaper_config(void) {
     char buf[512];
-    int sz = fs_read("sys/config.cfg", buf, sizeof(buf) - 1);
+    int fd = sd_open("sys/config.cfg", O_RDONLY);
+    if (fd < 0) return;
+    int sz = sd_read(fd, buf, sizeof(buf) - 1);
+    sd_close(fd);
     if (sz <= 0) return;
     buf[sz] = 0;
     char *p = buf;
@@ -699,31 +702,35 @@ static void refresh_files(void) {
     int old_n = nfiles;
     files_dirty = 0;
     nfiles = 0;
-    for (int i = 0; i < 64; i++) {
-        char nm[28];
-        unsigned int sz;
-        if (fs_list_get((unsigned int)i, nm, &sz) != 0) continue;
-        if (nm[0] == 0) continue;
-        // Programs live in the dock; keep the desktop for data files.
-        if (nm[0] == 'b' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == '/')
-            continue;
-        if (nm[0] == 'l' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == '/')
-            continue;
-        if (nm[0] == 's' && nm[1] == 'y' && nm[2] == 's' && nm[3] == '/')
-            continue;
-        int len = 0;
-        while (nm[len]) len++;
-        int kind;
-        if (len > 0 && nm[len - 1] == '/') kind = K_FOLDER;
-        else if (ext_match(nm, ".ico")) kind = K_ICO;
-        else if (ext_match(nm, ".txt")) kind = K_TEXT;
-        else kind = K_OTHER;
-        int j;
-        for (j = 0; j < 27 && nm[j]; j++) files[nfiles].name[j] = nm[j];
-        files[nfiles].name[j] = 0;
-        files[nfiles].kind = kind;
-        nfiles++;
-        if (nfiles >= 64) break;
+    int fd = sd_open("/", O_RDONLY);
+    if (fd >= 0) {
+        for (int i = 0; i < 64; i++) {
+            char nm[28];
+            if (sd_readdir(fd, nm, sizeof(nm)) <= 0) break;
+            if (nm[0] == 0) continue;
+            // Programs live in the dock; keep the desktop for data files.
+            if (nm[0] == 'b' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == 0)
+                continue;
+            if (nm[0] == 'l' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == 0)
+                continue;
+            if (nm[0] == 's' && nm[1] == 'y' && nm[2] == 's' && nm[3] == 0)
+                continue;
+            int len = 0;
+            while (nm[len]) len++;
+            int kind;
+            struct aos_stat st;
+            if (sd_stat(nm, &st) == 0 && st.type == 2) kind = K_FOLDER;
+            else if (ext_match(nm, ".ico")) kind = K_ICO;
+            else if (ext_match(nm, ".txt")) kind = K_TEXT;
+            else kind = K_OTHER;
+            int j;
+            for (j = 0; j < 27 && nm[j]; j++) files[nfiles].name[j] = nm[j];
+            files[nfiles].name[j] = 0;
+            files[nfiles].kind = kind;
+            nfiles++;
+            if (nfiles >= 64) break;
+        }
+        sd_close(fd);
     }
     if (nfiles != old_n) redraw = 1;
 }
@@ -739,7 +746,9 @@ static void draw_ico_file(int i, int x, int y) {
     static char ico_buf[8192];
     static unsigned int px[ICON_W * ICON_H];
     unsigned int dw, dh;
-    int sz = fs_read(files[i].name, ico_buf, sizeof(ico_buf));
+    int fd = sd_open(files[i].name, O_RDONLY);
+    int sz = fd < 0 ? -1 : sd_read(fd, ico_buf, sizeof(ico_buf));
+    if (fd >= 0) sd_close(fd);
     if (sz > 0 &&
         ico_decode((const unsigned char *)ico_buf, (unsigned int)sz,
                    ICON_W, ICON_H, &dw, &dh, px) == 0) {
@@ -826,9 +835,13 @@ static void do_create(void) {
     char full[30];
     int i;
     for (i = 0; i < dlg_len; i++) full[i] = dlg_name[i];
-    if (dlg_mode == 1) full[i++] = '/';   // folders are names ending with '/'
     full[i] = 0;
-    fs_write(full, "", 0);
+    if (dlg_mode == 1) {
+        sd_mkdir(full);                 // real directory
+    } else {
+        int fd = sd_open(full, O_CREAT | O_WRONLY);
+        if (fd >= 0) sd_close(fd);
+    }
     files_dirty = 1;
 }
 

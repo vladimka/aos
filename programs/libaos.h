@@ -12,12 +12,39 @@ void print_hex(unsigned int n);
 void print_dec(unsigned int n);
 void putchar(char c);
 
-int fs_write(const char *name, const char *data, unsigned int size);
-int fs_read(const char *name, char *buf, unsigned int size);
-int fs_delete(const char *name);
-int fs_get_size(const char *name);
-int fs_exists(const char *name);
-int fs_list_get(unsigned int idx, char *name_buf, unsigned int *size_out);
+// fd-based filesystem API (SYS_OPEN..SYS_UNLINK)
+#define O_RDONLY     0x00000
+#define O_WRONLY     0x00001
+#define O_RDWR       0x00002
+#define O_CREAT      0x00040
+#define O_TRUNC      0x00200
+#define O_APPEND     0x00400
+#define O_DIRECTORY  0x10000
+
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+
+struct aos_stat {
+    unsigned int type;    // 1 file, 2 dir
+    unsigned int size;
+    unsigned int mtime;
+    unsigned int nlink;
+};
+
+int sd_open(const char *path, int flags);
+int sd_close(int fd);
+int sd_read(int fd, void *buf, int len);
+int sd_write(int fd, const void *buf, int len);
+int sd_lseek(int fd, int off, int whence);
+int sd_mkdir(const char *path);
+int sd_rmdir(const char *path);
+int sd_readdir(int fd, char *name, int name_len);
+int sd_chdir(const char *path);
+int sd_getcwd(char *buf, int len);
+int sd_stat(const char *path, struct aos_stat *st);
+int sd_fstat(int fd, struct aos_stat *st);
+int sd_unlink(const char *path);
 
 unsigned int get_tick(void);
 void clear_screen(void);

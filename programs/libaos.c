@@ -46,12 +46,19 @@ void print(const char *s)    { syscall(0, (int)s, 0, 0, 0, 0); }
 void print_hex(unsigned int n) { syscall(1, n, 0, 0, 0, 0); }
 void print_dec(unsigned int n) { syscall(2, n, 0, 0, 0, 0); }
 void putchar(char c)          { syscall(3, c, 0, 0, 0, 0); }
-int  fs_write(const char *name, const char *data, unsigned int size) { return syscall(4, (int)name, (int)data, size, 0, 0); }
-int  fs_read(const char *name, char *buf, unsigned int size)         { return syscall(5, (int)name, (int)buf, size, 0, 0); }
-int  fs_delete(const char *name)         { return syscall(6, (int)name, 0, 0, 0, 0); }
-int  fs_get_size(const char *name)       { return syscall(7, (int)name, 0, 0, 0, 0); }
-int  fs_exists(const char *name)         { return syscall(8, (int)name, 0, 0, 0, 0); }
-int  fs_list_get(unsigned int idx, char *name_buf, unsigned int *size_out) { return syscall(9, idx, (int)name_buf, (int)size_out, 0, 0); }
+int  sd_open(const char *path, int flags)          { return syscall(36, (int)path, flags, 0, 0, 0); }
+int  sd_close(int fd)                              { return syscall(37, fd, 0, 0, 0, 0); }
+int  sd_read(int fd, void *buf, int len)           { return syscall(38, fd, (int)buf, len, 0, 0); }
+int  sd_write(int fd, const void *buf, int len)    { return syscall(39, fd, (int)buf, len, 0, 0); }
+int  sd_lseek(int fd, int off, int whence)         { return syscall(40, fd, off, whence, 0, 0); }
+int  sd_mkdir(const char *path)                    { return syscall(41, (int)path, 0, 0, 0, 0); }
+int  sd_rmdir(const char *path)                    { return syscall(42, (int)path, 0, 0, 0, 0); }
+int  sd_readdir(int fd, char *name, int name_len)  { return syscall(43, fd, (int)name, name_len, 0, 0); }
+int  sd_chdir(const char *path)                    { return syscall(44, (int)path, 0, 0, 0, 0); }
+int  sd_getcwd(char *buf, int len)                 { return syscall(45, (int)buf, len, 0, 0, 0); }
+int  sd_stat(const char *path, struct aos_stat *st){ return syscall(46, (int)path, (int)st, 0, 0, 0); }
+int  sd_fstat(int fd, struct aos_stat *st)         { return syscall(47, fd, (int)st, 0, 0, 0); }
+int  sd_unlink(const char *path)                   { return syscall(48, (int)path, 0, 0, 0, 0); }
 unsigned int get_tick(void)              { return syscall(10, 0, 0, 0, 0, 0); }
 void clear_screen(void)                  { syscall(11, 0, 0, 0, 0, 0); }
 void reboot(void)                        { syscall(12, 0, 0, 0, 0, 0); }

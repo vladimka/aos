@@ -33,7 +33,11 @@ void main(void) {
             text_buf[i] = t[i];
         text_buf[i] = '\0';
 
-        fs_write(fn, text_buf, text_len);
+        int fd = sd_open(fn, O_CREAT | O_WRONLY | O_TRUNC);
+        if (fd >= 0) {
+            sd_write(fd, text_buf, text_len);
+            sd_close(fd);
+        }
     } else {
         print("\n");
         print(p);

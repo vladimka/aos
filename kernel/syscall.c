@@ -2,7 +2,7 @@
 #include "interrupts.h"
 #include "terminal.h"
 #include "vga.h"
-#include "fs.h"
+#include "vfs.h"
 #include "string.h"
 #include "ports.h"
 #include "user.h"
@@ -17,6 +17,12 @@
 extern volatile unsigned int tick;
 
 static char *prog_args;
+
+// Task 4: single global cwd (kernel_cwd, owned by vfs.c). Task 5 replaces this
+// accessor with one that reads the current task's cwd from its task struct.
+struct vfs_inode *current_task_cwd(void) {
+    return kernel_cwd;
+}
 
 // User memory regions (see paging.c): program area + shared window slabs
 #define USER_LO 0x01000000
@@ -159,64 +165,145 @@ void syscall_handler(struct registers *r) {
         route_text(&c, 1);
         break;
     }
-    case SYS_FS_WRITE: {
-        char *s = copy_user_str((const void *)r->ebx);
-        if (s && in_user((const void *)r->ecx, r->edx)) {
-            r->eax = fs_write(s, (const char *)r->ecx, r->edx);
-            kfree(s);
-        } else {
-            if (s) kfree(s);
-            r->eax = -5;
-        }
-        break;
-    }
-    case SYS_FS_READ: {
-        char *s = copy_user_str((const void *)r->ebx);
-        if (s && in_user((const void *)r->ecx, r->edx)) {
-            r->eax = fs_read(s, (char *)r->ecx, r->edx);
-            kfree(s);
-        } else {
-            if (s) kfree(s);
-            r->eax = -5;
-        }
-        break;
-    }
-    case SYS_FS_DELETE: {
+    case SYS_OPEN: {
         char *s = copy_user_str((const void *)r->ebx);
         if (s) {
-            r->eax = fs_delete(s);
+            r->eax = vfs_open_fd(current_task_cwd(), s, (int)r->ecx);
             kfree(s);
         } else {
             r->eax = -5;
         }
         break;
     }
-    case SYS_FS_SIZE: {
+    case SYS_CLOSE:
+        r->eax = vfs_close_fd((int)r->ebx);
+        break;
+    case SYS_READ: {
+        int fd = (int)r->ebx;
+        void *buf = (void *)r->ecx;
+        unsigned int len = r->edx;
+        if (fd == 0) {
+            if (len == 0 || !in_user(buf, len)) {
+                r->eax = -5;
+                break;
+            }
+            int k = terminal_read_key();
+            if (k < 0) {
+                r->eax = -1;             // non-blocking, like SYS_READ_KEY
+            } else {
+                ((char *)buf)[0] = (char)k;
+                r->eax = 1;
+            }
+        } else if (fd == 1 || fd == 2) {
+            r->eax = VFS_EBADF;          // can't read stdout
+        } else {
+            if (!in_user(buf, len)) {
+                r->eax = -5;
+                break;
+            }
+            r->eax = vfs_read_fd(fd, buf, len);
+        }
+        break;
+    }
+    case SYS_WRITE: {
+        int fd = (int)r->ebx;
+        const char *buf = (const char *)r->ecx;
+        unsigned int len = r->edx;
+        if (!in_user(buf, len)) {
+            r->eax = -5;
+            break;
+        }
+        if (fd == 1 || fd == 2) {
+            route_text(buf, len);
+            r->eax = (int)len;
+        } else if (fd == 0) {
+            r->eax = VFS_EBADF;          // can't write stdin
+        } else {
+            r->eax = vfs_write_fd(fd, buf, len);
+        }
+        break;
+    }
+    case SYS_LSEEK:
+        r->eax = vfs_lseek_fd((int)r->ebx, (int)r->ecx, (int)r->edx);
+        break;
+    case SYS_MKDIR: {
         char *s = copy_user_str((const void *)r->ebx);
         if (s) {
-            r->eax = fs_get_size(s);
+            r->eax = vfs_mkdir(current_task_cwd(), s);
             kfree(s);
         } else {
             r->eax = -5;
         }
         break;
     }
-    case SYS_FS_EXISTS: {
+    case SYS_RMDIR: {
         char *s = copy_user_str((const void *)r->ebx);
         if (s) {
-            r->eax = fs_exists(s);
+            r->eax = vfs_rmdir(current_task_cwd(), s);
             kfree(s);
         } else {
             r->eax = -5;
         }
         break;
     }
-    case SYS_FS_LIST_GET:
-        if (in_user((void *)r->ecx, 28) && in_user((void *)r->edx, 4))
-            r->eax = sfs_get_entry(r->ebx, (char *)r->ecx, (unsigned int *)r->edx);
+    case SYS_READDIR: {
+        char *buf = (char *)r->ecx;
+        unsigned int len = r->edx;
+        if (in_user(buf, len))
+            r->eax = vfs_readdir_fd((int)r->ebx, buf, len);
         else
             r->eax = -5;
         break;
+    }
+    case SYS_CHDIR: {
+        char *s = copy_user_str((const void *)r->ebx);
+        if (s) {
+            r->eax = vfs_chdir(current_task_cwd(), s);
+            kfree(s);
+        } else {
+            r->eax = -5;
+        }
+        break;
+    }
+    case SYS_GETCWD: {
+        char *buf = (char *)r->ebx;
+        unsigned int len = r->ecx;
+        if (in_user(buf, len))
+            r->eax = vfs_getcwd(buf, len);
+        else
+            r->eax = -5;
+        break;
+    }
+    case SYS_STAT: {
+        char *s = copy_user_str((const void *)r->ebx);
+        struct aos_stat *st = (struct aos_stat *)r->ecx;
+        if (s && in_user(st, sizeof(struct aos_stat))) {
+            r->eax = vfs_stat(current_task_cwd(), s, st);
+            kfree(s);
+        } else {
+            if (s) kfree(s);
+            r->eax = -5;
+        }
+        break;
+    }
+    case SYS_FSTAT: {
+        struct aos_stat *st = (struct aos_stat *)r->ecx;
+        if (in_user(st, sizeof(struct aos_stat)))
+            r->eax = vfs_fstat_fd((int)r->ebx, st);
+        else
+            r->eax = -5;
+        break;
+    }
+    case SYS_UNLINK: {
+        char *s = copy_user_str((const void *)r->ebx);
+        if (s) {
+            r->eax = vfs_unlink(current_task_cwd(), s);
+            kfree(s);
+        } else {
+            r->eax = -5;
+        }
+        break;
+    }
     case SYS_TICK:
         r->eax = tick;
         break;

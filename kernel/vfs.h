@@ -14,6 +14,7 @@
 #define VFS_O_TRUNC    0x00200
 #define VFS_O_APPEND   0x00400
 #define VFS_O_DIRECTORY 0x10000
+#define VFS_O_CREAT_DIR 0x20000   // create missing last component as a dir
 
 // Negative errnos
 #define VFS_EPERM      -1
@@ -110,6 +111,12 @@ int vfs_stat(struct vfs_inode *cwd, const char *path, struct aos_stat *st);
 int vfs_unlink(struct vfs_inode *cwd, const char *path);
 int vfs_mkdir(struct vfs_inode *cwd, const char *path);
 int vfs_rmdir(struct vfs_inode *cwd, const char *path);
+int vfs_chdir(struct vfs_inode *cwd, const char *path);
+int vfs_getcwd(char *buf, unsigned int len);
+
+// Current working directory. Single kernel-global for Task 4; Task 5 moves it
+// into the task struct (current_task_cwd() in syscall.c is the accessor).
+extern struct vfs_inode *kernel_cwd;
 
 int vfs_kernel_read(const char *path, void *buf, unsigned int len,
                     unsigned int off);

@@ -11,7 +11,7 @@ void main(void) {
         return;
     }
 
-    if (fs_delete(p) == 0)
+    if (sd_unlink(p) == 0)
         print("\nDeleted: ");
     else
         print("\nNot found: ");

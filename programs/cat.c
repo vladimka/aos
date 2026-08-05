@@ -11,19 +11,19 @@ void main(void) {
         return;
     }
 
-    int size = fs_get_size(p);
-    if (size < 0) {
+    int fd = sd_open(p, O_RDONLY);
+    if (fd < 0) {
         print("\nFile not found: ");
         print(p);
         return;
     }
 
     static char buf[1024];
-    int rsize = size;
-    if (rsize > 1023) rsize = 1023;
-    if (fs_read(p, buf, rsize) > 0) {
-        buf[rsize] = '\0';
+    int n = sd_read(fd, buf, 1023);
+    if (n > 0) {
+        buf[n] = '\0';
         print("\n");
         print(buf);
     }
+    sd_close(fd);
 }

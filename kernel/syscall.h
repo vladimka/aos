@@ -5,12 +5,6 @@
 #define SYS_PRINT_HEX    1
 #define SYS_PRINT_DEC    2
 #define SYS_PUTCHAR      3
-#define SYS_FS_WRITE     4
-#define SYS_FS_READ      5
-#define SYS_FS_DELETE    6
-#define SYS_FS_SIZE      7
-#define SYS_FS_EXISTS    8
-#define SYS_FS_LIST_GET  9
 #define SYS_TICK         10
 #define SYS_CLEAR        11
 #define SYS_REBOOT       12
@@ -39,6 +33,21 @@
 #define SYS_RANDOM       33
 #define SYS_RTC          34
 #define SYS_UPTIME       35
+
+// fd-based filesystem API
+#define SYS_OPEN         36
+#define SYS_CLOSE        37
+#define SYS_READ         38
+#define SYS_WRITE        39
+#define SYS_LSEEK        40
+#define SYS_MKDIR        41
+#define SYS_RMDIR        42
+#define SYS_READDIR      43
+#define SYS_CHDIR        44
+#define SYS_GETCWD       45
+#define SYS_STAT         46
+#define SYS_FSTAT        47
+#define SYS_UNLINK       48
 
 void syscall_set_args(const char *args);
 void route_text(const char *s, unsigned int len);

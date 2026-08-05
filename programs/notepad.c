@@ -60,11 +60,18 @@ static int utf8_decode(const char *s, unsigned int *cp) {
 // ---- file load / save ------------------------------------------------------
 
 static void load_file(void) {
-    int size = fs_get_size(fname);
-    if (size <= 0) return;
+    int fd = sd_open(fname, O_RDONLY);
+    if (fd < 0) return;
+    struct aos_stat st;
+    if (sd_fstat(fd, &st) != 0) {
+        sd_close(fd);
+        return;
+    }
     static char buf[NMAX * TW * 3 + 1];
+    int size = (int)st.size;
     if (size > (int)sizeof(buf) - 1) size = (int)sizeof(buf) - 1;
-    int got = fs_read(fname, buf, (unsigned int)size);
+    int got = sd_read(fd, buf, size);
+    sd_close(fd);
     if (got <= 0) return;
     buf[got] = 0;
 
@@ -97,7 +104,11 @@ static int save_file(void) {
             n += utf8_encode(buf + n, lines[r][c]);
         if (r < nlines - 1) buf[n++] = '\n';
     }
-    return fs_write(fname, buf, (unsigned int)n);
+    int fd = sd_open(fname, O_CREAT | O_WRONLY | O_TRUNC);
+    if (fd < 0) return -1;
+    int rc = sd_write(fd, buf, (unsigned int)n);
+    sd_close(fd);
+    return rc < 0 ? rc : 0;
 }
 
 // ---- text editing ops ------------------------------------------------------

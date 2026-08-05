@@ -348,6 +348,22 @@ struct vfs_inode *vfs_resolve(struct vfs_inode *cwd, const char *path,
             return 0;
         }
 
+        if (is_last && (flags & VFS_O_CREAT_DIR)) {
+            unsigned int new_ino;
+            if (cur->fs->mkdir(cur->fs, cur->ino, compbuf, &new_ino) < 0) {
+                vfs_put(cur);
+                return 0;
+            }
+            struct vfs_inode *child = vfs_get(cur->fs, new_ino);
+            if (!child) {
+                vfs_put(cur);
+                return 0;
+            }
+            inode_set_parent(child, cur);
+            vfs_put(cur);
+            return child;
+        }
+
         if (is_last) {
             int new_ino = cur->fs->alloc_inode(cur->fs, 1);   // file
             if (new_ino <= 0) {
@@ -409,7 +425,7 @@ static struct open_file *ofile_get(int fd) {
 
 int vfs_open_fd(struct vfs_inode *cwd, const char *path, int flags) {
     int fd = -1;
-    for (int i = 0; i < VFS_OFILES; i++) {
+    for (int i = 3; i < VFS_OFILES; i++) {   // fds 0-2 are reserved for stdio
         if (!ofiles[i].inode) {
             fd = i;
             break;
@@ -458,7 +474,7 @@ int vfs_dup_fd(int fd) {
     struct open_file *of = ofile_get(fd);
     if (!of) return VFS_EBADF;
     int fd2 = -1;
-    for (int i = 0; i < VFS_OFILES; i++) {
+    for (int i = 3; i < VFS_OFILES; i++) {
         if (!ofiles[i].inode) {
             fd2 = i;
             break;
@@ -583,7 +599,10 @@ int vfs_mkdir(struct vfs_inode *cwd, const char *path) {
     char name[VFS_NAME_MAX + 1];
     if (path_split(path, dirbuf, sizeof(dirbuf), name, sizeof(name)) < 0)
         return VFS_EINVAL;
-    struct vfs_inode *dir = vfs_resolve(cwd, dirbuf, 0);
+    // Resolve the parent with O_CREAT|O_CREAT_DIR so missing intermediate
+    // directories are auto-created (mkdir -p).
+    struct vfs_inode *dir = vfs_resolve(cwd, dirbuf,
+                                        VFS_O_CREAT | VFS_O_CREAT_DIR);
     if (!dir) return VFS_ENOENT;
     if (dir->type != 2) {
         vfs_put(dir);
@@ -625,6 +644,79 @@ int vfs_rmdir(struct vfs_inode *cwd, const char *path) {
     int r = dir->fs->rmdir(dir->fs, dir->ino, name);
     vfs_put(dir);
     return r < 0 ? r : 0;
+}
+
+// ---- current working directory (global until Task 5) ----
+struct vfs_inode *kernel_cwd;
+
+int vfs_chdir(struct vfs_inode *cwd, const char *path) {
+    struct vfs_inode *in = vfs_resolve(cwd, path, 0);
+    if (!in) return VFS_ENOENT;
+    if (in->type != 2) {
+        vfs_put(in);
+        return VFS_ENOTDIR;
+    }
+    if (kernel_cwd) vfs_put(kernel_cwd);
+    kernel_cwd = in;                  // keeps the reference
+    return 0;
+}
+
+// Find the name of `child` inside directory `dir` (for getcwd path building).
+static int inode_name(struct vfs_inode *dir, struct vfs_inode *child,
+                      char *out, unsigned int outsz) {
+    unsigned int idx = 0;
+    char nbuf[VFS_NAME_MAX + 1];
+    for (;;) {
+        unsigned int ino;
+        int r = dir->fs->readdir(dir->fs, dir->ino, idx, nbuf, &ino);
+        if (r <= 0) return VFS_ENOENT;
+        idx++;
+        if (ino == 0 || ino != child->ino) continue;
+        unsigned int i = 0;
+        while (nbuf[i] && i + 1 < outsz) {
+            out[i] = nbuf[i];
+            i++;
+        }
+        out[i] = '\0';
+        return 0;
+    }
+}
+
+static const char *mount_prefix(struct vfs_inode *in) {
+    for (unsigned int i = 0; i < n_mounts; i++)
+        if (mounts[i].fs == in->fs && mounts[i].root_ino == in->ino)
+            return mounts[i].prefix;
+    return 0;
+}
+
+// Absolute path of the current directory (walks parent links up to the mount
+// root, then prepends the mount prefix).
+int vfs_getcwd(char *buf, unsigned int len) {
+    if (!kernel_cwd) return VFS_ENOENT;
+    struct vfs_inode *cur = kernel_cwd;
+    char segs[16][VFS_NAME_MAX + 1];
+    int nseg = 0;
+    while (cur->parent && cur->parent != cur && nseg < 16) {
+        if (inode_name(cur->parent, cur, segs[nseg], sizeof(segs[nseg])) < 0)
+            break;
+        nseg++;
+        cur = cur->parent;
+    }
+    const char *pre = mount_prefix(cur);
+    if (!pre) pre = "/";
+
+    unsigned int o = 0;
+    for (const char *p = pre; *p && o + 1 < len; p++) {
+        buf[o++] = *p;
+    }
+    if (o > 0 && buf[o - 1] != '/' && o + 1 < len) buf[o++] = '/';
+    for (int s = nseg - 1; s >= 0 && o + 1 < len; s--) {
+        for (const char *p = segs[s]; *p && o + 1 < len; p++)
+            buf[o++] = *p;
+        if (s > 0 && o + 1 < len) buf[o++] = '/';
+    }
+    buf[o] = '\0';
+    return 0;
 }
 
 // ---- kernel read/write helpers (paths relative to /) ----
@@ -680,9 +772,14 @@ static void cache_clear(void) {
 
 void vfs_format(void) {
     sfs2_format(&vfs_sfs2);
+    if (kernel_cwd) {
+        vfs_put(kernel_cwd);
+        kernel_cwd = 0;
+    }
     cache_clear();
     for (unsigned int i = 0; i < n_mounts; i++)
         mount_setup(&mounts[i]);
+    kernel_cwd = vfs_get_root();
     load_embedded_programs();
     load_embedded_data();
 }
@@ -709,6 +806,7 @@ void vfs_init(void) {
     mount_setup(&mounts[1]);
     serial_print("VFS: /proc [procfs]\n");
 
+    kernel_cwd = vfs_get_root();
     load_embedded_programs();
     load_embedded_data();
 }
