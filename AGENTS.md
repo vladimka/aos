@@ -31,7 +31,7 @@ No dedicated test, lint, or typecheck commands.
 - All kernel C code compiled `-ffreestanding -nostdlib -fno-builtin -fno-stack-protector -mno-sse -mno-mmx -mno-80387`
 - No libc; own `string.c` (`strcmp`, `strncpy`, `strlen`)
 - Include paths: `-Ikernel -Idrivers -Iarch/i386 -Iboot`
-- **160 KB ramdisk at `0x200000`** — flat SFS (Simple File System), `SFS_MAX_FILES=64`
+- **1 MB ramdisk at `0x300000`** (`kernel/sfs.h` `SFS_BASE`, above kernel BSS, below the staging buffer) — flat SFS (Simple File System), `SFS_MAX_FILES=64`
 - **33 syscalls via `int 0x80`** (DPL 3 gate, `idt_install_irq_flags(0x80, isr128, 0xEE)`), R/O user-level interface in `programs/libaos.c`
 - `printf()` in `kernel/printf.c` writes to **both** VGA and COM1 (used for all kernel banners)
 - **Privilege separation**: paging enabled (`kernel/paging.c`), user programs run in **ring 3** via TSS (`arch/i386/gdt.c`, `kernel/user.c`/`user_tramp.S`), kernel stays in ring 0
@@ -130,10 +130,17 @@ Programs are located via a **PATH** variable (`char command_path[PATH_MAX]`, def
 serial_init → vga_init → gdt_init → idt_init → paging_init → user_init
 → interrupts_init → pit_init_1000 → irq_install_handler(0, timer)
 → irq_install_handler(1, keyboard) → irq_install_handler(12, mouse)
-→ mouse_init → fs_init → load_embedded_programs → terminal_init → hlt loop
+→ mouse_init → fs_init → config_load → load_embedded_programs
+→ load_embedded_data → terminal_init → hlt loop
 ```
 
 PIT runs at **1000 Hz** (divisor 1193). `timer_handler` increments `tick`, drains COM1 into `terminal_serial_byte()`, toggles the cursor every 500 ticks.
+
+### Config & boot screen
+
+- `kernel_main` prints a 5-line ASCII **AOS** banner (rows of `AAA/OOO/SSS`) to VGA+COM1 right after `vga_init()` — the first thing in the serial log.
+- **`sys/config.cfg`** (SFS, `kernel/config.c`): parsed by `config_load()` after `fs_init()`. If absent, it is created with defaults and the serial banner prints `config: created sys/config.cfg`; on subsequent boots `config: loaded sys/config.cfg`. Keys: `timezone=<min>` (applied via `rtc_set_tz`, see RTC) and `wallpaper_top=<0xRRGGBB>`/`wallpaper_bot=<0xRRGGBB>` (used by the WM, which re-parses the file independently — user programs are `-ffreestanding` and cannot include kernel headers). The timezone banner uses a manual `+`/`-` sign (kernel `printf` has no `%+d` flag).
+- **Gradient wallpaper** (`programs/wm.c`): `draw_desktop_gradient()` fills each damage rect with a per-color fixed-point ramp seeded at the rect's absolute `y0` (no per-pixel division); top = `wallpaper_top` (default `0x1A2030` = `COL_DESKTOP`, so existing desktop pixel checks stay stable), bottom = `wallpaper_bot` (`0x0E1620`). `refresh_files()` skips `sys/` so the config file never shows on the desktop.
 
 ### Interrupt acknowledgement (`kernel/interrupts.c`)
 
@@ -157,7 +164,7 @@ PIT runs at **1000 Hz** (divisor 1193). `timer_handler` increments `tick`, drain
 - **Cursor persistence (flicker)**: the WM draws the cursor as a VRAM overlay with a 16×16 snapshot. After **any** redraw (full `composite()` or a targeted `MSG_UPDATE` re-blit), the snapshot is stale — the code clears `has_cur` and re-draws the cursor at the current position. `MSG_UPDATE` re-blits only the affected window (plus higher-index windows, z-order) instead of a full composite; `cursor_overlaps()` re-draws the cursor only if the blit region touched its snapshot area. Without this, the cursor blinked off every clock tick and left ghost crosses.
 - **Dock & z-order**: `wm.c` draws a centered bottom dock bar (`DOCK_H=52`) with launcher icons (`bin/term`, `bin/clock`) plus one icon per running window. Launcher click spawns the app (logs `wm: dock spawn failed` on failure) or `raise_pid()`s it if already running; a running window's dock icon raises it too. A 4x4 indicator dot (`COL_DOCK_ACTIVE`) under the icon marks the focused window. Z-order lives in `zorder[]`/`nz`; `raise_pid` forces a redraw on any z-order change, not just a focus change.
 - **Test script**: `python3 scripts/guitester.py` — dumps PPM screenshots to `/tmp/aos-G*.ppm`, checks pixel colors. `QEMU` monitor socket at `/tmp/aos-gui.sock`. Serial log at `/tmp/aos-gui.log`. The guest cursor re-centers at (511,383) on boot but `/tmp/aos-mouse.state` keeps the last tracked position, so after **each** QEMU restart run `python3 scripts/guitester.py resetmouse 511 383` (or delete the state file) before the first click.
-- **Screen layout**: term window at ~(20,20) 640×416px; clock at ~(44,48) 260×100px; desktop COLOR = 0x1A2030 = (26,32,48). Term content bg = 0x101010 = (16,16,16). Clock title unfocused = 0x2E4E7B, focused = 0x4A7AB5.
+- **Screen layout**: term window at ~(20,20) 640×416px; clock at ~(44,48) 260×100px; desktop gradient top = 0x1A2030 = (26,32,48) (bottom 0x0E1620, see config). Term content bg = 0x101010 = (16,16,16). Clock title unfocused = 0x2E4E7B, focused = 0x4A7AB5.
 - **Desktop file icons**: `wm.c` lists the SFS ramdisk and shows every non-`bin/`/`lin/` entry as a 32×32 icon on a grid (`GRID_X0 16`, `GRID_Y0 24`, cell stride 52, row height 56; label under the icon). Kinds: `K_FOLDER` (name ends `/`), `K_TEXT` (`*.txt`), `K_ICO` (decoded via `programs/ico.c` — pure-C ICO/BMP decoder, up to 32×32, palette + 32bpp + AND mask; on decode failure falls back to `icon_image` art), `K_OTHER`. Left-click on a text/other file spawns `bin/notepad <name>`; `.ico` and folders are no-ops. `bin/` and `lin/` prefixes are hidden (system payload lives in the dock / shell PATH, not the desktop).
 - **Context menu + create dialog**: right-click on desktop (not a window/dock) opens a menu (`MENU_W 176`) with «Новый файл» / «Новая папка». Left-clicking an item opens a modal name-input dialog (`dlg_open/dlg_mode/dlg_name[40]/dlg_len`); while open the WM consumes `MSG_KEY` itself (printable ASCII, `\b`, Enter=confirm, Esc=cancel) instead of forwarding. Confirm writes an empty SFS file; folders are names ending in `/`. Then `files_dirty=1`.
 - **WM refresh/redraw pitfall**: the main loop runs `refresh_files()` (if `files_dirty` or every 128 iterations) **before** the message loop. So a file created by a message (dialog Enter) lists only on the *next* iteration, by which time the same-iteration `redraw=1` has already been consumed → the new icon never renders. Fix: `refresh_files()` sets `redraw=1` when `nfiles` changed (`if (nfiles != old_n) redraw = 1`).
