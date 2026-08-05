@@ -79,6 +79,14 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     serial_init();
     vga_init();
 
+    // Boot logo (text phase, before the WM takes over the framebuffer).
+    // One printf call with a string literal; also lands in the COM1 log.
+    printf("\n"
+           "  AAA    OOO    SSS \n"
+           " A   A  O   O  S    \n"
+           " AAAAA  O   O   SSS \n"
+           " A   A  O   O      S\n"
+           " A   A   OOO    SSS \n");
     printf("=== AOS Kernel v0.3 ===\n");
 
     gdt_init();
