@@ -290,12 +290,13 @@ static int clip_x0, clip_y0, clip_x1, clip_y1;
 #define MENU_N       2
 #define MENU_BORDER  1
 
-#define COL_MENU_BG     0x20283A
-#define COL_MENU_BORDER 0x4A7AB5
-#define COL_MENU_FG     0xFFFFFF
+static unsigned int col_menu_bg = 0x20283A;
+static unsigned int col_menu_fg = 0xFFFFFF;
 
 static int menu_open, menu_x, menu_y;
 static int menu_draw_x, menu_draw_y;
+static int g_mx, g_my;              // last mouse position (for hover)
+static int last_hover = -1;         // last hovered menu item (-1 = none)
 static int dlg_open, dlg_mode;         // mode 0 = file, 1 = folder
 static char dlg_name[40];
 static int dlg_len;
@@ -364,6 +365,18 @@ static void fb_round_fill_top(int x, int y, int w, int h, int r,
     }
 }
 
+// Same as fb_round_fill_top, rounding all four corners.
+static void fb_round_fill(int x, int y, int w, int h, int r,
+                          unsigned int rgb) {
+    for (int yy = 0; yy < h; yy++) {
+        int cut;
+        if (yy < r) cut = r - 1 - yy;
+        else if (yy >= h - r) cut = r - 1 - (h - 1 - yy);
+        else cut = 0;
+        fb_hline(x + cut, y + yy, x + w - cut, rgb);
+    }
+}
+
 // Vertical gradient from wp_top to wp_bot over the full screen height.
 static void draw_desktop_gradient(int x0, int y0, int x1, int y1) {
     int w = x1 - x0, h = y1 - y0;
@@ -402,7 +415,8 @@ static int dock_width(void);
 static int app_type_of(unsigned int pid);
 static void raise_pid(unsigned int pid);
 static void draw_desktop_icons(void);
-static void draw_menu(void);
+static int menu_item_at(int mx, int my);
+static void draw_menu(int mx, int my);
 static void draw_dialog(void);
 
 static void draw_title(const struct win *wn) {
@@ -488,7 +502,7 @@ static void composite_rect(int x0, int y0, int x1, int y1) {
     clip_x0 = 0; clip_y0 = 0;
     clip_x1 = (int)fb_w; clip_y1 = (int)fb_h;
     draw_dock();
-    draw_menu();
+    draw_menu(g_mx, g_my);
     draw_dialog();
     if (cursor_overlaps(dock_x0(), dock_y0(), dock_width(), DOCK_H))
         has_cur = 0;
@@ -773,7 +787,7 @@ static const char menu_items[MENU_N][24] = {
     "\xd0\x9d\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x8f \xd0\xbf\xd0\xb0\xd0\xbf\xd0\xba\xd0\xb0", // Новая папка
 };
 
-static void draw_menu(void) {
+static void draw_menu(int mx, int my) {
     if (!menu_open) return;
     int x = menu_x, y = menu_y;
     int mw = MENU_W;
@@ -782,13 +796,20 @@ static void draw_menu(void) {
     if (y + mh > (int)fb_h) y = (int)fb_h - mh;
     menu_draw_x = x;
     menu_draw_y = y;
-    fb_fill(x, y, mw, mh, COL_MENU_BORDER);
-    fb_fill(x + MENU_BORDER, y + MENU_BORDER, mw - 2 * MENU_BORDER,
-            mh - 2 * MENU_BORDER, COL_MENU_BG);
-    fb_text(x + 10, y + MENU_BORDER + 3, menu_items[0], COL_MENU_FG,
-            COL_MENU_BG);
-    fb_text(x + 10, y + MENU_BORDER + 3 + MENU_ITEM_H, menu_items[1],
-            COL_MENU_FG, COL_MENU_BG);
+    fb_round_fill(x, y, mw, mh, 3, col_accent);
+    fb_round_fill(x + MENU_BORDER, y + MENU_BORDER, mw - 2 * MENU_BORDER,
+                  mh - 2 * MENU_BORDER, 2, col_menu_bg);
+    int hi = menu_item_at(mx, my);
+    for (int i = 0; i < MENU_N; i++) {
+        int iy = y + MENU_BORDER + i * MENU_ITEM_H;
+        unsigned int bg = col_menu_bg;
+        if (i == hi) {
+            fb_fill(x + MENU_BORDER + 2, iy, mw - 2 * MENU_BORDER - 4,
+                    MENU_ITEM_H, col_accent);
+            bg = col_accent;
+        }
+        fb_text(x + 10, iy + 3, menu_items[i], col_menu_fg, bg);
+    }
 }
 
 static int menu_item_at(int mx, int my) {
@@ -822,21 +843,18 @@ static void draw_dialog(void) {
     int y = (int)fb_h / 3;
     dlg_draw_x = x;
     dlg_draw_y = y;
-    fb_fill(x, y, 360, 88, COL_MENU_BG);
-    fb_fill(x, y, 360, 1, COL_MENU_BORDER);
-    fb_fill(x, y + 87, 360, 1, COL_MENU_BORDER);
-    fb_fill(x, y, 1, 88, COL_MENU_BORDER);
-    fb_fill(x + 359, y, 1, 88, COL_MENU_BORDER);
+    fb_round_fill(x, y, 360, 88, 3, col_accent);
+    fb_round_fill(x + 1, y + 1, 358, 86, 2, col_menu_bg);
     const char *title = dlg_mode
         ? "\xd0\x98\xd0\xbc\xd1\x8f \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb9 \xd0\xbf\xd0\xb0\xd0\xbf\xd0\xba\xd0\xb8:"
         : "\xd0\x98\xd0\xbc\xd1\x8f \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb\xd0\xb0:";
-    fb_text(x + 10, y + 8, title, COL_MENU_FG, COL_MENU_BG);
+    fb_text(x + 10, y + 8, title, col_menu_fg, col_menu_bg);
     int bx = x + 10, by = y + 36, bw = 340, bh = 20;
     fb_fill(bx, by, bw, bh, 0x101010);
     if (dlg_len)
-        fb_text(bx + 4, by + 2, dlg_name, COL_MENU_FG, 0x101010);
+        fb_text(bx + 4, by + 2, dlg_name, col_menu_fg, 0x101010);
     int cx = bx + 4 + dlg_len * 8;      // dialog names are ASCII only
-    fb_fill(cx, by + 3, 2, 14, COL_MENU_FG);
+    fb_fill(cx, by + 3, 2, 14, col_menu_fg);
 }
 
 // ---- cursor (drawn last, erased via its own snapshot) ----------------------
@@ -995,6 +1013,12 @@ int main(void) {
     for (;;) {
         int mx, my, mb, wheel;
         aos_mouse(&mx, &my, &mb, &wheel);
+        g_mx = mx;
+        g_my = my;
+        if (menu_open && (mx != last_mx || my != last_my)) {
+            int hi = menu_item_at(mx, my);
+            if (hi != last_hover) { last_hover = hi; redraw = 1; }
+        }
 
         refresh_cnt++;
         if (files_dirty || (refresh_cnt & 127) == 0) refresh_files();
@@ -1070,6 +1094,7 @@ int main(void) {
             if (menu_open) {
                 int it = menu_item_at(mx, my);
                 menu_open = 0;
+                last_hover = -1;
                 redraw = 1;
                 if (it >= 0) {
                     dlg_open = 1;
@@ -1112,6 +1137,7 @@ int main(void) {
                 menu_x = mx;
                 menu_y = my;
                 menu_open = 1;
+                last_hover = -1;
                 redraw = 1;
             }
         }

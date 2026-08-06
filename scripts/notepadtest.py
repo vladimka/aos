@@ -176,11 +176,13 @@ def main():
         assert_pixel("/tmp/notepad-0-ico.ppm", 31, 39, GREEN,
                      "demo.ico green disc")
 
-        # 2. Right-click desktop opens the context menu.
+        # 2. Right-click desktop opens the context menu. The cursor sits at
+        #    the menu's top-left corner, so item 0 is hover-highlighted (in
+        #    accent); probe item 1's row for the interior bg color.
         rclick(500, 400)
         time.sleep(0.5)
         snap("/tmp/notepad-1-menu.ppm")
-        assert_pixel("/tmp/notepad-1-menu.ppm", 520, 402, MENU_BG,
+        assert_pixel("/tmp/notepad-1-menu.ppm", 520, 430, MENU_BG,
                      "context menu background")
 
         # 3. Pick "Новый файл", type a name, press Enter.
