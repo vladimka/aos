@@ -1,14 +1,15 @@
 #include <sched.h>
 #include <unistd.h>
 #include "aosabi.h"
+#include "theme.h"
 
 #define TW  80
 #define TH  26
 #define FONT_W 8
 #define FONT_H 16
 
-#define COL_FG 0xD8D8D8
-#define COL_BG 0x101010
+static unsigned int col_fg = 0xD8D8D8;
+static unsigned int col_bg = 0x101010;
 
 static unsigned int screen[TH][TW];   // codepoints per cell (0 = empty)
 static int crow, ccol;
@@ -69,7 +70,7 @@ static void prompt(void) {
 }
 
 static void render(void) {
-    aos_fill(win, (unsigned int)w * 4, 0, 0, w, h, COL_BG);
+    aos_fill(win, (unsigned int)w * 4, 0, 0, w, h, col_bg);
     int pos = 0;
     for (int r = 0; r < TH; r++) {
         for (int c = 0; c < TW; c++) {
@@ -79,9 +80,9 @@ static void render(void) {
         utfbuf[pos++] = '\n';
     }
     utfbuf[pos] = 0;
-    aos_render_text(win, (unsigned int)w * 4, 0, 0, utfbuf, COL_FG, COL_BG);
+    aos_render_text(win, (unsigned int)w * 4, 0, 0, utfbuf, col_fg, col_bg);
     aos_fill(win, (unsigned int)w * 4, ccol * FONT_W, crow * FONT_H + 14,
-             FONT_W, 2, COL_FG);
+             FONT_W, 2, col_fg);
     struct aos_msg m = {MSG_UPDATE, winid, 0, 0, 0};
     aos_send((unsigned int)aos_get_event_pid(), &m);
 }
@@ -198,6 +199,10 @@ int main(void) {
     }
     w = TW * FONT_W;
     h = TH * FONT_H;
+
+    theme_load();
+    col_fg = theme_color("theme_text_fg", 0xD8D8D8);
+    col_bg = theme_color("theme_text_bg", 0x101010);
 
     prompt();
     render();

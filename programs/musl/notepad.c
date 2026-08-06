@@ -3,6 +3,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "aosabi.h"
+#include "theme.h"
 
 #define FONT_W   8
 #define FONT_H   16
@@ -13,10 +14,10 @@
 #define WINDOW_W (TW * FONT_W)
 #define WINDOW_H (TH * FONT_H)
 
-#define COL_FG        0xD8D8D8
-#define COL_BG        0x101010
-#define COL_STATUS_BG 0x20283A
-#define COL_STATUS_FG 0xE8EEF8
+static unsigned int col_fg = 0xD8D8D8;
+static unsigned int col_bg = 0x101010;
+static unsigned int col_status_bg = 0x232C40;
+static unsigned int col_status_fg = 0xD8D8D8;
 
 static unsigned int lines[NMAX][TW];   // codepoints per cell
 static int llen[NMAX];                 // chars per line
@@ -231,7 +232,7 @@ static void build_status(char *dst) {
 
 static void render(void) {
     ensure_visible();
-    aos_fill(win, (unsigned int)w * 4, 0, 0, w, h, COL_BG);
+    aos_fill(win, (unsigned int)w * 4, 0, 0, w, h, col_bg);
 
     static char tb[EDIT_H * (TW * 3 + 1) + 1];
     int pos = 0;
@@ -243,18 +244,18 @@ static void render(void) {
         tb[pos++] = '\n';
     }
     tb[pos] = 0;
-    aos_render_text(win, (unsigned int)w * 4, 0, 0, tb, COL_FG, COL_BG);
+    aos_render_text(win, (unsigned int)w * 4, 0, 0, tb, col_fg, col_bg);
 
     if (crow >= scroll && crow < scroll + EDIT_H)
         aos_fill(win, (unsigned int)w * 4, ccol * FONT_W,
-                 (crow - scroll) * FONT_H + 14, FONT_W, 2, COL_FG);
+                 (crow - scroll) * FONT_H + 14, FONT_W, 2, col_fg);
 
     aos_fill(win, (unsigned int)w * 4, 0, EDIT_H * FONT_H, w,
-             (TH - EDIT_H) * FONT_H, COL_STATUS_BG);
+             (TH - EDIT_H) * FONT_H, col_status_bg);
     char status[80];
     build_status(status);
     aos_render_text(win, (unsigned int)w * 4, 4, EDIT_H * FONT_H, status,
-                    COL_STATUS_FG, COL_STATUS_BG);
+                    col_status_fg, col_status_bg);
 
     struct aos_msg m = {MSG_UPDATE, winid, 0, 0, 0};
     aos_send((unsigned int)aos_get_event_pid(), &m);
@@ -340,6 +341,13 @@ int main(int argc, char **argv) {
     }
     w = WINDOW_W;
     h = WINDOW_H;
+
+    theme_load();
+    col_fg = theme_color("theme_text_fg", 0xD8D8D8);
+    col_bg = theme_color("theme_text_bg", 0x101010);
+    col_status_bg = theme_color("theme_dock_bg", 0x232C40);
+    col_status_fg = theme_color("theme_text_fg", 0xD8D8D8);
+
     render();
 
     for (;;) {
