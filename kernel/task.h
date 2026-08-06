@@ -14,6 +14,7 @@ struct open_file;   // forward decl (fully defined in vfs.h)
 #define TASK_SLEEPING 3   // blocked until tick >= wake_tick
 #define TASK_WAITING  4   // blocked until child (wait_pid) exits
 #define TASK_ZOMBIE   5   // exited, exit_code retained, awaiting waitpid
+#define TASK_SPAWNING 6   // task_spawn in progress; slot held, not schedulable
 
 enum task_abi { ABI_AOS = 0, ABI_LINUX = 1 };
 
@@ -40,6 +41,8 @@ struct task {
     struct linux_ctx *lctx;     // Linux runtime context (kmalloc'd)
     struct open_file *fds[TASK_MAX_FDS];  // per-task open-file table (0/1/2 console)
     char cwd[PATH_MAX];         // normalized absolute cwd ("/" = root)
+    int stdout_fd;
+    int stdin_fd;
     unsigned int trace_on;        // 1 = record this task's syscalls
     unsigned char *trace_buf;     // kmalloc'd ring of struct trace_rec (lazy)
     unsigned int trace_head;      // next write slot (wraps)

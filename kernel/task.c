@@ -131,6 +131,8 @@ void task_init(void) {
     linux_ctx_init(tasks[0].lctx);
     tasks[0].cwd[0] = '/';
     tasks[0].cwd[1] = '\0';
+    tasks[0].stdout_fd = -1;
+    tasks[0].stdin_fd = -1;
     tasks[0].fds[0] = &console_open_file;
     tasks[0].fds[1] = &console_open_file;
     tasks[0].fds[2] = &console_open_file;
@@ -275,6 +277,13 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     }
     memset(t, 0, sizeof(*t));
     t->pid = pid;
+    // Hold the slot NOW, before the slow allocations below. Otherwise a
+    // reentrant task_spawn (a serial command run from the timer handler while
+    // this spawn is mid-allocation) sees state == TASK_FREE here and steals
+    // the pid the caller is still filling in, then the outer spawn overwrites
+    // the child on resume. The scheduler skips TASK_SPAWNING, and the failure
+    // paths below reset it to TASK_FREE.
+    t->state = TASK_SPAWNING;
     t->sink = sink;
     t->parent = task_current_pid();
     // strace -f: a child inherits the parent's trace flag.
@@ -286,6 +295,8 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     t->fds[0] = &console_open_file;
     t->fds[1] = &console_open_file;
     t->fds[2] = &console_open_file;
+    t->stdout_fd = -1;
+    t->stdin_fd = -1;
     strncpy(t->cwd, current_task->cwd, PATH_MAX);
     t->cwd[PATH_MAX - 1] = '\0';
 

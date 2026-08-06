@@ -8,7 +8,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ISO = os.path.join(ROOT, "aos.iso")
 MON = "/tmp/aos-strace.sock"
-SER = "/tmp/aos-strace.sock"
+SER = "/tmp/aos-strace.ser"
 
 def wait_for(path, seconds=10):
     end = time.time() + seconds
@@ -35,6 +35,7 @@ def main():
         except FileNotFoundError: pass
     qemu = subprocess.Popen([
         "qemu-system-i386", "-m", "256", "-cdrom", ISO, "-display", "none",
+        "-no-reboot",
         "-serial", "unix:" + SER + ",server,nowait",
         "-monitor", "unix:" + MON + ",server,nowait",
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -53,24 +54,39 @@ def main():
         s.sendall(b"strace linrun\n")
         out = drain(s, b"", time.time() + 45, b"== pid 2 ==")
         tail = out[-1200:]
-        if b"KERNEL PANIC" in out:
-            raise AssertionError("kernel panic during strace linrun:\n"
-                                 + tail.decode(errors="replace"))
-        if b"== pid 0 ==" not in out:
-            raise AssertionError("strace session did not dump == pid 0 ==\n" + tail)
-        if b"== pid 2 ==" not in out:
-            raise AssertionError("strace did not collect the spawned child (lin/hello is pid 2)\n" + tail)
-        # musl stdout goes through writev(146) (its __stdio_write); the session
-        # covers AOS_EXT spawn + Linux writev + Linux exit_group.
-        for probe in ("spawn(", "writev(", "exit_group("):
-            if probe.encode() not in out:
-                raise AssertionError("strace output missing %r\n%s" % (probe, tail))
+        try:
+            if b"KERNEL PANIC" in out:
+                raise AssertionError("kernel panic during strace linrun:\n"
+                                     + tail.decode(errors="replace"))
+            if b"== pid 0 ==" not in out:
+                raise AssertionError("strace session did not dump == pid 0 ==\n"
+                                     + tail.decode(errors="replace"))
+            if b"== pid 2 ==" not in out:
+                raise AssertionError(
+                    "strace did not collect the spawned child\n"
+                    "(saw %r in the dump; full log in /tmp/aos-strace-dump.log)\n%s"
+                    % ([l for l in out.split(b"\n") if b"==" in l and b"pid" in l],
+                       tail.decode(errors="replace")))
+            # musl stdout goes through writev(146) (its __stdio_write); the
+            # session covers AOS_EXT spawn + Linux writev + Linux exit_group.
+            for probe in ("spawn(", "writev(", "exit_group("):
+                if probe.encode() not in out:
+                    raise AssertionError("strace output missing %r\n%s"
+                                         % (probe, tail.decode(errors="replace")))
+        except AssertionError:
+            raise
         print("PASS: strace shows AOS_EXT spawn + linux writev/exit_group, child collected")
         return 0
     finally:
+        try:
+            with open("/tmp/aos-strace-dump.log", "wb") as f:
+                f.write(out)
+        except (NameError, OSError):
+            pass
         qemu.terminate()
         try: qemu.wait(timeout=5)
         except subprocess.TimeoutExpired: qemu.kill()
+
 
 if __name__ == "__main__":
     sys.exit(main())

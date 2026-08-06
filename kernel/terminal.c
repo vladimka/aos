@@ -5,6 +5,7 @@
 #include "vfs.h"
 #include "string.h"
 #include "user.h"
+#include "task.h"
 
 static char line_buf[LINE_BUF_SIZE];
 static unsigned int line_pos = 0;
@@ -33,10 +34,19 @@ static void key_queue_push(int cp) {
 }
 
 int terminal_read_key(void) {
-    if (key_queue_head == key_queue_tail) return -1;
-    int cp = key_queue[key_queue_head];
-    key_queue_head = (key_queue_head + 1) % KEY_QUEUE_SIZE;
-    return cp;
+    if (key_queue_head != key_queue_tail) {
+        int cp = key_queue[key_queue_head];
+        key_queue_head = (key_queue_head + 1) % KEY_QUEUE_SIZE;
+        return cp;
+    }
+    struct task *t = get_current_task();
+    if (t->stdin_fd >= 0) {
+        unsigned char c;
+        int r = vfs_read_fd(t->stdin_fd, &c, 1);
+        if (r > 0) return c;
+        return -1;
+    }
+    return -1;
 }
 
 void terminal_reset_keys(void) {

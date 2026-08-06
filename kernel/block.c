@@ -1,6 +1,6 @@
 #include "block.h"
 #include "vblk.h"
-#include "serial.h"
+#include "printf.h"
 #include "string.h"
 
 static struct sdev *dev;
@@ -135,16 +135,12 @@ int block_init(void) {
         sdev_vblk.present = 1;
         sdev_vblk.capacity_sectors = vblk_capacity_bytes() / BLOCK_SIZE;
         dev = &sdev_vblk;
-        serial_print("block: disk backend, ");
-        serial_print_dec(sdev_vblk.capacity_sectors);
-        serial_print(" sectors\n");
+        printf("block: disk backend, %u sectors\n", sdev_vblk.capacity_sectors);
     } else {
         sdev_ram.read = sdev_ram_read;
         sdev_ram.write = sdev_ram_write;
         dev = &sdev_ram;
-        serial_print("block: ram backend, ");
-        serial_print_dec(RAMDISK_SECTORS);
-        serial_print(" sectors\n");
+        printf("block: ram backend, %u sectors\n", RAMDISK_SECTORS);
     }
     return 0;
 }

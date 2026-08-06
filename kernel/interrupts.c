@@ -4,6 +4,13 @@
 #include "serial.h"
 #include "printf.h"
 #include "ports.h"
+#include "bt.h"
+
+#define PIC1_CMD  0x20
+#define PIC2_CMD  0xA0
+
+static unsigned int spurious_count[16];
+static unsigned int spurious_log_suppressed[16];
 
 extern void isr0(void);
 extern void isr1(void);
@@ -120,8 +127,9 @@ void isr_handler(struct registers *r) {
     __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
     __asm__ volatile("mov %%cr3, %0" : "=r"(cr3v));
     vga_set_color(VGA_WHITE, VGA_RED);
-    printf("\n=== KERNEL PANIC ===\nException: %s\nEIP: 0x%x  CS: 0x%x  EFLAGS: 0x%x  ERR: 0x%x  CR2: 0x%x  CR3: 0x%x\nSystem halted.\n",
-           exception_messages[r->int_no], r->eip, r->cs, r->eflags, r->err_code, cr2, cr3v);
+    printf("\n=== KERNEL PANIC ===\nException: %s (int %d)\nEIP: 0x%x  CS: 0x%x  EFLAGS: 0x%x  ERR: 0x%x  CR2: 0x%x  CR3: 0x%x\n",
+           exception_messages[r->int_no], r->int_no, r->eip, r->cs, r->eflags, r->err_code, cr2, cr3v);
+    backtrace((unsigned int *)r->ebp, 16);
     serial_print("kstack scan:\n");
     unsigned int *sp = (unsigned int *)&r;
     for (int i = 0; i < 64 && (unsigned int)sp < 0x3000000; i++, sp++) {
@@ -136,19 +144,50 @@ void isr_handler(struct registers *r) {
         __asm__ volatile("cli; hlt");
 }
 
+static unsigned char pic_get_isr(unsigned char cmd_port) {
+    outb(cmd_port, 0x0B);
+    return inb(cmd_port);
+}
+
+static void irq_eoi(int irq) {
+    if (irq >= 8) {
+        outb(PIC2_CMD, 0x20);
+        outb(PIC1_CMD, 0x20);
+    } else {
+        outb(PIC1_CMD, 0x20);
+    }
+}
+
 void irq_handler(struct registers *r) {
     int irq = r->int_no - 32;
+
+    unsigned char cmd = (irq >= 8) ? PIC2_CMD : PIC1_CMD;
+    unsigned char isr = pic_get_isr(cmd);
+    if (!(isr & (1 << (irq & 7)))) {
+        spurious_count[irq]++;
+        irq_eoi(irq);
+        if (!spurious_log_suppressed[irq]) {
+            printf("spurious IRQ %d (total %u)\n", irq, spurious_count[irq]);
+            if (spurious_count[irq] >= 100) {
+                spurious_log_suppressed[irq] = 1;
+                printf("spurious IRQ %d: logging suppressed\n", irq);
+            }
+        }
+        return;
+    }
 
     // Acknowledge the PIC before running the handler: the timer handler may
     // switch to ring 3 (serial newline -> command) and iret away before its
     // own EOI, which would leave IRQ0 in-service and block lower-priority
     // IRQs (keyboard IRQ1) for the whole user program lifetime.
-    if (irq >= 8)
-        outb(0xA0, 0x20);
-    outb(0x20, 0x20);
+    irq_eoi(irq);
 
-    if (irq_routines[irq])
+    if (irq_routines[irq]) {
         irq_routines[irq]();
+    } else {
+        printf("unexpected IRQ %d (no handler)\n", irq);
+        spurious_count[irq]++;
+    }
 }
 
 void interrupts_init(void) {

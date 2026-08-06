@@ -14,7 +14,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               drivers/vrng.o drivers/vblk.o drivers/vnet.o drivers/rtc.o \
               kernel/terminal.o kernel/commands.o \
               kernel/vfs.o kernel/vfscompat.o kernel/procfs.o kernel/string.o arch/i386/gdt.o arch/i386/idt.o \
-               kernel/interrupts.o kernel/elf.o kernel/syscall.o kernel/aos_gui.o \
+               kernel/interrupts.o kernel/bt.o kernel/elf.o kernel/syscall.o kernel/aos_gui.o \
                kernel/progload.o kernel/paging.o kernel/pmm.o kernel/kmm.o \
               kernel/config.o kernel/user.o \
               kernel/user_tramp.o kernel/printf.o kernel/progs.o \
@@ -117,12 +117,23 @@ run: aos.iso disk.img
 LINUX_TESTS = $(if $(LINUX_BINS),linhello lincat lindirtest)
 TESTS = ipctest manytest notepadtest sleeptest rngtest blktest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive $(LINUX_TESTS)
 
+# Fast subset for CI: quick boots, no extra virtio devices. The musl Linux
+# tests are included only when the musl toolchain is installed.
+FAST_TESTS = ipctest $(if $(LINUX_BINS),linhello lincat)
+
 test: aos.iso
 	@set -e; for t in $(TESTS); do \
 		echo "===== $$t ====="; \
 		$(PYTHON) scripts/$$t.py; \
 	done
 	@echo "ALL $(words $(TESTS)) TESTS PASSED"
+
+test-fast: aos.iso
+	@set -e; for t in $(FAST_TESTS); do \
+		echo "===== $$t ====="; \
+		$(PYTHON) scripts/$$t.py; \
+	done
+	@echo "ALL $(words $(FAST_TESTS)) FAST TESTS PASSED"
 
 clean:
 	rm -f $(KERNEL_OBJS) $(PROG_ELFS) *.elf *.bin *.iso disk.img kernel/progs.c
@@ -133,4 +144,4 @@ clean:
 
 .SECONDARY: $(KERNEL_OBJS)
 
-.PHONY: all run test clean
+.PHONY: all run test test-fast clean

@@ -76,9 +76,12 @@ void syscall_set_args(const char *args) {
     prog_args[i] = '\0';
 }
 
-// Stdout routing: a task with a mailbox sink delivers output as MSG_DATA
-// messages (up to 12 bytes each); otherwise output goes to the kernel terminal.
 void route_text(const char *s, unsigned int len) {
+    struct task *t = get_current_task();
+    if (t->stdout_fd >= 0) {
+        vfs_write_fd(t->stdout_fd, s, len);
+        return;
+    }
     unsigned int pid = task_current_pid();
     unsigned int sink = task_current_sink();
     if (pid > 0 && sink > 0 && task_alive(sink)) {

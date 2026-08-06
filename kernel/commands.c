@@ -109,7 +109,6 @@ static int try_exec(const char *full_path, const char *arg, int trace) {
             trace_session_dump();
             me->trace_on = 0;
         }
-        terminal_set_prompt();  // runs after the program exits
         return 1;
     }
     if (trace) me->trace_on = 0;
@@ -177,12 +176,32 @@ static void cmd_strace(const char *line) {
     exec_from_path(prog, p, 1);
 }
 
-void commands_execute(const char *line) {
-    while (*line == ' ') line++;
-    if (!*line) {
-        terminal_set_prompt();
-        return;
+#define OP_NONE   0
+#define OP_GT     1
+#define OP_GTG    2
+#define OP_LT     3
+#define OP_PIPE   4
+
+static const char *find_operator(const char *line, int *op) {
+    const char *p = line;
+    while (*p) {
+        if (*p == '>' || *p == '<' || *p == '|') {
+            if (p > line && *(p - 1) != ' ') { p++; continue; }
+            const char *q = p + 1;
+            if (*p == '>' && *q == '>') { *op = OP_GTG; return p; }
+            if (*p == '>') { *op = OP_GT; return p; }
+            if (*p == '<') { *op = OP_LT; return p; }
+            if (*p == '|') { *op = OP_PIPE; return p; }
+        }
+        p++;
     }
+    *op = OP_NONE;
+    return 0;
+}
+
+static void run_command_raw(const char *line) {
+    while (*line == ' ') line++;
+    if (!*line) return;
 
     const char *arg = line;
     while (*arg && *arg != ' ') arg++;
@@ -196,7 +215,6 @@ void commands_execute(const char *line) {
 
     if (strcmp(cmd, "format") == 0) {
         cmd_format();
-        terminal_set_prompt();
         return;
     }
 
@@ -209,25 +227,21 @@ void commands_execute(const char *line) {
             terminal_print("\nPATH=");
             terminal_print(command_path);
         }
-        terminal_set_prompt();
         return;
     }
 
     if (strcmp(cmd, "cd") == 0) {
         cmd_cd(arg);
-        terminal_set_prompt();
         return;
     }
 
     if (strcmp(cmd, "pwd") == 0) {
         cmd_pwd();
-        terminal_set_prompt();
         return;
     }
 
     if (strcmp(cmd, "strace") == 0) {
         cmd_strace(arg);
-        terminal_set_prompt();
         return;
     }
 
@@ -236,5 +250,144 @@ void commands_execute(const char *line) {
     terminal_print("\nUnknown command: ");
     terminal_write(line, cmd_len);
     terminal_print(". Type 'help'");
+}
+
+static const char *skip_token(const char *p) {
+    while (*p && *p != ' ') p++;
+    return p;
+}
+
+static void exec_stage(const char *line) {
+    while (*line == ' ') line++;
+    if (!*line) return;
+
+    int op;
+    const char *op_pos = find_operator(line, &op);
+    if (op == OP_NONE) {
+        run_command_raw(line);
+        return;
+    }
+
+    unsigned int left_len = op_pos - line;
+    while (left_len > 0 && line[left_len - 1] == ' ') left_len--;
+
+    const char *right = op_pos + (op == OP_GTG ? 2 : 1);
+    while (*right == ' ') right++;
+
+    char left_buf[LINE_BUF_SIZE];
+    if (left_len >= LINE_BUF_SIZE) left_len = LINE_BUF_SIZE - 1;
+    for (unsigned int i = 0; i < left_len; i++) left_buf[i] = line[i];
+    left_buf[left_len] = '\0';
+
+    struct task *t = get_current_task();
+
+    if (op == OP_GT || op == OP_GTG) {
+        const char *fn_end = skip_token(right);
+        unsigned int fn_len = fn_end - right;
+        if (fn_len == 0) {
+            terminal_print("\nredirect: missing file name");
+            return;
+        }
+        char fn[PATH_MAX];
+        if (fn_len >= PATH_MAX) fn_len = PATH_MAX - 1;
+        for (unsigned int i = 0; i < fn_len; i++) fn[i] = right[i];
+        fn[fn_len] = '\0';
+
+        struct vfs_inode *cwd = current_task_cwd();
+        int flags = VFS_O_WRONLY | VFS_O_CREAT | (op == OP_GTG ? VFS_O_APPEND : VFS_O_TRUNC);
+        int fd = vfs_open_fd(cwd, fn, flags);
+        vfs_put(cwd);
+        if (fd < 0) {
+            terminal_print("\nredirect: cannot open ");
+            terminal_print(fn);
+            return;
+        }
+        int saved = t->stdout_fd;
+        t->stdout_fd = fd;
+        exec_stage(left_buf);
+        t->stdout_fd = saved;
+        vfs_close_fd(fd);
+        return;
+    }
+
+    if (op == OP_LT) {
+        const char *fn_end = skip_token(right);
+        unsigned int fn_len = fn_end - right;
+        if (fn_len == 0) {
+            terminal_print("\nredirect: missing file name");
+            return;
+        }
+        char fn[PATH_MAX];
+        if (fn_len >= PATH_MAX) fn_len = PATH_MAX - 1;
+        for (unsigned int i = 0; i < fn_len; i++) fn[i] = right[i];
+        fn[fn_len] = '\0';
+
+        struct vfs_inode *cwd = current_task_cwd();
+        int fd = vfs_open_fd(cwd, fn, VFS_O_RDONLY);
+        vfs_put(cwd);
+        if (fd < 0) {
+            terminal_print("\nredirect: cannot open ");
+            terminal_print(fn);
+            return;
+        }
+        int saved = t->stdin_fd;
+        t->stdin_fd = fd;
+        exec_stage(left_buf);
+        t->stdin_fd = saved;
+        vfs_close_fd(fd);
+        return;
+    }
+
+    if (op == OP_PIPE) {
+        struct vfs_inode *cwd = current_task_cwd();
+        int fd = vfs_open_fd(cwd, "/pipe_tmp", VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC);
+        vfs_put(cwd);
+        if (fd < 0) {
+            terminal_print("\npipe: cannot create temp file");
+            return;
+        }
+        int saved_out = t->stdout_fd;
+        t->stdout_fd = fd;
+        exec_stage(left_buf);
+        t->stdout_fd = saved_out;
+        vfs_close_fd(fd);
+
+        cwd = current_task_cwd();
+        int ifd = vfs_open_fd(cwd, "/pipe_tmp", VFS_O_RDONLY);
+        vfs_put(cwd);
+        if (ifd < 0) {
+            terminal_print("\npipe: cannot read temp file");
+            struct vfs_inode *ucwd = current_task_cwd();
+            vfs_unlink(ucwd, "/pipe_tmp");
+            vfs_put(ucwd);
+            return;
+        }
+        int saved_in = t->stdin_fd;
+        t->stdin_fd = ifd;
+        run_command_raw(right);
+        t->stdin_fd = saved_in;
+        vfs_close_fd(ifd);
+
+        cwd = current_task_cwd();
+        vfs_unlink(cwd, "/pipe_tmp");
+        vfs_put(cwd);
+    }
+}
+
+void commands_execute(const char *line) {
+    while (*line == ' ') line++;
+    if (!*line) {
+        terminal_set_prompt();
+        return;
+    }
+
+    int op;
+    if (find_operator(line, &op)) {
+        exec_stage(line);
+        terminal_set_prompt();
+        return;
+    }
+
+    run_command_raw(line);
     terminal_set_prompt();
 }

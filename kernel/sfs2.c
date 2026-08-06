@@ -4,6 +4,7 @@
 #include "serial.h"
 #include "pmm.h"
 #include "rtc.h"
+#include "printf.h"
 
 #define SFS2_ERR_EINVAL  -22
 
@@ -186,11 +187,9 @@ int sfs2_init(struct sfs2_fs *fs) {
     if (block_read_into(0, sector) != 0) return -1;
     if (sector[0] == SFS2_MAGIC0 && sector[1] == SFS2_MAGIC1 &&
         sector[2] == SFS2_MAGIC2 && sector[3] == SFS2_MAGIC3) {
-        if (block_disk_present())
-            serial_print("SFS2 mounted from disk.\n");
+        printf("SFS2 mounted (%s).\n", block_disk_present() ? "disk" : "ramdisk");
     } else {
-        if (block_disk_present())
-            serial_print("SFS2 formatting new disk.\n");
+        printf("SFS2 formatting new %s.\n", block_disk_present() ? "disk" : "ramdisk");
         sfs2_format(fs);
     }
     load_super(fs);

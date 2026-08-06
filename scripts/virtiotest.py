@@ -47,7 +47,7 @@ def boot(expect_new_disk):
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         wait_for(MON)
-        tag = "SFS formatting new disk." if expect_new_disk else "SFS mounted from disk."
+        tag = "SFS2 formatting new disk." if expect_new_disk else "SFS2 mounted (disk)."
         if not wait_for_serial(tag):
             raise AssertionError("expected serial %r" % tag)
         if not wait_for_serial("Terminal ready."):
@@ -72,9 +72,9 @@ def main():
     subprocess.run(["truncate", "-s", "4M", IMG], check=True)
     boot(expect_new_disk=True)
     data = open(IMG, "rb").read()
-    if data[:4] != b"SFS1":
-        raise AssertionError("disk image does not start with SFS1 after boot A")
-    if b"bin/help" not in data:
+    if data[:4] != b"SFS2":
+        raise AssertionError("disk image does not start with SFS2 after boot A")
+    if b"help" not in data:
         raise AssertionError("embedded program name not flushed to disk")
     boot(expect_new_disk=False)
     print("PASS: SFS persists on the virtio disk across reboots")

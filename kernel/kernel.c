@@ -135,10 +135,18 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     // It takes over the screen and registers as the event consumer; the idle
     // task keeps running the main loop below (mouse flush + hlt).
     unsigned int wm_pid;
-    if (task_spawn("bin/wm", "", 0, &wm_pid) == 0)
+    int wm_rc = task_spawn("bin/wm", "", 0, &wm_pid);
+    if (wm_rc == 0) {
         printf("Window manager spawned (pid %u).\n", wm_pid);
-    else
-        printf("Failed to spawn window manager.\n");
+    } else {
+        struct aos_stat st;
+        if (vfs_kernel_stat("bin/wm", &st) != 0)
+            printf("Failed to spawn window manager (rc=%d): /bin/wm missing on the filesystem. Run `format`.\n",
+                   wm_rc);
+        else
+            printf("Failed to spawn window manager (rc=%d): /bin/wm exists but load/spawn failed.\n",
+                   wm_rc);
+    }
 
     while (1) {
         // Wheel scrolls run here (IF=1), never inside an IRQ: the multi-MB

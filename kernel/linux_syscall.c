@@ -47,13 +47,13 @@ static int lin_fd_valid(int fd) {
     return fd >= 3 && fd < TASK_MAX_FDS && t->fds[fd] != 0;
 }
 
-static void linux_exit(void) {
+static void linux_exit(unsigned int code) {
     if (task_current_pid() == 0) {
         task_set_abi_current(ABI_AOS);
         linux_ctx_init(task_current_lctx());
         user_program_exit();
     }
-    task_exit_current(0);   // Linux exit codes are ignored for now
+    task_exit_current(code);
 }
 
 void linux_ctx_init(struct linux_ctx *lc) {
@@ -102,7 +102,7 @@ void linux_syscall_handler(struct registers *r) {
     switch (n) {
     case 1:    // exit
     case 252:  // exit_group
-        linux_exit();
+        linux_exit(r->ebx);
         break;
 
     case 4: {  // write(fd, buf, count)
@@ -447,16 +447,14 @@ void linux_syscall_handler(struct registers *r) {
         break;
     }
 
-    case 162: {  // nanosleep(req, rem) — spin on the PIT tick
-        extern volatile unsigned int tick;
+    case 162: {  // nanosleep(req, rem) — block on the PIT tick
         const unsigned char *req = (const unsigned char *)r->ebx;
         if (!in_luser(req, 8)) { r->eax = -14; break; }
         unsigned int sec, nsec;
         memcpy(&sec, req, 4);
         memcpy(&nsec, req + 4, 4);
         unsigned int ms = sec * 1000 + nsec / 1000000u;
-        unsigned int start = tick;
-        while (tick - start < ms);
+        task_sleep(ms);          // sti;hlt;cli: lets the timer IRQ advance tick
         r->eax = 0;
         break;
     }
