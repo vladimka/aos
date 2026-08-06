@@ -2,6 +2,8 @@
 #include "string.h"
 #include "serial.h"
 #include "klog.h"
+#include "task.h"
+#include "trace.h"
 
 // procfs inode numbers
 #define PROCFS_ROOT    1
@@ -9,6 +11,13 @@
 #define PROCFS_VERSION 3
 #define PROCFS_MOUNTS  4
 #define PROCFS_KLOG    5
+
+// Pseudo-dirs per live task and their trace files. The pid range for the
+// 0x1000 dirs is limited to MAX_TASKS, so decimal task pids never collide.
+#define PROCFS_PID_BASE   0x1000
+#define PROCFS_TRACE_BASE 0x2000
+#define PROCFS_PID_DIR(pid)   (PROCFS_PID_BASE + (pid))
+#define PROCFS_TRACE(pid)     (PROCFS_TRACE_BASE + (pid))
 
 extern volatile unsigned int tick;
 
@@ -95,6 +104,22 @@ static int proc_stat(struct vfs_fs *fs, unsigned int ino, struct aos_stat *st) {
         st->nlink = 1;
         return 0;
     }
+    if (ino >= PROCFS_PID_BASE && ino < PROCFS_PID_BASE + MAX_TASKS) {
+        st->type = 2;
+        st->size = 0;
+        st->mtime = 0;
+        st->nlink = 1;
+        return 0;
+    }
+    if (ino >= PROCFS_TRACE_BASE && ino < PROCFS_TRACE_BASE + MAX_TASKS) {
+        unsigned int sz = 0;
+        trace_render_at(ino - PROCFS_TRACE_BASE, 0, 0, 0, &sz);
+        st->type = 1;
+        st->size = sz;
+        st->mtime = 0;
+        st->nlink = 1;
+        return 0;
+    }
     for (unsigned int i = 0; i < PROC_FILES; i++) {
         if (proc_files[i].ino == ino) {
             unsigned int len;
@@ -112,10 +137,32 @@ static int proc_stat(struct vfs_fs *fs, unsigned int ino, struct aos_stat *st) {
 static int proc_lookup(struct vfs_fs *fs, unsigned int dir_ino,
                        const char *name, unsigned int *out_ino) {
     (void)fs;
-    if (dir_ino != PROCFS_ROOT) return VFS_ENOTDIR;
+    if (dir_ino != PROCFS_ROOT) {
+        if (dir_ino >= PROCFS_PID_BASE && dir_ino < PROCFS_PID_BASE + MAX_TASKS) {
+            if (strcmp(name, "trace") == 0) {
+                *out_ino = PROCFS_TRACE(dir_ino - PROCFS_PID_BASE);
+                return 0;
+            }
+            return VFS_ENOENT;
+        }
+        return VFS_ENOTDIR;
+    }
     for (unsigned int i = 0; i < PROC_FILES; i++) {
         if (strcmp(proc_files[i].name, name) == 0) {
             *out_ino = proc_files[i].ino;
+            return 0;
+        }
+    }
+    unsigned int pid = 0;
+    const char *p = name;
+    while (*p >= '0' && *p <= '9') {
+        pid = pid * 10 + (unsigned int)(*p - '0');
+        p++;
+    }
+    if (*p == '\0' && pid > 0 && pid < MAX_TASKS) {
+        struct task *t = task_slot(pid);
+        if (t && t->state != TASK_FREE) {
+            *out_ino = PROCFS_PID_DIR(pid);
             return 0;
         }
     }
@@ -126,17 +173,50 @@ static int proc_readdir(struct vfs_fs *fs, unsigned int dir_ino,
                         unsigned int idx, char *name_out,
                         unsigned int *ino_out) {
     (void)fs;
-    if (dir_ino != PROCFS_ROOT) return VFS_ENOTDIR;
-    if (idx >= PROC_FILES) return 0;
-    const struct proc_file *pf = &proc_files[idx];
-    unsigned int i = 0;
-    while (pf->name[i] && i < VFS_NAME_MAX) {
-        name_out[i] = pf->name[i];
-        i++;
+    if (dir_ino == PROCFS_ROOT) {
+        if (idx < PROC_FILES) {
+            const struct proc_file *pf = &proc_files[idx];
+            unsigned int i = 0;
+            while (pf->name[i] && i < VFS_NAME_MAX) {
+                name_out[i] = pf->name[i];
+                i++;
+            }
+            name_out[i] = '\0';
+            if (ino_out) *ino_out = pf->ino;
+            return 1;
+        }
+        unsigned int k = idx - PROC_FILES;
+        for (unsigned int pid = 1; pid < MAX_TASKS; pid++) {
+            struct task *t = task_slot(pid);
+            if (!t || t->state == TASK_FREE || t->state == TASK_ZOMBIE) continue;
+            if (k-- != 0) continue;
+            char tmp[12];
+            unsigned int n = 0;
+            unsigned int v = pid;
+            while (v) { tmp[n++] = (char)('0' + v % 10); v /= 10; }
+            unsigned int i = 0;
+            for (unsigned int j = n; j > 0 && i < VFS_NAME_MAX;) {
+                j--;
+                name_out[i++] = tmp[j];
+            }
+            name_out[i] = '\0';
+            if (ino_out) *ino_out = PROCFS_PID_DIR(pid);
+            return 1;
+        }
+        return 0;
     }
-    name_out[i] = '\0';
-    if (ino_out) *ino_out = pf->ino;
-    return 1;
+    if (dir_ino >= PROCFS_PID_BASE && dir_ino < PROCFS_PID_BASE + MAX_TASKS) {
+        if (idx == 0) {
+            unsigned int i = 0;
+            const char *nm = "trace";
+            while (nm[i] && i < VFS_NAME_MAX) { name_out[i] = nm[i]; i++; }
+            name_out[i] = '\0';
+            if (ino_out) *ino_out = PROCFS_TRACE(dir_ino - PROCFS_PID_BASE);
+            return 1;
+        }
+        return 0;
+    }
+    return VFS_ENOTDIR;
 }
 
 static int proc_read_at(struct vfs_fs *fs, unsigned int ino, void *buf,
@@ -144,6 +224,8 @@ static int proc_read_at(struct vfs_fs *fs, unsigned int ino, void *buf,
     (void)fs;
     if (ino == PROCFS_KLOG)
         return (int)klog_read(off, buf, len);
+    if (ino >= PROCFS_TRACE_BASE && ino < PROCFS_TRACE_BASE + MAX_TASKS)
+        return (int)trace_render_at(ino - PROCFS_TRACE_BASE, off, buf, len, 0);
     unsigned int clen;
     char *content = proc_content(ino, &clen);
     if (off >= clen) return 0;
