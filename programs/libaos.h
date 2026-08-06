@@ -1,11 +1,9 @@
 #ifndef LIBAOS_H
 #define LIBAOS_H
 
-#include "aosipc.h"
-
-struct aos_time {
-    int year, month, day, hour, minute, second;
-};
+// Historical userland wrapper header. All ABI types/constants now live in
+// aosabi.h; libaos.h keeps only the legacy function prototypes.
+#include "aosabi.h"
 
 void print(const char *s);
 void print_hex(unsigned int n);
@@ -13,24 +11,6 @@ void print_dec(unsigned int n);
 void putchar(char c);
 
 // fd-based filesystem API (SYS_OPEN..SYS_UNLINK)
-#define O_RDONLY     0x00000
-#define O_WRONLY     0x00001
-#define O_RDWR       0x00002
-#define O_CREAT      0x00040
-#define O_TRUNC      0x00200
-#define O_APPEND     0x00400
-#define O_DIRECTORY  0x10000
-
-#define SEEK_SET 0
-#define SEEK_CUR 1
-#define SEEK_END 2
-
-struct aos_stat {
-    unsigned int type;    // 1 file, 2 dir
-    unsigned int size;
-    unsigned int mtime;
-    unsigned int nlink;
-};
 
 int sd_open(const char *path, int flags);
 int sd_close(int fd);

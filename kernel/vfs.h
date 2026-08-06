@@ -1,6 +1,8 @@
 #ifndef VFS_H
 #define VFS_H
 
+#include "aosabi.h"    // struct aos_stat (single source of truth)
+
 #define VFS_MOUNTS    4
 #define VFS_CACHE     128
 #define VFS_OFILES    64
@@ -32,13 +34,6 @@
 #define VFS_SEEK_SET 0
 #define VFS_SEEK_CUR 1
 #define VFS_SEEK_END 2
-
-struct aos_stat {
-    unsigned int type;    // 1 file, 2 dir
-    unsigned int size;
-    unsigned int mtime;
-    unsigned int nlink;
-};
 
 struct vfs_fs;
 
