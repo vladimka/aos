@@ -21,7 +21,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
                kernel/task.o kernel/linux_syscall.o kernel/block.o kernel/sfs2.o \
                kernel/klog.o kernel/trace.o
 
-PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest exitto random fstest procinfo
+PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest exitto random fstest procinfo bgspawn
 
 # All AOS programs are now built with the static musl i386 toolchain (Task 30).
 # If it is not installed, the program ELFs are skipped (fallback like lin/*):

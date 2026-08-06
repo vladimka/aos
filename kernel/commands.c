@@ -9,6 +9,7 @@
 #include "user.h"
 #include "task.h"
 #include "linux_syscall.h"
+#include "trace.h"
 
 char command_path[PATH_MAX] = "/bin";
 
@@ -95,19 +96,85 @@ static void cmd_pwd(void) {
     terminal_print(get_current_task()->cwd);
 }
 
-static int try_exec(const char *full_path, const char *arg) {
+static int try_exec(const char *full_path, const char *arg, int trace) {
+    struct task *me = get_current_task();
+    if (trace) me->trace_on = 1;
     void (*entry)(void) = program_load(full_path, arg);
     if (entry) {
         if (task_current_abi() == ABI_LINUX)
             user_program_start_linux(entry, task_current_lctx()->stack_sp);
         else
             user_program_start(entry);
+        if (trace) {
+            trace_session_dump();
+            me->trace_on = 0;
+        }
         terminal_set_prompt();  // runs after the program exits
         return 1;
     }
+    if (trace) me->trace_on = 0;
     terminal_print("\nFailed to load: ");
     terminal_print(full_path);
     return 0;
+}
+
+// Locate `cmd` in the PATH (or as a raw path) and execute it in-place.
+// Returns 1 if a program was found and ran to its exit.
+static int exec_from_path(const char *cmd, const char *arg, int trace) {
+    struct aos_stat st2;
+    char path_copy[PATH_MAX];
+    strncpy(path_copy, command_path, PATH_MAX - 1);
+    path_copy[PATH_MAX - 1] = '\0';
+
+    char *dir = path_copy;
+    while (*dir) {
+        char *next = dir;
+        while (*next && *next != ':') next++;
+        int dir_len = next - dir;
+        int has_sep = (*next == ':');
+        *next = '\0';
+
+        if (dir_len > 0) {
+            char full_path[32];
+            int i;
+            for (i = 0; i < dir_len && i < 30; i++)
+                full_path[i] = dir[i];
+            if (i < 31) {
+                full_path[i++] = '/';
+                for (unsigned int j = 0; cmd[j] && i < 31; j++, i++)
+                    full_path[i] = cmd[j];
+            }
+            full_path[i] = '\0';
+
+            if (vfs_kernel_stat(full_path, &st2) == 0)
+                if (try_exec(full_path, arg, trace)) return 1;
+        }
+
+        if (!has_sep) break;
+        dir = next + 1;
+    }
+
+    if (vfs_kernel_stat(cmd, &st2) == 0)
+        if (try_exec(cmd, arg, trace)) return 1;
+    return 0;
+}
+
+// strace <prog> [args]: run <prog> in-place with this task's syscalls traced,
+// then dump the trace of this task and every task that inherited the flag.
+static void cmd_strace(const char *line) {
+    const char *p = line;
+    while (*p && *p != ' ') p++;
+    unsigned int plen = (unsigned int)(p - line);
+    while (*p == ' ') p++;
+    if (plen == 0) {
+        terminal_print("\nusage: strace <prog> [args]");
+        return;
+    }
+    char prog[16];
+    unsigned int cl = plen < 15 ? plen : 15;
+    for (unsigned int i = 0; i < cl; i++) prog[i] = line[i];
+    prog[cl] = '\0';
+    exec_from_path(prog, p, 1);
 }
 
 void commands_execute(const char *line) {
@@ -158,43 +225,13 @@ void commands_execute(const char *line) {
         return;
     }
 
-    // Search PATH for command
-    struct aos_stat st2;
-    char path_copy[PATH_MAX];
-    strncpy(path_copy, command_path, PATH_MAX - 1);
-    path_copy[PATH_MAX - 1] = '\0';
-
-    char *dir = path_copy;
-    while (*dir) {
-        char *next = dir;
-        while (*next && *next != ':') next++;
-        int dir_len = next - dir;
-        int has_sep = (*next == ':');
-        *next = '\0';
-
-        if (dir_len > 0) {
-            char full_path[32];
-            int i;
-            for (i = 0; i < dir_len && i < 30; i++)
-                full_path[i] = dir[i];
-            if (i < 31) {
-                full_path[i++] = '/';
-                for (unsigned int j = 0; cmd[j] && i < 31; j++, i++)
-                    full_path[i] = cmd[j];
-            }
-            full_path[i] = '\0';
-
-            if (vfs_kernel_stat(full_path, &st2) == 0)
-                if (try_exec(full_path, arg)) return;
-        }
-
-        if (!has_sep) break;
-        dir = next + 1;
+    if (strcmp(cmd, "strace") == 0) {
+        cmd_strace(arg);
+        terminal_set_prompt();
+        return;
     }
 
-    // Fallback: try cmd as raw path
-    if (vfs_kernel_stat(cmd, &st2) == 0)
-        if (try_exec(cmd, arg)) return;
+    if (exec_from_path(cmd, arg, 0)) return;
 
     terminal_print("\nUnknown command: ");
     terminal_write(line, cmd_len);
