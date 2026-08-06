@@ -83,13 +83,14 @@ static void put_dirent64(unsigned char *dst, unsigned long long ino,
                          unsigned long long off, unsigned char type,
                          const char *name) {
     unsigned int len = (unsigned int)strlen(name);
-    unsigned short reclen = (unsigned short)(19 + len);
+    unsigned short reclen = (unsigned short)(20 + len);   // NUL-terminated
     *(unsigned long long *)(dst + 0) = ino;
     *(unsigned long long *)(dst + 8) = off;
     *(unsigned short *)(dst + 16) = reclen;
     dst[18] = type;
     for (unsigned int i = 0; i < len; i++)
         dst[19 + i] = (unsigned char)name[i];
+    dst[19 + len] = 0;
 }
 
 void linux_syscall_handler(struct registers *r) {
@@ -520,7 +521,7 @@ void linux_syscall_handler(struct registers *r) {
             char name[VFS_NAME_MAX + 1];
             if (vfs_readdir_fd(fd, name, sizeof(name)) != 1) break;
             unsigned int len = (unsigned int)strlen(name);
-            unsigned int reclen = 19 + len;
+            unsigned int reclen = 20 + len;               // NUL-terminated d_name
             if (written + reclen > count) { of->pos = save_pos; break; }
             unsigned char type = 0;
             struct aos_stat s;

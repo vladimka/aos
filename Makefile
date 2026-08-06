@@ -21,13 +21,16 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
                kernel/task.o kernel/linux_syscall.o kernel/block.o kernel/sfs2.o
 
 PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest exitto random fstest procinfo
-PROG_ELFS = $(addprefix programs/, $(addsuffix .elf, $(PROGRAMS)))
-PROG_OBJS = $(addprefix programs/, $(addsuffix .o, $(PROGRAMS))) programs/libaos.o programs/ico.o
 
-# The Linux ELF payload (lin/*) is built with a static musl i386 toolchain.
-# If it is not installed, the payload is skipped: the kernel still builds and
-# the AOS programs run, only the musl binaries are not embedded in the ramdisk.
-LINUX_CC  = tools/musl-i686/bin/i686-linux-musl-gcc
+# All AOS programs are now built with the static musl i386 toolchain (Task 30).
+# If it is not installed, the program ELFs are skipped (fallback like lin/*):
+# the kernel still builds, only the ramdisk program payload is not embedded.
+MUSL_CC  = tools/musl-i686/bin/i686-linux-musl-gcc
+MUSL_OK  = $(wildcard $(MUSL_CC))
+PROG_ELFS = $(if $(MUSL_OK),$(addprefix build/prog/,$(addsuffix .elf,$(PROGRAMS))))
+
+# The Linux ELF payload (lin/*) is built with the same static musl i386 toolchain.
+LINUX_CC  = $(MUSL_CC)
 LINUX_SRCS = $(wildcard tools/linux/*.c)
 LINUX_BINS = $(if $(wildcard $(LINUX_CC)),$(patsubst tools/linux/%.c,build/linux/%,$(LINUX_SRCS)))
 LINUX_EMBED = $(if $(LINUX_BINS),--data lin/hello=build/linux/hello --data lin/ls=build/linux/ls --data lin/cat=build/linux/cat --data lin/test.txt=tools/linux/test.txt)
@@ -49,18 +52,15 @@ drivers/%.o: drivers/%.c
 arch/i386/%.o: arch/i386/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-programs/%.o: programs/%.c programs/libaos.h programs/programs.ld
-	$(CC) $(CFLAGS) -Iprograms -c -o $@ $<
+# Programs are compld static musl ELFs (Task 30). wm additionally links the
+# pure-C ICO decoder (programs/musl/ico.c).
+build/prog/%.elf: programs/musl/%.c programs/aosabi.h
+	@mkdir -p build/prog
+	$(MUSL_CC) -static -no-pie -Os -Wall -Wextra -Iprograms -o $@ $<
 
-programs/libaos.o: programs/libaos.c programs/libaos.h
-	$(CC) $(CFLAGS) -Iprograms -c -o $@ $<
-
-programs/%.elf: programs/%.o programs/libaos.o programs/programs.ld
-	$(LD) -T programs/programs.ld -m elf_i386 -static -nostdlib -n --no-warn-rwx-segments -o $@ programs/libaos.o $<
-
-# wm links the pure-C ICO decoder in addition to libaos.
-programs/wm.elf: programs/wm.o programs/ico.o programs/libaos.o programs/programs.ld
-	$(LD) -T programs/programs.ld -m elf_i386 -static -nostdlib -n --no-warn-rwx-segments -o $@ programs/libaos.o programs/wm.o programs/ico.o
+build/prog/wm.elf: programs/musl/wm.c programs/musl/ico.c programs/aosabi.h
+	@mkdir -p build/prog
+	$(MUSL_CC) -static -no-pie -Os -Wall -Wextra -Iprograms -o $@ programs/musl/wm.c programs/musl/ico.c
 
 scripts/demo.ico: scripts/gen_ico.py
 	$(PYTHON) scripts/gen_ico.py > $@
@@ -111,13 +111,12 @@ test: aos.iso
 	@echo "ALL $(words $(TESTS)) TESTS PASSED"
 
 clean:
-	rm -f $(KERNEL_OBJS) $(PROG_ELFS) $(PROG_OBJS) *.elf *.bin *.iso disk.img kernel/progs.c
-	rm -f $(KERNEL_OBJS:.o=.d) $(PROG_OBJS:.o=.d)
-	rm -rf iso
-	rm -rf build
+	rm -f $(KERNEL_OBJS) $(PROG_ELFS) *.elf *.bin *.iso disk.img kernel/progs.c
+	rm -f $(KERNEL_OBJS:.o=.d)
+	rm -rf iso build
 
--include $(KERNEL_OBJS:.o=.d) $(PROG_OBJS:.o=.d)
+-include $(KERNEL_OBJS:.o=.d)
 
-.SECONDARY: $(KERNEL_OBJS) $(PROG_OBJS) $(PROG_ELFS)
+.SECONDARY: $(KERNEL_OBJS)
 
 .PHONY: all run test clean

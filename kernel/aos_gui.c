@@ -24,10 +24,16 @@ static struct linux_ctx *lcx(void) {
     return task_current_lctx();
 }
 
+// Shared slab window the GUI apps render into (mirrors syscall.c USER/SLAB).
+#define SLAB_LO 0x03000000
+#define SLAB_HI 0x04000000
+
 static int in_luser(const void *p, unsigned int n) {
     unsigned int a = (unsigned int)p;
     struct linux_ctx *lc = lcx();
-    return a >= lc->win_lo && n <= lc->win_hi - a;
+    if (a >= lc->win_lo && n <= lc->win_hi - a) return 1;
+    if (a >= SLAB_LO && n <= SLAB_HI - a) return 1;
+    return 0;
 }
 
 static char *copy_lstr(const void *usr) {
