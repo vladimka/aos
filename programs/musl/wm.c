@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include "aosabi.h"
 #include "ico.h"
+#include "theme.h"
 
 #define MAX_WINDOWS 8
 #define TITLE_H     18
@@ -318,11 +319,6 @@ static void int2str(char *buf, int v) {
     buf[i] = 0;
 }
 
-static int strequal(const char *a, const char *b) {
-    while (*a && *b && *a == *b) { a++; b++; }
-    return *a == *b;
-}
-
 // ---- framebuffer drawing --------------------------------------------------
 
 static void fb_fill(int x, int y, int w, int h, unsigned int rgb) {
@@ -335,58 +331,6 @@ static void fb_fill(int x, int y, int w, int h, unsigned int rgb) {
     for (int yy = y0; yy < y1; yy++)
         for (int xx = x0; xx < x1; xx++)
             fb[(unsigned)yy * pitch + (unsigned)xx] = rgb;
-}
-
-static unsigned int parse_hex_cfg(const char *s) {
-    unsigned int v = 0;
-    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
-    while (*s) {
-        char c = *s;
-        unsigned int d;
-        if (c >= '0' && c <= '9') d = (unsigned int)(c - '0');
-        else if (c >= 'a' && c <= 'f') d = (unsigned int)(c - 'a' + 10);
-        else if (c >= 'A' && c <= 'F') d = (unsigned int)(c - 'A' + 10);
-        else break;
-        v = v * 16 + d;
-        s++;
-    }
-    return v;
-}
-
-static void load_wallpaper_config(void) {
-    char buf[512];
-    int fd = open("sys/config.cfg", O_RDONLY);
-    if (fd < 0) return;
-    int sz = read(fd, buf, sizeof(buf) - 1);
-    close(fd);
-    if (sz <= 0) return;
-    buf[sz] = 0;
-    char *p = buf;
-    while (p && *p) {
-        char *eol = p;
-        while (*eol && *eol != '\n') eol++;
-        char line[80];
-        int n = (int)(eol - p);
-        if (n > 79) n = 79;
-        for (int i = 0; i < n; i++) line[i] = p[i];
-        line[n] = 0;
-        if (n > 0 && line[n - 1] == '\r') line[n - 1] = 0;
-        int k = 0;
-        while (line[k] == ' ' || line[k] == '\t') k++;
-        if (line[k] != '#' && line[k] != 0) {
-            char *eq = line;
-            while (*eq && *eq != '=') eq++;
-            if (*eq == '=') {
-                *eq = 0;
-                const char *val = eq + 1;
-                while (*val == ' ' || *val == '\t') val++;
-                if (strequal(line + k, "wallpaper_top")) wp_top = parse_hex_cfg(val);
-                else if (strequal(line + k, "wallpaper_bot")) wp_bot = parse_hex_cfg(val);
-            }
-        }
-        if (*eol == '\n') p = eol + 1;
-        else break;
-    }
 }
 
 // Vertical gradient from wp_top to wp_bot over the full screen height.
@@ -1015,7 +959,9 @@ int main(void) {
     }
     scratch = (unsigned int *)AOS_SLAB_BASE;
     aos_register_events();
-    load_wallpaper_config();
+    theme_load();
+    wp_top = theme_color("wallpaper_top", 0x1A2030);
+    wp_bot = theme_color("wallpaper_bot", 0x0E1620);
 
     int last_mx = 0, last_my = 0, last_mb = 0;
     int drag_i = -1, drag_dx = 0, drag_dy = 0;

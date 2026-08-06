@@ -52,15 +52,28 @@ drivers/%.o: drivers/%.c
 arch/i386/%.o: arch/i386/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# Programs are compld static musl ELFs (Task 30). wm additionally links the
-# pure-C ICO decoder (programs/musl/ico.c).
+# Programs are static musl ELFs (Task 30). wm additionally links the pure-C
+# ICO decoder (programs/musl/ico.c); the GUI apps link the shared theme loader
+# (programs/musl/theme.c).
 build/prog/%.elf: programs/musl/%.c programs/aosabi.h
 	@mkdir -p build/prog
 	$(MUSL_CC) -static -no-pie -Os -Wall -Wextra -Iprograms -o $@ $<
 
-build/prog/wm.elf: programs/musl/wm.c programs/musl/ico.c programs/aosabi.h
+build/prog/wm.elf: programs/musl/wm.c programs/musl/ico.c programs/musl/theme.c programs/aosabi.h
 	@mkdir -p build/prog
-	$(MUSL_CC) -static -no-pie -Os -Wall -Wextra -Iprograms -o $@ programs/musl/wm.c programs/musl/ico.c
+	$(MUSL_CC) -static -no-pie -Os -Wall -Wextra -Iprograms -o $@ programs/musl/wm.c programs/musl/ico.c programs/musl/theme.c
+
+build/prog/term.elf: programs/musl/term.c programs/musl/theme.c programs/aosabi.h
+	@mkdir -p build/prog
+	$(MUSL_CC) -static -no-pie -Os -Wall -Wextra -Iprograms -o $@ programs/musl/term.c programs/musl/theme.c
+
+build/prog/clock.elf: programs/musl/clock.c programs/musl/theme.c programs/aosabi.h
+	@mkdir -p build/prog
+	$(MUSL_CC) -static -no-pie -Os -Wall -Wextra -Iprograms -o $@ programs/musl/clock.c programs/musl/theme.c
+
+build/prog/notepad.elf: programs/musl/notepad.c programs/musl/theme.c programs/aosabi.h
+	@mkdir -p build/prog
+	$(MUSL_CC) -static -no-pie -Os -Wall -Wextra -Iprograms -o $@ programs/musl/notepad.c programs/musl/theme.c
 
 scripts/demo.ico: scripts/gen_ico.py
 	$(PYTHON) scripts/gen_ico.py > $@

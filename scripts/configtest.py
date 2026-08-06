@@ -37,6 +37,10 @@ TXT_X0, TXT_X1 = 21, 660          # term text band
 TXT_Y0, TXT_Y1 = 39, 39 + 26 * 16
 TXT_THRESHOLD = 300
 
+ACCENT = (255, 0, 255)              # theme_accent 0xFF00FF
+WALL = (16, 32, 48)                 # wallpaper_top 0x102030
+BB = "/tmp/aos-config-bootb.ppm"
+
 
 def wait_for(path, seconds=15):
     end = time.time() + seconds
@@ -326,7 +330,8 @@ def main():
     except FileNotFoundError:
         pass
     with open(IMG, "wb") as f:
-        f.write(build_sfs([("sys/config.cfg", b"timezone=+180\n")]))
+        f.write(build_sfs([("sys/config.cfg",
+                            b"timezone=+180\nwallpaper_top=0x102030\n")]))
     subprocess.run(["truncate", "-s", "4M", IMG], check=True)
     qemu = boot_qemu(disk=True)
     try:
@@ -340,6 +345,11 @@ def main():
         if "KERNEL PANIC" in serial_text():
             raise AssertionError("kernel panic during config boot")
         print("  ok: disk-seeded timezone +180 applied")
+        time.sleep(2)
+        snap(BB)
+        assert_pixel(BB, 700, 0, WALL,
+                     "wallpaper_top from disk config via theme_load")
+        print("  ok: disk-seeded timezone +180 and wallpaper_top applied")
     finally:
         terminate(qemu)
 

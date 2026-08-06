@@ -70,7 +70,17 @@ void config_load(void) {
             "# AOS system config\n"
             "timezone=0\n"
             "wallpaper_top=0x1A2030\n"
-            "wallpaper_bot=0x0E1620\n";
+            "wallpaper_bot=0x0E1620\n"
+            "theme_title=0x263C5E\n"
+            "theme_title_focus=0x4E86C7\n"
+            "theme_border=0x12161F\n"
+            "theme_border_focus=0x6B9BD2\n"
+            "theme_dock_bg=0x232C40\n"
+            "theme_accent=0x5B93D8\n"
+            "theme_menu_bg=0x20283A\n"
+            "theme_menu_fg=0xFFFFFF\n"
+            "theme_text_fg=0xD8D8D8\n"
+            "theme_text_bg=0x101010\n";
         if (vfs_kernel_write(CONFIG_PATH, def, sizeof(def) - 1, 0) >= 0)
             printf("config: created %s\n", CONFIG_PATH);
         else
