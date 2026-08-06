@@ -78,6 +78,8 @@ struct aos_fill_req {
 
 // Open flags (Linux-compatible values), used by file syscalls. Kept with the
 // historical non-prefixed names so the earlier AOS programs keep compiling.
+// Guarded so a real libc (musl <fcntl.h>) does not clash.
+#ifndef O_RDONLY
 #define O_RDONLY   0x00000
 #define O_WRONLY   0x00001
 #define O_RDWR     0x00002
@@ -85,25 +87,28 @@ struct aos_fill_req {
 #define O_TRUNC    0x00200
 #define O_APPEND   0x00400
 #define O_DIRECTORY 0x10000
+#endif
 
+#ifndef SEEK_SET
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
+#endif
 
 // ---- User-side only: musl syscall() and thin convenience wrappers ----
 #ifndef __AOS_KERNEL__
 #include <unistd.h>
 
-static int aos_syscall(int n, int a, int b, int c, int d, int e) {
+static __attribute__((unused)) int aos_syscall(int n, int a, int b, int c, int d, int e) {
     return (int)syscall(n, a, b, c, d, e);
 }
 
-static int aos_fb_info(unsigned int *addr, unsigned int *w, unsigned int *h,
+static __attribute__((unused)) int aos_fb_info(unsigned int *addr, unsigned int *w, unsigned int *h,
                        unsigned int *pitch, unsigned int *bpp) {
     return aos_syscall(AOS_FB_INFO, (int)addr, (int)w, (int)h,
                        (int)pitch, (int)bpp);
 }
-static int aos_render_text(unsigned int *buf, unsigned int pitch,
+static __attribute__((unused)) int aos_render_text(unsigned int *buf, unsigned int pitch,
                            int x, int y, const char *str,
                            unsigned int fg, unsigned int bg) {
     struct aos_render_req req;
@@ -111,40 +116,40 @@ static int aos_render_text(unsigned int *buf, unsigned int pitch,
     req.str = str; req.fg = fg; req.bg = bg;
     return aos_syscall(AOS_TEXT, (int)&req, 0, 0, 0, 0);
 }
-static int aos_fill(unsigned int *buf, unsigned int pitch,
+static __attribute__((unused)) int aos_fill(unsigned int *buf, unsigned int pitch,
                     int x, int y, int w, int h, unsigned int rgb) {
     struct aos_fill_req req;
     req.buf = buf; req.pitch = pitch; req.x = x; req.y = y;
     req.w = w; req.h = h; req.rgb = rgb;
     return aos_syscall(AOS_FILL, (int)&req, 0, 0, 0, 0);
 }
-static void aos_clear(void) { aos_syscall(AOS_CLEAR, 0, 0, 0, 0, 0); }
-static void aos_panic(void) { aos_syscall(AOS_PANIC, 0, 0, 0, 0, 0); }
-static int aos_mouse(int *x, int *y, int *buttons, int *wheel) {
+static __attribute__((unused)) void aos_clear(void) { aos_syscall(AOS_CLEAR, 0, 0, 0, 0, 0); }
+static __attribute__((unused)) void aos_panic(void) { aos_syscall(AOS_PANIC, 0, 0, 0, 0, 0); }
+static __attribute__((unused)) int aos_mouse(int *x, int *y, int *buttons, int *wheel) {
     return aos_syscall(AOS_MOUSE, (int)x, (int)y, (int)buttons, (int)wheel, 0);
 }
-static int aos_read_key(void) { return aos_syscall(AOS_READ_KEY, 0, 0, 0, 0, 0); }
-static int aos_key_poll(void) { return aos_syscall(AOS_KEY_POLL, 0, 0, 0, 0, 0); }
-static int aos_register_events(void) { return aos_syscall(AOS_REG_EVENTS, 0, 0, 0, 0, 0); }
-static int aos_get_event_pid(void) { return aos_syscall(AOS_GET_EVENT_PID, 0, 0, 0, 0, 0); }
-static int aos_send(unsigned int pid, const struct aos_msg *m) {
+static __attribute__((unused)) int aos_read_key(void) { return aos_syscall(AOS_READ_KEY, 0, 0, 0, 0, 0); }
+static __attribute__((unused)) int aos_key_poll(void) { return aos_syscall(AOS_KEY_POLL, 0, 0, 0, 0, 0); }
+static __attribute__((unused)) int aos_register_events(void) { return aos_syscall(AOS_REG_EVENTS, 0, 0, 0, 0, 0); }
+static __attribute__((unused)) int aos_get_event_pid(void) { return aos_syscall(AOS_GET_EVENT_PID, 0, 0, 0, 0, 0); }
+static __attribute__((unused)) int aos_send(unsigned int pid, const struct aos_msg *m) {
     return aos_syscall(AOS_SEND, (int)pid, (int)m, 0, 0, 0);
 }
-static int aos_recv(struct aos_msg *m) { return aos_syscall(AOS_RECV, (int)m, 0, 0, 0, 0); }
-static int aos_setout(unsigned int pid) { return aos_syscall(AOS_SETOUT, (int)pid, 0, 0, 0, 0); }
-static int aos_spawn(const char *path, const char *args, unsigned int sink) {
+static __attribute__((unused)) int aos_recv(struct aos_msg *m) { return aos_syscall(AOS_RECV, (int)m, 0, 0, 0, 0); }
+static __attribute__((unused)) int aos_setout(unsigned int pid) { return aos_syscall(AOS_SETOUT, (int)pid, 0, 0, 0, 0); }
+static __attribute__((unused)) int aos_spawn(const char *path, const char *args, unsigned int sink) {
     return aos_syscall(AOS_SPAWN, (int)path, (int)args, (int)sink, 0, 0);
 }
-static int aos_waitpid(unsigned int pid) { return aos_syscall(AOS_WAITPID, (int)pid, 0, 0, 0, 0); }
-static int aos_get_children(unsigned int *pids, unsigned int max) {
+static __attribute__((unused)) int aos_waitpid(unsigned int pid) { return aos_syscall(AOS_WAITPID, (int)pid, 0, 0, 0, 0); }
+static __attribute__((unused)) int aos_get_children(unsigned int *pids, unsigned int max) {
     return aos_syscall(AOS_GET_CHILDREN, (int)pids, (int)max, 0, 0, 0);
 }
-static int aos_get_args(char *buf, unsigned int max) {
+static __attribute__((unused)) int aos_get_args(char *buf, unsigned int max) {
     return aos_syscall(AOS_GET_ARGS, (int)buf, (int)max, 0, 0, 0);
 }
-static int aos_get_rtc(struct aos_time *t) { return aos_syscall(AOS_GET_RTC, (int)t, 0, 0, 0, 0); }
-static unsigned int aos_uptime(void) { return (unsigned int)aos_syscall(AOS_UPTIME, 0, 0, 0, 0, 0); }
-static unsigned int aos_get_tick(void) { return (unsigned int)aos_syscall(AOS_GET_TICK, 0, 0, 0, 0, 0); }
+static __attribute__((unused)) int aos_get_rtc(struct aos_time *t) { return aos_syscall(AOS_GET_RTC, (int)t, 0, 0, 0, 0); }
+static __attribute__((unused)) unsigned int aos_uptime(void) { return (unsigned int)aos_syscall(AOS_UPTIME, 0, 0, 0, 0, 0); }
+static __attribute__((unused)) unsigned int aos_get_tick(void) { return (unsigned int)aos_syscall(AOS_GET_TICK, 0, 0, 0, 0, 0); }
 #endif
 
 #endif
