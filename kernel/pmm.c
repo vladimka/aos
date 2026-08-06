@@ -8,7 +8,7 @@
 
 struct pframe pmm_frames[PM_NR_MAX];
 
-static void *free_lists[MAX_ORDER + 1];
+static unsigned short free_lists[MAX_ORDER + 1];
 static unsigned int total_pages = 0;
 static unsigned int free_pages = 0;
 
@@ -38,39 +38,54 @@ static int is_reserved(unsigned int addr, unsigned int len) {
 // task's PD re-points PDEs 32..63 (0x08000000..0x10000000) at empty user page
 // tables, unmapping any of its own frames that the buddy would otherwise hand
 // out from the top of RAM.
+//
+// The list is non-intrusive: nodes are frame indices, links live in
+// pmm_frames[].next (kernel BSS, mapped under every PD) rather than inside the
+// free page. Never dereference a free page — free frames above 0x08000000 are
+// unmapped under an ABI_LINUX caller's CR3.
 static void push_block(unsigned int base, unsigned int order) {
-    unsigned int **link = (unsigned int **)&free_lists[order];
-    while (*link && (unsigned int)*link < base)
-        link = (unsigned int **)*link;
-    *(unsigned int *)base = (unsigned int)*link;
-    *link = (void *)base;
+    unsigned short n = (unsigned short)(base >> 12);
+    unsigned short prev = 0;                 // 0 = list head slot
+    unsigned short cur = free_lists[order];
+    while (cur && ((unsigned int)cur << 12) < base) {
+        prev = cur;
+        cur = pmm_frames[cur].next;
+    }
+    pmm_frames[n].next = cur;
+    if (prev) pmm_frames[prev].next = n;
+    else free_lists[order] = n;
     free_pages += 1u << order;
 }
 
-// Returns 0 when the free list is empty (physical address 0 is never handed
+// Returns 0 when the free list is empty (frame 0 = physical 0 is never handed
 // out: the first MB is reserved).
 static unsigned int pop_block(unsigned int order) {
-    if (!free_lists[order]) return 0;
-    unsigned int b = (unsigned int)free_lists[order];
-    free_lists[order] = (void *)*(unsigned int *)b;
+    unsigned short h = free_lists[order];
+    if (!h) return 0;
+    free_lists[order] = pmm_frames[h].next;
     free_pages -= 1u << order;
-    return b;
+    return (unsigned int)h << 12;
 }
 
 static void buddy_free(unsigned int base, unsigned int order) {
     while (order < MAX_ORDER) {
         unsigned int buddy = base ^ (PAGE_SIZE << order);
-        // Is the buddy free (i.e. present in this order's list)?
-        unsigned int *prev = (unsigned int *)&free_lists[order];
-        unsigned int *cur = free_lists[order];
+        // Is the buddy free (i.e. present in this order's list)? Each list is
+        // sorted ascending by address (push_block) and pop_block removes the
+        // lowest, so once the walk passes the buddy's address it cannot be
+        // present: stop early. prev tracks the predecessor (0 = list head).
+        unsigned short prev = 0;
+        unsigned short cur = free_lists[order];
+        unsigned short bf = (unsigned short)(buddy >> 12);
         int found = 0;
-        while (cur) {
-            if ((unsigned int)cur == buddy) { found = 1; break; }
+        while (cur && ((unsigned int)cur << 12) <= buddy) {
+            if (cur == bf) { found = 1; break; }
             prev = cur;
-            cur = (unsigned int *)*cur;
+            cur = pmm_frames[cur].next;
         }
         if (!found) break;
-        *prev = (unsigned int)*cur;   // unlink the buddy
+        if (prev) pmm_frames[prev].next = pmm_frames[cur].next;   // unlink
+        else free_lists[order] = pmm_frames[cur].next;
         free_pages -= 1u << order;
         if (buddy < base) base = buddy;
         order++;
@@ -136,7 +151,7 @@ void *page_alloc_order(unsigned int order) {
     unsigned int best_o = MAX_ORDER + 1, best_addr = ~0u;
     for (unsigned int o = order; o <= MAX_ORDER; o++)
         if (free_lists[o]) {
-            unsigned int addr = (unsigned int)free_lists[o];
+            unsigned int addr = (unsigned int)free_lists[o] << 12;
             if (addr < best_addr) { best_addr = addr; best_o = o; }
         }
     if (best_o > MAX_ORDER) return 0;
@@ -234,7 +249,7 @@ void pmm_init(unsigned int mb_info_addr) {
     memset(free_lists, 0, sizeof(free_lists));
     nreserved = 0;
 
-    extern unsigned int _start, _end;
+    extern unsigned int _end;
 
     reserve(0x00000000, 0x00100000);                     // low MB (BIOS/multiboot)
     reserve(0x00100000, (unsigned int)&_end);            // kernel image
@@ -268,7 +283,7 @@ void pmm_init(unsigned int mb_info_addr) {
         add_available(starts[i], ends[i]);
 
     total_pages = 0;
-    for (unsigned int i = 0; i < navail; i++)
+    for (int i = 0; i < navail; i++)
         total_pages += (ends[i] - starts[i]) >> 12;
 }
 

@@ -8,10 +8,19 @@
 
 // Per-frame metadata (mem_map). order is the buddy order for an allocated
 // large block (0 for slab pages); slab pages also record their size class.
+// next is the buddy free-list successor (frame index, 0 = none).
+//
+// The buddy free list MUST live here (kernel BSS, which is identity-mapped and
+// clonable below 0x08000000 in every task's PD) and NOT inside the free page
+// itself: a spawned Linux task's PD re-points PDEs 32..63 (0x08000000..
+// 0x10000000) at empty user page tables, so free frames in that range are not
+// mapped under the caller's CR3. An intrusive link there would page-fault the
+// kernel on pop/push/walk.
 struct pframe {
     unsigned char order;
     unsigned char flags;
     unsigned char slab_class;
+    unsigned short next;
 } __attribute__((packed));
 
 #define PM_NR_MAX 65536

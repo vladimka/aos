@@ -116,11 +116,22 @@ char *exception_messages[] = {
 };
 
 void isr_handler(struct registers *r) {
-    unsigned int cr2;
+    unsigned int cr2, cr3v;
     __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3v));
     vga_set_color(VGA_WHITE, VGA_RED);
-    printf("\n=== KERNEL PANIC ===\nException: %s\nEIP: 0x%x  CS: 0x%x  EFLAGS: 0x%x  ERR: 0x%x  CR2: 0x%x\nSystem halted.\n",
-           exception_messages[r->int_no], r->eip, r->cs, r->eflags, r->err_code, cr2);
+    printf("\n=== KERNEL PANIC ===\nException: %s\nEIP: 0x%x  CS: 0x%x  EFLAGS: 0x%x  ERR: 0x%x  CR2: 0x%x  CR3: 0x%x\nSystem halted.\n",
+           exception_messages[r->int_no], r->eip, r->cs, r->eflags, r->err_code, cr2, cr3v);
+    serial_print("kstack scan:\n");
+    unsigned int *sp = (unsigned int *)&r;
+    for (int i = 0; i < 64 && (unsigned int)sp < 0x3000000; i++, sp++) {
+        unsigned int v = *sp;
+        if (v >= 0x100000 && v <= 0x110000) {
+            serial_print("  [kstack] word=");
+            serial_print_hex(v);
+            serial_print("\n");
+        }
+    }
     for (;;)
         __asm__ volatile("cli; hlt");
 }
