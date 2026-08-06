@@ -10,6 +10,8 @@
 #include "terminal.h"
 #include "commands.h"
 #include "kmm.h"
+#include "ports.h"
+#include "vrng.h"
 
 static struct linux_ctx *cur_lctx(void) {
     return task_current_lctx();
@@ -219,6 +221,29 @@ void linux_syscall_handler(struct registers *r) {
     case 258:    // set_tid_address(ptr) — no kernel pid stored; tid is 0
         r->eax = 0;
         break;
+
+    case 88: {  // reboot(magic1, magic2, cmd, arg)
+        unsigned int cmd = r->edx;
+        if (cmd == 0x1234567) {          // LINUX_REBOOT_CMD_RESTART
+            outb(0x64, 0xFE);
+            for (;;);
+        }
+        if (cmd == 0x4321fedc) {         // LINUX_REBOOT_CMD_POWER_OFF
+            outw(0x604, 0x2000);
+            for (;;);
+        }
+        r->eax = -22;                    // -EINVAL
+        break;
+    }
+
+    case 355: {  // getrandom(buf, buflen, flags)
+        void *buf = (void *)r->ebx;
+        unsigned int len = r->edx;
+        if (!in_luser(buf, len)) { r->eax = -14; break; }   // -EFAULT
+        if (len > 512) len = 512;
+        r->eax = vrng_bytes(buf, len);
+        break;
+    }
 
     case 3: {  // read(fd, buf, count)
         int fd = r->ebx;
