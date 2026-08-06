@@ -5,5 +5,12 @@
       "command": ["clangd", "--background-index", "--header-insertion=never"],
       "extensions": [".c", ".h"]
     }
+  },
+  "mcp": {
+    "qemu-vnc": {
+      "type": "local",
+      "command": ["/home/vladimka/.local/bin/uvx", "--from", "git+https://github.com/faizbawa/mcp-qemu-vnc.git", "mcp-qemu-vnc"],
+      "enabled": true
+    }
   }
 }

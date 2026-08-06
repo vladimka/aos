@@ -1,3 +1,7 @@
+## Workflow convention
+
+- **UI/QEMU test suites are run by the human, not the assistant.** Do not launch `make test`, the individual `scripts/*.py` GUI tests, `qemu-system-i386`, or any other headless QEMU harness on the assistant's own initiative — hand the run to the user instead (e.g. "build is ready, run `make test`"). Builds (`make`) and static checks are fine for the assistant. This is because the QEMU GUI tests are timing-sensitive under TCG and their results are evaluated by the human.
+
 ## Terminal (`kernel/terminal.c`)
 
 - **Line editing**: cursor moves left/right via arrow keys, backspace deletes whole UTF-8 character (scans for start byte), delete key (E0 53) removes character at cursor
