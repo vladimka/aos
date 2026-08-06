@@ -8,7 +8,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ISO = os.path.join(ROOT, "aos.iso")
 MON = "/tmp/aos-strace.sock"
-SER = "/tmp/aos-strace.log"
+SER = "/tmp/aos-strace.sock"
 
 def wait_for(path, seconds=10):
     end = time.time() + seconds
@@ -17,31 +17,17 @@ def wait_for(path, seconds=10):
         time.sleep(0.05)
     raise RuntimeError("timeout waiting for " + path)
 
-def hmp(command):
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.settimeout(3)
-        s.connect(MON)
-        data = b""
-        while b"(qemu)" not in data:
-            data += s.recv(4096)
-        s.sendall(command.encode() + b"\n")
-        data = b""
-        while b"(qemu)" not in data:
-            data += s.recv(4096)
-        return data.decode(errors="replace")
-
-def send_text(text):
-    keys = {"\n": "ret", " ": "spc", "/": "slash"}
-    for ch in text:
-        key = keys.get(ch, ch) or ch
-        hmp("sendkey " + key)
-        time.sleep(0.04)
-
-def read_log():
-    try:
-        with open(SER, "r", errors="replace") as f: return f.read()
-    except FileNotFoundError:
-        return ""
+def drain(s, log, end, needle=b""):
+    while time.time() < end:
+        try:
+            d = s.recv(4096)
+            if not d: break
+            log += d
+            if needle and needle in log:
+                break
+        except socket.timeout:
+            pass
+    return log
 
 def main():
     for path in (MON, SER):
@@ -49,29 +35,37 @@ def main():
         except FileNotFoundError: pass
     qemu = subprocess.Popen([
         "qemu-system-i386", "-m", "256", "-cdrom", ISO, "-display", "none",
-        "-serial", "file:" + SER, "-monitor", "unix:" + MON + ",server,nowait",
+        "-serial", "unix:" + SER + ",server,nowait",
+        "-monitor", "unix:" + MON + ",server,nowait",
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        wait_for(MON)
-        time.sleep(5)
-        send_text("strace linrun\n")
-        end = time.time() + 25
-        log = ""
-        while time.time() < end:
-            time.sleep(1)
-            log = read_log()
-            if "== pid 0 ==" in log and "== pid 2 ==" in log: break
-        tail = log[-900:]
-        if "== pid 0 ==" not in log:
+        wait_for(SER)
+        time.sleep(0.5)              # connect before the boot log is emitted
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1)
+        s.connect(SER)
+
+        # The shell runs `strace linrun` in-place as task 0; it must be queued
+        # the moment AOS> appears, before the WM registers as the event consumer
+        # and starts capturing serial input.
+        drain(s, b"", time.time() + 40, b"AOS>")
+
+        s.sendall(b"strace linrun\n")
+        out = drain(s, b"", time.time() + 45, b"== pid 2 ==")
+        tail = out[-1200:]
+        if b"KERNEL PANIC" in out:
+            raise AssertionError("kernel panic during strace linrun:\n"
+                                 + tail.decode(errors="replace"))
+        if b"== pid 0 ==" not in out:
             raise AssertionError("strace session did not dump == pid 0 ==\n" + tail)
-        if "== pid 2 ==" not in log:
+        if b"== pid 2 ==" not in out:
             raise AssertionError("strace did not collect the spawned child (lin/hello is pid 2)\n" + tail)
-        for probe in ("spawn(", "write(", "exit_group("):
-            if probe not in log:
+        # musl stdout goes through writev(146) (its __stdio_write); the session
+        # covers AOS_EXT spawn + Linux writev + Linux exit_group.
+        for probe in ("spawn(", "writev(", "exit_group("):
+            if probe.encode() not in out:
                 raise AssertionError("strace output missing %r\n%s" % (probe, tail))
-        if "KERNEL PANIC" in log:
-            raise AssertionError("strace linrun triggered a kernel panic")
-        print("PASS: strace shows AOS_EXT spawn + linux write/exit_group, child collected")
+        print("PASS: strace shows AOS_EXT spawn + linux writev/exit_group, child collected")
         return 0
     finally:
         qemu.terminate()

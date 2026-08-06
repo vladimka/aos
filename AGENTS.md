@@ -35,7 +35,7 @@ No dedicated test, lint, or typecheck commands.
 - All kernel C code compiled `-ffreestanding -nostdlib -fno-builtin -fno-stack-protector -mno-sse -mno-mmx -mno-80387`
 - No libc; own `string.c` (`strcmp`, `strncpy`, `strlen`)
 - Include paths: `-Ikernel -Idrivers -Iarch/i386 -Iboot`
-- **1 MB ramdisk at `0x300000`** (`kernel/sfs.h` `SFS_BASE`, above kernel BSS, below the staging buffer) — flat SFS (Simple File System), `SFS_MAX_FILES=64`
+- **1 MB ramdisk at `0x400000`** (`kernel/block.h` `RAMDISK_BASE`, above kernel BSS, below the staging buffer) — flat SFS (Simple File System), `SFS_MAX_FILES=64`
 - **33 syscalls via `int 0x80`** (DPL 3 gate, `idt_install_irq_flags(0x80, isr128, 0xEE)`), R/O user-level interface in `programs/libaos.c`
 - `printf()` in `kernel/printf.c` writes to **both** VGA and COM1 (used for all kernel banners)
 - **Privilege separation**: paging enabled (`kernel/paging.c`), user programs run in **ring 3** via TSS (`arch/i386/gdt.c`, `kernel/user.c`/`user_tramp.S`), kernel stays in ring 0

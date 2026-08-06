@@ -4,7 +4,7 @@
 #define BLOCK_SIZE 512
 #define BLOCK_CACHE_SECTORS 128
 
-#define RAMDISK_BASE 0x300000
+#define RAMDISK_BASE 0x400000
 #define RAMDISK_SECTORS 2048
 
 struct sdev {

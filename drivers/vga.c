@@ -54,7 +54,7 @@ static int scroll_offset = 0;
 
 // CPU-side staging framebuffer (double buffering): scrollback redraws render
 // into shadow RAM first, then one memcpy flips it to VRAM. Placed in the
-// free identity-mapped gap between the ramdisk (RAMDISK_BASE, 0x00300000) and
+// free identity-mapped gap between the ramdisk (RAMDISK_BASE, 0x00400000) and
 // the user area (0x01000000).
 #define FB_STAGE_ADDR 0x00C00000
 #define FB_STAGE_SIZE (3u * 1024 * 1024)
