@@ -87,6 +87,7 @@ static void task_close_fds(struct task *t) {
 static void task_free_addrspace(struct task *t) {
     for (int pdn = USER_PD_LO; pdn <= USER_PD_HI; pdn++) {
         unsigned int *pt = t->pts[pdn - USER_PD_LO];
+        if (!pt) continue;   // Linux tasks don't allocate the AOS user area
         for (int p = 0; p < 1024; p++)
             if (pt[p] & PTE_PRESENT)
                 page_free((void *)(pt[p] & 0xFFFFF000));
@@ -288,13 +289,23 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     strncpy(t->cwd, current_task->cwd, PATH_MAX);
     t->cwd[PATH_MAX - 1] = '\0';
 
+    // Probe the ABI before allocating the address space: Linux tasks run at
+    // 0x08000000..0x10000000 and never touch the AOS user area, so they skip
+    // the 12 MB of pre-zeroed frames below. Keeping that allocation away from
+    // Linux tasks preserves the buddy's low-first invariant (kernel structures
+    // stay below 0x08000000, which Linux task PDs no longer identity-map).
+    int probed_abi = ABI_AOS;
+    int is_linux = (elf_probe(path, &probed_abi) == 0 && probed_abi == ABI_LINUX);
+
     unsigned char *ks = kmalloc(TASK_KSTACK_SIZE);
     unsigned int *pd = page_alloc_zero();
-    unsigned int *pts[3];
-    for (int i = 0; i < 3; i++) pts[i] = page_alloc_zero();
+    unsigned int *pts[3] = { 0, 0, 0 };
+    if (!is_linux)
+        for (int i = 0; i < 3; i++) pts[i] = page_alloc_zero();
     unsigned int (*mbox)[5] = (unsigned int (*)[5])kmalloc(MSG_CAP * 5 * 4);
     char *argsb = kmalloc(256);
-    if (!ks || !pd || !pts[0] || !pts[1] || !pts[2] || !mbox || !argsb) {
+    if (!ks || !pd || !mbox || !argsb ||
+        (!is_linux && (!pts[0] || !pts[1] || !pts[2]))) {
         if (ks) kfree(ks);
         if (pd) page_free(pd);
         for (int i = 0; i < 3; i++) if (pts[i]) page_free(pts[i]);
@@ -313,11 +324,11 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     t->mbox_tail = 0;
     t->args = argsb;
 
-    t->abi = ABI_AOS;
+    t->abi = is_linux ? ABI_LINUX : ABI_AOS;
     t->lctx = kmalloc(sizeof(struct linux_ctx));
     if (!t->lctx) {
         kfree(ks); page_free(pd); kfree(mbox); kfree(argsb);
-        for (int i = 0; i < 3; i++) page_free(pts[i]);
+        for (int i = 0; i < 3; i++) if (pts[i]) page_free(pts[i]);
         t->state = TASK_FREE;
         return -1;
     }
@@ -327,37 +338,13 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     for (int i = 0; i < 1024; i++)
         pd[i] = kpd[i];
 
-    for (int pdn = USER_PD_LO; pdn <= USER_PD_HI; pdn++) {
-        unsigned int *pt = pts[pdn - USER_PD_LO];
-        for (int p = 0; p < 1024; p++) {
-            unsigned int frame = (unsigned int)page_alloc_zero();
-            if (!frame) {
-                task_free_addrspace(t);
-                kfree(t->kstack);
-                kfree(t->mbox);
-                kfree(t->args);
-                kfree(t->lctx); t->lctx = 0;
-                t->kstack = 0; t->mbox = 0; t->args = 0;
-                t->state = TASK_FREE;
-                return -1;
-            }
-            pt[p] = frame | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
-        }
-        pd[pdn] = (unsigned int)pt | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
-    }
-    t->cr3 = (unsigned int)pd;
-
-    // Load the ELF into the task's address space. The temporary CR3 switch
-    // must not be interrupted: an IRQ mid-switch would leave the interrupted
-    // kernel code with the wrong page tables after rescheduling.
-    void *entry;
-    int abi;
-    int probed = elf_probe(path, &abi);
-    t->abi = (probed == 0 && abi == ABI_LINUX) ? ABI_LINUX : ABI_AOS;
-
-    if (t->abi == ABI_LINUX) {
+    if (is_linux) {
+        // The Linux program lives at 0x08000000..0x10000000 (PDEs 32..63).
+        // Leave PDEs 4..6 unmapped: the AOS user area is Linux-invisible, and
+        // pre-allocating its 12 MB of frames per Linux task is pure waste.
+        for (int pdn = USER_PD_LO; pdn <= USER_PD_HI; pdn++)
+            pd[pdn] = 0;
         struct linux_ctx *lc = t->lctx;
-        linux_ctx_init(lc);
         lc->win_lo = 0x08000000;
         lc->win_hi = 0x10000000;
         lc->stack_top = 0x10000000;
@@ -374,8 +361,32 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
             t->lpts[pdn - 32] = pt;
             pd[pdn] = (unsigned int)pt | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
         }
+    } else {
+        for (int pdn = USER_PD_LO; pdn <= USER_PD_HI; pdn++) {
+            unsigned int *pt = pts[pdn - USER_PD_LO];
+            for (int p = 0; p < 1024; p++) {
+                unsigned int frame = (unsigned int)page_alloc_zero();
+                if (!frame) {
+                    task_free_addrspace(t);
+                    kfree(t->kstack);
+                    kfree(t->mbox);
+                    kfree(t->args);
+                    kfree(t->lctx); t->lctx = 0;
+                    t->kstack = 0; t->mbox = 0; t->args = 0;
+                    t->state = TASK_FREE;
+                    return -1;
+                }
+                pt[p] = frame | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+            }
+            pd[pdn] = (unsigned int)pt | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+        }
     }
+    t->cr3 = (unsigned int)pd;
 
+    // Load the ELF into the task's address space. The temporary CR3 switch
+    // must not be interrupted: an IRQ mid-switch would leave the interrupted
+    // kernel code with the wrong page tables after rescheduling.
+    void *entry;
     __asm__ volatile("cli");
     paging_set_cr3(t->cr3);
     entry = (t->abi == ABI_LINUX)

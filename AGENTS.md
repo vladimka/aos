@@ -50,10 +50,14 @@ No dedicated test, lint, or typecheck commands.
 - **Kernel heap**: `kernel/kmm.c` — slab-lite `kmalloc`/`kfree` (size classes
   16..4096 backed by buddy pages; larger blocks as contiguous buddy blocks).
   Class/order recovered from `pmm_frames[]` on free
-- **Tasks**: up to `MAX_TASKS=24` (RAM-bound: ~18 GUI tasks of 12 MB at 256 MB).
-  Each task's kstack/PD/3 PTs/mailbox/args are `kmalloc`/`page_alloc`'d at spawn
-  and freed at exit; the dying task's kstack is freed lazily via a zombie list
-  because `switch_and_restore` restores `%esp` only after `task_switch_kernel`
+- **Tasks**: up to `MAX_TASKS=24`. ABI-dependent address space: **AOS** tasks
+  pre-map the full 12 MB user area (`task_spawn` allocates kstack, PD, 3 PTs,
+  3072 user frames, mailbox, args); **Linux** tasks skip the AOS user area
+  entirely (`pts[]` stays NULL) and only get the 32 MB Linux window PTs
+  (`lpts[32]`), so a spawned Linux task costs ~1 MB — `many` stress no longer
+  drains the buddy's low pool below `0x08000000`. Everything is freed at exit;
+  the dying task's kstack is freed lazily via a zombie list because
+  `switch_and_restore` restores `%esp` only after `task_switch_kernel`
   returns (running on the dead stack)
 - **User area** `0x01000000..0x01C00000` (PD 4..6): program text/rodata/data load at `0x01000000`, bump-allocator heap at `0x01100000`, user stack top at `0x01804000`
 - TSS (`SEL_TSS` = 0x28) `esp0` = top of `sys_stack[8192]`; CPU switches to it on any ring 3 → ring 0 transition
@@ -191,7 +195,7 @@ PIT runs at **1000 Hz** (divisor 1193). `timer_handler` increments `tick`, drain
 Step 1 runs **static musl i386** binaries (ET_EXEC, no INTERP) as user programs. Embedded: `lin/hello`, `lin/ls`, `lin/cat`, `lin/test.txt` (built from `tools/linux/*.c` with musl, `--data lin/...` in the Makefile). `bin/linrun` spawns `lin/hello` as a real pid>0 task; the shell also runs them by path (`lin/hello`).
 
 - **ABI probe** (`kernel/elf.c` `elf_probe`): class=ELF32, machine=3 (EM_386), `e_type==ET_EXEC`. ET_DYN or entry below `LINUX_ENTRY_MIN` is rejected as AOS. `ABI_AOS`/`ABI_LINUX` live in the task (`kernel/task.h`), checked by `syscall_handler` (`kernel/syscall.c:134`) which routes to `linux_syscall_handler`.
-- **Address space**: `LINUX_BASE 0x08048000`. Task 0 gets an 8 MB window `0x08000000..0x08800000` identity-mapped + user-accessible in the kernel page tables (`kernel/paging.c`, PDE 32–33) and reserved in `pmm.c`. **Spawned** Linux tasks get a private `0x08000000..0x10000000` (32 MB, PDE 32–63) via `lpts[32]` page-table pages cloned into the task PD (`kernel/task.c:260`). All ELF segments/brk/mmap/stack pointers are bounds-checked against `lc->win_lo..win_hi`.
+- **Address space**: `LINUX_BASE 0x08048000`. Task 0 gets an 8 MB window `0x08000000..0x08800000` identity-mapped + user-accessible in the kernel page tables (`kernel/paging.c`, PDE 32–33) and reserved in `pmm.c`. **Spawned** Linux tasks get a private `0x08000000..0x10000000` (32 MB, PDE 32–63) via `lpts[32]` page-table pages installed into the task PD (`kernel/task.c:260`); `task_spawn` probes the ABI first (`elf_probe`) and leaves the AOS user-area PDEs 4–6 unmapped for Linux tasks (no 12 MB pre-zeroed frames). All ELF segments/brk/mmap/stack pointers are bounds-checked against `lc->win_lo..win_hi`.
 - **Loader** (`kernel/elf.c` `elf_load_linux`): validates header/entry/each PT_LOAD range against the window, maps pages with `paging_map_user_page`, computes `brk_base` (end of BSS). `stack_build()` lays out the musl startup stack top-down from `stack_top`: argc/argv/envp + auxv (`AT_PHDR/PHENT/PHNUM/PAGESZ/BASE/ENTRY/UID/EUID/GID/EGID/RANDOM/EXECFN`), 16 `AT_RANDOM` bytes, `AT_EXECFN` string; `lc->stack_sp` is the resulting ESP. `user_program_start_linux`/`launch_user_linux` (`kernel/user.c`, `kernel/user_tramp.S`) iret to ring 3.
 - **Runtime context** (`kernel/linux_syscall.c`, `struct linux_ctx` per task, kmalloc'd): `brk_base`/`brk_cur`, top-down `mmap_cur` (mmap2), `stack_top`/`stack_sp`, `win_lo`/`win_hi`, and TLS fields. `linux_ctx_init` runs at spawn. **Fd handling is NOT here**: Linux syscalls read/write the task's real fd table (`get_current_task()->fds[]`, console fds 0–2) via `vfs_*_fd`, and paths resolve against the task CWD (`current_task_cwd()`), exactly like the AOS fd syscalls.
 - **Syscalls** (`int 0x80` dispatch to `linux_syscall_handler`): exit/exit_group(1/252), write(4), writev(146, musl's `__stdio_write`), read(3, fd0 → `terminal_read_key` returning -EAGAIN when empty), open(5)/openat(295, incl. `O_DIRECTORY`; dirfd `-100`==AT_FDCWD → task CWD), close(6), unlink(10), lseek(19)/_llseek(140), access(33), chdir(12), getcwd(183), mkdir(39), rmdir(40), time(13), getpid(20), getuid/gid/euid/egid(24/47/49/50), ioctl(54, -ENOTTY), gettimeofday(78), uname(122), brk(45), mmap2(192, top-down anonymous), munmap(91)/mprotect(125) no-op, nanosleep(265→no, 162→PIT-tick spin), clock_gettime(265), set_thread_area(243)/modify_ldt(123), set_tid_address(258), stat64(195)/fstatat64(300)/fstat64(197) (fill i386 musl `struct stat`, 108 B, S_IFDIR/S_IFREG st_mode), getdents64(220, iterates the fd's directory via `vfs_readdir_fd`, so `lin/ls /proc` lists procfs, not the SFS root). FDs ≥3 are the VFS open-file table entries (`vfs_ofile_ptr`); `lin_fd_valid()` checks `fd∈[3,TASK_MAX_FDS) && t->fds[fd]`. Userspace pointers validated via `in_luser`/`copy_lin_str` (like `in_user` for AOS, but against the Linux window).
