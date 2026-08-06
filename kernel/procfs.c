@@ -1,12 +1,14 @@
 #include "vfs.h"
 #include "string.h"
 #include "serial.h"
+#include "klog.h"
 
 // procfs inode numbers
 #define PROCFS_ROOT    1
 #define PROCFS_UPTIME  2
 #define PROCFS_VERSION 3
 #define PROCFS_MOUNTS  4
+#define PROCFS_KLOG    5
 
 extern volatile unsigned int tick;
 
@@ -19,6 +21,7 @@ static const struct proc_file proc_files[] = {
     { "uptime", PROCFS_UPTIME },
     { "version", PROCFS_VERSION },
     { "mounts", PROCFS_MOUNTS },
+    { "klog", PROCFS_KLOG },
 };
 
 #define PROC_FILES (sizeof(proc_files) / sizeof(proc_files[0]))
@@ -85,6 +88,13 @@ static int proc_stat(struct vfs_fs *fs, unsigned int ino, struct aos_stat *st) {
         st->nlink = 1;
         return 0;
     }
+    if (ino == PROCFS_KLOG) {
+        st->type = 1;
+        st->size = klog_size();
+        st->mtime = 0;
+        st->nlink = 1;
+        return 0;
+    }
     for (unsigned int i = 0; i < PROC_FILES; i++) {
         if (proc_files[i].ino == ino) {
             unsigned int len;
@@ -132,6 +142,8 @@ static int proc_readdir(struct vfs_fs *fs, unsigned int dir_ino,
 static int proc_read_at(struct vfs_fs *fs, unsigned int ino, void *buf,
                         unsigned int len, unsigned int off) {
     (void)fs;
+    if (ino == PROCFS_KLOG)
+        return (int)klog_read(off, buf, len);
     unsigned int clen;
     char *content = proc_content(ino, &clen);
     if (off >= clen) return 0;
