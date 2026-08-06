@@ -231,6 +231,14 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         dead->lctx = 0;
         dead->mbox = 0;
         dead->args = 0;
+        // Trace buffer: a traced task's log is collected by the strace session
+        // that owns it. Free it here when already dumped or untraced; a
+        // traced-but-undumped zombie keeps it so trace_session_dump (or slot
+        // reclamation) can still collect it.
+        if (dead->trace_dumped || !dead->trace_on) {
+            if (dead->trace_buf) kfree(dead->trace_buf);
+            dead->trace_buf = 0;
+        }
         if (nzombies < MAX_TASKS)
             zombies[nzombies++] = dead;
     }
@@ -260,10 +268,16 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     if (pid < 0) return -1;
 
     struct task *t = &tasks[pid];
+    if (t->trace_buf) {
+        kfree(t->trace_buf);       // abandoned trace from a previous owner
+        t->trace_buf = 0;
+    }
     memset(t, 0, sizeof(*t));
     t->pid = pid;
     t->sink = sink;
     t->parent = task_current_pid();
+    // strace -f: a child inherits the parent's trace flag.
+    t->trace_on = current_task->trace_on;
 
     // The child inherits the parent's cwd and its console stdio fds 0/1/2
     // (the shared console pseudo-file). fds >= 3 are NOT inherited (CLOEXEC:
@@ -562,4 +576,8 @@ struct linux_ctx *task_current_lctx(void) {
 
 struct task *get_current_task(void) {
     return current_task;
+}
+
+struct task *task_slot(unsigned int i) {
+    return i < MAX_TASKS ? &tasks[i] : 0;
 }

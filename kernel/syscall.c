@@ -14,6 +14,7 @@
 #include "vrng.h"
 #include "kmm.h"
 #include "rtc.h"
+#include "trace.h"
 
 extern volatile unsigned int tick;
 
@@ -149,6 +150,7 @@ void syscall_handler(struct registers *r) {
         return;
     }
 
+    trace_record(r);
     switch (n) {
     case SYS_PRINT: {
         char *s = copy_user_str((const void *)r->ebx);
@@ -577,4 +579,5 @@ void syscall_handler(struct registers *r) {
         r->eax = -1;
         break;
     }
+    trace_finish(r);
 }

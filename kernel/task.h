@@ -40,6 +40,12 @@ struct task {
     struct linux_ctx *lctx;     // Linux runtime context (kmalloc'd)
     struct open_file *fds[TASK_MAX_FDS];  // per-task open-file table (0/1/2 console)
     char cwd[PATH_MAX];         // normalized absolute cwd ("/" = root)
+    unsigned int trace_on;        // 1 = record this task's syscalls
+    unsigned char *trace_buf;     // kmalloc'd ring of struct trace_rec (lazy)
+    unsigned int trace_head;      // next write slot (wraps)
+    unsigned int trace_count;     // records written so far
+    unsigned int trace_wrapped;   // 1 = the ring overwrote old records
+    unsigned int trace_dumped;    // 1 = already printed by a strace session
 };
 
 void task_init(void);
@@ -71,5 +77,8 @@ extern struct open_file console_open_file;
 
 // The currently-running task.
 struct task *get_current_task(void);
+
+// Task-table slot accessor (task_slot(i) == 0 for i >= MAX_TASKS).
+struct task *task_slot(unsigned int i);
 
 #endif

@@ -12,6 +12,7 @@
 #include "string.h"
 #include "aosipc.h"
 #include "linux_syscall.h"   // struct linux_ctx (task.h only forward-declares)
+#include "trace.h"
 
 // AOS GUI / extension syscalls (int 0x80, numbers 500-519). These are routed
 // from syscall_handler when n >= AOS_EXT. Every AOS task is ABI_LINUX, so the
@@ -54,6 +55,7 @@ static char *copy_lstr(const void *usr) {
 
 void aos_gui_handler(struct registers *r) {
     unsigned int n = r->eax;
+    trace_record(r);
     switch (n) {
     case AOS_FB_INFO: {
         unsigned int *addr = (unsigned int *)r->ebx;
@@ -246,4 +248,5 @@ void aos_gui_handler(struct registers *r) {
         r->eax = -1;
         break;
     }
+    trace_finish(r);
 }

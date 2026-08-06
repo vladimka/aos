@@ -12,6 +12,7 @@
 #include "kmm.h"
 #include "ports.h"
 #include "vrng.h"
+#include "trace.h"
 
 static struct linux_ctx *cur_lctx(void) {
     return task_current_lctx();
@@ -96,6 +97,7 @@ static void put_dirent64(unsigned char *dst, unsigned long long ino,
 void linux_syscall_handler(struct registers *r) {
     unsigned int n = r->eax;
     struct linux_ctx *lc = cur_lctx();
+    trace_record(r);
 
     switch (n) {
     case 1:    // exit
@@ -540,4 +542,5 @@ void linux_syscall_handler(struct registers *r) {
         r->eax = -38;   // -ENOSYS
         break;
     }
+    trace_finish(r);
 }

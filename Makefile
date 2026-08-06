@@ -19,7 +19,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               kernel/config.o kernel/user.o \
               kernel/user_tramp.o kernel/printf.o kernel/progs.o \
                kernel/task.o kernel/linux_syscall.o kernel/block.o kernel/sfs2.o \
-               kernel/klog.o
+               kernel/klog.o kernel/trace.o
 
 PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest exitto random fstest procinfo
 
