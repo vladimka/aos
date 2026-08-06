@@ -2,11 +2,13 @@
 #include "linux_syscall.h"
 #include "task.h"
 #include "user.h"
-#include "fs.h"
+#include "vfs.h"
 #include "paging.h"
 #include "gdt.h"
 #include "string.h"
 #include "syscall.h"
+#include "terminal.h"
+#include "commands.h"
 #include "kmm.h"
 
 static struct linux_ctx *cur_lctx(void) {
@@ -37,18 +39,9 @@ static char *copy_lin_str(const void *usr) {
     return dst;
 }
 
-static int lc_alloc_fd(struct linux_ctx *lc, const char *name) {
-    if (!fs_exists(name)) return -1;
-    for (int i = 3; i < LINUX_FDS; i++) {
-        if (lc->fds[i] < 0) {
-            strncpy(lc->fd_name[i], name, 31);
-            lc->fd_name[i][31] = '\0';
-            lc->fds[i] = 1;
-            lc->fd_off[i] = 0;
-            return i;
-        }
-    }
-    return -24;   // EMFILE
+static int lin_fd_valid(int fd) {
+    struct task *t = get_current_task();
+    return fd >= 3 && fd < TASK_MAX_FDS && t->fds[fd] != 0;
 }
 
 static void linux_exit(void) {
@@ -62,21 +55,23 @@ static void linux_exit(void) {
 
 void linux_ctx_init(struct linux_ctx *lc) {
     memset(lc, 0, sizeof(struct linux_ctx));
-    for (int i = 0; i < LINUX_FDS; i++)
-        lc->fds[i] = i <= 2 ? i : -1;   // 0,1,2 = std; >=3 free
 }
 
 // i386 musl struct stat (see toolchain bits/stat.h): 108 bytes.
-static void fill_stat64(struct linux_ctx *lc, unsigned int size, unsigned char *st) {
+static void fill_stat64(struct linux_ctx *lc, unsigned int type,
+                        unsigned int size, unsigned char *st) {
     (void)lc;
     memset(st, 0, 108);
     *(unsigned int *)(st + 8)  = 1;                        // __st_ino_truncated
-    *(unsigned int *)(st + 12) = 0x81A4;                   // st_mode S_IFREG|0644
+    if (type == 2)
+        *(unsigned int *)(st + 12) = 0x41ED;               // st_mode S_IFDIR|0777
+    else
+        *(unsigned int *)(st + 12) = 0x81ED;               // st_mode S_IFREG|0777
     *(unsigned int *)(st + 16) = 1;                        // st_nlink
     *(unsigned int *)(st + 20) = 0;                        // st_uid
     *(unsigned int *)(st + 24) = 0;                        // st_gid
     *(unsigned long long *)(st + 36) = size;               // st_size
-    *(unsigned int *)(st + 44) = 4096;                     // st_blksize
+    *(unsigned int *)(st + 44) = 512;                      // st_blksize
     *(unsigned long long *)(st + 48) = (unsigned long long)(size + 511) / 512; // st_blocks
     *(unsigned int *)(st + 80) = 1;                        // st_ino
 }
@@ -229,50 +224,75 @@ void linux_syscall_handler(struct registers *r) {
         int fd = r->ebx;
         char *buf = (char *)r->ecx;
         unsigned int count = r->edx;
-        if (fd == 0) { r->eax = -11; break; }                 // -EAGAIN
-        if (fd < 0 || fd >= LINUX_FDS || lc->fds[fd] < 0 || fd <= 2) { r->eax = -9; break; }
         if (!in_luser(buf, count)) { r->eax = -14; break; }
-        int n = fs_read_at(lc->fd_name[fd], buf, count, lc->fd_off[fd]);
-        if (n < 0) { r->eax = -2; break; }                    // -ENOENT
-        lc->fd_off[fd] += (unsigned int)n;
-        r->eax = n;
+        if (fd == 0) {
+            if (count == 0) { r->eax = 0; break; }
+            int k = terminal_read_key();
+            r->eax = (k < 0) ? -11 : 1;                     // -EAGAIN when empty
+            if (k >= 0) buf[0] = (char)k;
+            break;
+        }
+        if (!lin_fd_valid(fd)) { r->eax = -9; break; }
+        r->eax = vfs_read_fd(fd, buf, count);
         break;
     }
 
     case 5:   // open(path, flags, mode)
     case 295: { // openat(dirfd, path, flags, mode)
+        int dirfd = (n == 295) ? (int)r->ebx : -100;        // -100 == AT_FDCWD
         const void *pp = (n == 295) ? (const void *)r->ecx : (const void *)r->ebx;
         char *p = copy_lin_str(pp);
         if (!p) { r->eax = -14; break; }
-        int fd = lc_alloc_fd(lc, p);
+        int flags = (n == 295) ? (int)r->edx : (int)r->ecx;
+        flags &= ~0x80000;                                  // mask O_CLOEXEC
+        struct vfs_inode *base = current_task_cwd();
+        if (n == 295 && dirfd != -100) {
+            struct open_file *of = (dirfd >= 3 && dirfd < TASK_MAX_FDS)
+                                       ? vfs_ofile_ptr(dirfd) : 0;
+            if (base) vfs_put(base);
+            if (!of || !of->inode) { kfree(p); r->eax = -9; break; }
+            base = vfs_get(of->inode->fs, of->inode->ino);  // own ref
+        }
+        if (!base) { kfree(p); r->eax = -9; break; }
+        int fd = vfs_open_fd(base, p, flags);
+        vfs_put(base);
         kfree(p);
-        r->eax = (fd < 0) ? (fd == -24 ? -24 : -2) : fd;
+        if (fd >= 0 && fd < TASK_MAX_FDS)
+            get_current_task()->fds[fd] = vfs_ofile_ptr(fd);
+        r->eax = fd;                                        // VFS errno (<0) directly
         break;
     }
 
     case 6: {  // close(fd)
         int fd = r->ebx;
-        if (fd < 0 || fd >= LINUX_FDS || lc->fds[fd] < 0) { r->eax = -9; break; }
-        lc->fds[fd] = -1;
-        r->eax = 0;
+        struct task *t = get_current_task();
+        if (fd >= 0 && fd < 3) {
+            if (fd < TASK_MAX_FDS && t->fds[fd] == &console_open_file)
+                t->fds[fd] = 0;
+            r->eax = 0;
+            break;
+        }
+        int rc = vfs_close_fd(fd);
+        if (rc == 0 && fd >= 0 && fd < TASK_MAX_FDS)
+            t->fds[fd] = 0;
+        r->eax = rc;
         break;
     }
 
     case 10: {  // unlink(path)
         char *p = copy_lin_str((const void *)r->ebx);
-        if (!p) {
-            r->eax = -14;
-        } else {
-            r->eax = fs_delete(p) == 0 ? 0 : -2;
-            kfree(p);
-        }
+        if (!p) { r->eax = -14; break; }
+        struct vfs_inode *cwd = current_task_cwd();
+        r->eax = vfs_unlink(cwd, p);
+        vfs_put(cwd);
+        kfree(p);
         break;
     }
 
     case 19:   // lseek(fd, offset, whence)
     case 140: { // _llseek(fd, off_hi, off_lo, res, whence)
         int fd = r->ebx;
-        if (fd < 0 || fd >= LINUX_FDS || lc->fds[fd] < 0 || fd <= 2) { r->eax = -9; break; }
+        if (!lin_fd_valid(fd)) { r->eax = -9; break; }
         unsigned int off, whence;
         unsigned int *res = 0;
         if (n == 140) {
@@ -284,28 +304,77 @@ void linux_syscall_handler(struct registers *r) {
             off = r->ecx;
             whence = r->edx;
         }
-        int sz = fs_get_size(lc->fd_name[fd]);
-        unsigned int cur = lc->fd_off[fd];
-        unsigned int newoff = cur;
-        if (whence == 0) newoff = off;
-        else if (whence == 1) newoff = cur + off;
-        else if (whence == 2) newoff = (sz < 0 ? 0 : (unsigned int)sz) + off;
-        if (newoff > 0x7FFFFFFF) newoff = 0x7FFFFFFF;
-        lc->fd_off[fd] = newoff;
-        if (n == 140)
-            *res = newoff;
-        r->eax = (n == 140) ? 0 : newoff;
+        int rc = vfs_lseek_fd(fd, off, whence);
+        if (n == 140) {
+            if (rc < 0) { r->eax = rc; break; }
+            *res = (unsigned int)rc;
+            r->eax = 0;
+        } else {
+            r->eax = rc;
+        }
         break;
     }
 
     case 33: {  // access(path, mode)
         char *p = copy_lin_str((const void *)r->ebx);
-        if (!p) {
-            r->eax = -14;
-        } else {
-            r->eax = fs_exists(p) ? 0 : -2;
-            kfree(p);
-        }
+        if (!p) { r->eax = -14; break; }
+        struct vfs_inode *cwd = current_task_cwd();
+        struct aos_stat st;
+        int rc = vfs_stat(cwd, p, &st);
+        vfs_put(cwd);
+        kfree(p);
+        r->eax = (rc == 0) ? 0 : -2;
+        break;
+    }
+
+    case 12: {  // chdir(path)
+        char *p = copy_lin_str((const void *)r->ebx);
+        if (!p) { r->eax = -14; break; }
+        struct task *t = get_current_task();
+        char nb[PATH_MAX];
+        int rc = path_norm(t->cwd, p, nb, sizeof(nb));
+        if (rc != 0) { kfree(p); r->eax = -22; break; }      // -EINVAL
+        struct aos_stat st;
+        if (vfs_kernel_stat(nb, &st) != 0) { kfree(p); r->eax = -2; break; }
+        if (st.type != 2) { kfree(p); r->eax = -20; break; } // -ENOTDIR
+        strncpy(t->cwd, nb, PATH_MAX);
+        t->cwd[PATH_MAX - 1] = '\0';
+        kfree(p);
+        r->eax = 0;
+        break;
+    }
+
+    case 39: {  // mkdir(path, mode)
+        char *p = copy_lin_str((const void *)r->ebx);
+        if (!p) { r->eax = -14; break; }
+        struct vfs_inode *cwd = current_task_cwd();
+        r->eax = vfs_mkdir(cwd, p);
+        vfs_put(cwd);
+        kfree(p);
+        break;
+    }
+
+    case 40: {  // rmdir(path)
+        char *p = copy_lin_str((const void *)r->ebx);
+        if (!p) { r->eax = -14; break; }
+        struct vfs_inode *cwd = current_task_cwd();
+        r->eax = vfs_rmdir(cwd, p);
+        vfs_put(cwd);
+        kfree(p);
+        break;
+    }
+
+    case 183: {  // getcwd(buf, size)
+        char *buf = (char *)r->ebx;
+        unsigned int size = r->ecx;
+        if (!in_luser(buf, size)) { r->eax = -14; break; }
+        const char *c = get_current_task()->cwd;
+        unsigned int need = 0;
+        while (c[need]) need++;
+        need++;
+        if (need > size) { r->eax = -34; break; }            // -ERANGE
+        for (unsigned int i = 0; i < need; i++) buf[i] = c[i];
+        r->eax = need;
         break;
     }
 
@@ -374,15 +443,26 @@ void linux_syscall_handler(struct registers *r) {
 
     case 195:   // stat64(path, st)
     case 300: { // fstatat64(dirfd, path, st, flags)
+        int dirfd = (n == 300) ? (int)r->ebx : -100;        // -100 == AT_FDCWD
         const void *pp = (n == 300) ? (const void *)r->ecx : (const void *)r->ebx;
-        unsigned char *st = (unsigned char *)r->edx;
+        unsigned char *st = (n == 300) ? (unsigned char *)r->edx : (unsigned char *)r->ecx;
+        if (!in_luser(st, 108)) { r->eax = -14; break; }
         char *p = copy_lin_str(pp);
         if (!p) { r->eax = -14; break; }
-        if (!in_luser(st, 108)) { kfree(p); r->eax = -14; break; }
-        int size = fs_get_size(p);
+        struct vfs_inode *base = current_task_cwd();
+        if (n == 300 && dirfd != -100) {
+            struct open_file *of = (dirfd >= 3 && dirfd < TASK_MAX_FDS)
+                                       ? vfs_ofile_ptr(dirfd) : 0;
+            if (base) vfs_put(base);
+            if (!of || !of->inode) { kfree(p); r->eax = -9; break; }
+            base = vfs_get(of->inode->fs, of->inode->ino);  // own ref
+        }
+        struct aos_stat s;
+        int rc = vfs_stat(base, p, &s);
+        vfs_put(base);
         kfree(p);
-        if (size < 0) { r->eax = -2; break; }
-        fill_stat64(lc, (unsigned int)size, st);
+        if (rc < 0) { r->eax = -2; break; }
+        fill_stat64(lc, s.type, s.size, st);
         r->eax = 0;
         break;
     }
@@ -390,11 +470,12 @@ void linux_syscall_handler(struct registers *r) {
     case 197: {  // fstat64(fd, st)
         int fd = r->ebx;
         unsigned char *st = (unsigned char *)r->ecx;
-        if (fd < 0 || fd >= LINUX_FDS || lc->fds[fd] < 0 || fd <= 2) { r->eax = -9; break; }
+        if (!lin_fd_valid(fd)) { r->eax = -9; break; }
         if (!in_luser(st, 108)) { r->eax = -14; break; }
-        int size = fs_get_size(lc->fd_name[fd]);
-        if (size < 0) size = 0;
-        fill_stat64(lc, (unsigned int)size, st);
+        struct aos_stat s;
+        int rc = vfs_fstat_fd(fd, &s);
+        if (rc < 0) { r->eax = rc; break; }
+        fill_stat64(lc, s.type, s.size, st);
         r->eax = 0;
         break;
     }
@@ -403,22 +484,27 @@ void linux_syscall_handler(struct registers *r) {
         int fd = r->ebx;
         unsigned char *buf = (unsigned char *)r->ecx;
         unsigned int count = r->edx;
-        if (fd < 0 || fd >= LINUX_FDS || lc->fds[fd] < 0 || fd <= 2) { r->eax = -9; break; }
+        if (!lin_fd_valid(fd)) { r->eax = -9; break; }
         if (!in_luser(buf, count)) { r->eax = -14; break; }
-        unsigned int idx = lc->fd_off[fd];   // reused as the entry cursor
+        struct open_file *of = vfs_ofile_ptr(fd);
+        if (!of || !of->inode || of->inode->type != 2) { r->eax = -20; break; } // -ENOTDIR
         unsigned int written = 0;
-        for (; idx < 4096; idx++) {
-            char name[32];
-            unsigned int size;
-            if (sfs_get_entry(idx, name, &size) != 0) continue;
+        unsigned int entry_ino = 1;
+        for (;;) {
+            unsigned int save_pos = of->pos;
+            char name[VFS_NAME_MAX + 1];
+            if (vfs_readdir_fd(fd, name, sizeof(name)) != 1) break;
             unsigned int len = (unsigned int)strlen(name);
             unsigned int reclen = 19 + len;
-            if (written + reclen > count) break;
-            unsigned char type = (name[len - 1] == '/') ? 4 : 8;
-            put_dirent64(buf + written, (unsigned long long)idx + 1,
+            if (written + reclen > count) { of->pos = save_pos; break; }
+            unsigned char type = 0;
+            struct aos_stat s;
+            if (vfs_stat(of->inode, name, &s) == 0)
+                type = (s.type == 2) ? 4 : 8;               // DT_DIR / DT_REG
+            put_dirent64(buf + written, (unsigned long long)entry_ino,
                          (unsigned long long)(written + reclen), type, name);
             written += reclen;
-            lc->fd_off[fd] = idx + 1;
+            entry_ino++;
         }
         r->eax = written;
         break;

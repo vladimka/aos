@@ -1,12 +1,7 @@
 #ifndef LINUX_SYSCALL_H
 #define LINUX_SYSCALL_H
 
-#define LINUX_FDS 32
-
 struct linux_ctx {
-    int fds[LINUX_FDS];              // -1 = free; 0,1,2 = std; >=3 = open file
-    char fd_name[LINUX_FDS][32];     // SFS name behind each open fd
-    unsigned int fd_off[LINUX_FDS];  // read cursor / getdents64 index
     unsigned int brk_base;           // initial program break (end of ELF BSS)
     unsigned int brk_cur;            // current brk
     unsigned int mmap_cur;           // top-down anonymous mmap cursor

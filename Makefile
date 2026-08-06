@@ -100,7 +100,7 @@ run: aos.iso disk.img
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
 # linhello/lincat need the musl Linux payload, so they are included only when
 # the musl toolchain is installed.
-LINUX_TESTS = $(if $(LINUX_BINS),linhello lincat)
+LINUX_TESTS = $(if $(LINUX_BINS),linhello lincat lindirtest)
 TESTS = ipctest manytest notepadtest sleeptest rngtest blktest virtiotest netlooptest rtctest configtest $(LINUX_TESTS)
 
 test: aos.iso

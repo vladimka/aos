@@ -1,6 +1,8 @@
 #ifndef SYSCALL_H
 #define SYSCALL_H
 
+struct vfs_inode;
+
 #define SYS_PRINT        0
 #define SYS_PRINT_HEX    1
 #define SYS_PRINT_DEC    2
@@ -51,5 +53,6 @@
 
 void syscall_set_args(const char *args);
 void route_text(const char *s, unsigned int len);
+struct vfs_inode *current_task_cwd(void);
 
 #endif
