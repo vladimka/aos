@@ -2,6 +2,7 @@
 #define SYSCALL_H
 
 struct vfs_inode;
+struct registers;
 
 #define SYS_PRINT        0
 #define SYS_PRINT_HEX    1
@@ -51,8 +52,33 @@ struct vfs_inode;
 #define SYS_FSTAT        47
 #define SYS_UNLINK       48
 
+// AOS GUI/extension ABI (int 0x80 500-599). Dispatched by syscall_handler to
+// aos_gui_handler; everything < AOS_EXT goes to linux_syscall_handler.
+#define AOS_EXT           500
+#define AOS_FB_INFO       500
+#define AOS_TEXT          501
+#define AOS_FILL          502
+#define AOS_CLEAR         503
+#define AOS_MOUSE         504
+#define AOS_READ_KEY      505
+#define AOS_KEY_POLL      506
+#define AOS_REG_EVENTS    507
+#define AOS_GET_EVENT_PID 508
+#define AOS_SEND          509
+#define AOS_RECV          510
+#define AOS_SETOUT        511
+#define AOS_SPAWN         512
+#define AOS_WAITPID       513
+#define AOS_GET_CHILDREN  514
+#define AOS_GET_ARGS      515
+#define AOS_GET_RTC       516
+#define AOS_UPTIME        517
+#define AOS_GET_TICK      518
+#define AOS_PANIC         519
+
 void syscall_set_args(const char *args);
 void route_text(const char *s, unsigned int len);
 struct vfs_inode *current_task_cwd(void);
+void aos_gui_handler(struct registers *r);
 
 #endif

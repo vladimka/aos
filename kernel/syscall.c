@@ -139,6 +139,11 @@ static void route_dec(unsigned int n) {
 void syscall_handler(struct registers *r) {
     unsigned int n = r->eax;
 
+    if (n >= AOS_EXT && n < AOS_EXT + 100) {
+        aos_gui_handler(r);
+        return;
+    }
+
     if (task_current_abi() == ABI_LINUX) {
         linux_syscall_handler(r);
         return;
