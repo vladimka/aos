@@ -36,36 +36,37 @@ static unsigned int col_accent = 0x5B93D8;
 #define DOCK_ICON    32
 #define DOCK_STRIDE  40
 
-#define COL_ICON_FG      0xE8EEF8
+static unsigned int col_icon_fg = 0xFFFFFF;
 
-// 32x32 1bpp icons, 'X' = foreground pixel, anything else = transparent.
+// 32x32 two-color icons: 'X' = foreground pixel, 'O' = accent pixel, anything
+// else = transparent.
 static const char icon_term[32][33] = {
     "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
     "X..............................X",
     "X..............................X",
     "X..............................X",
     "X..............................X",
     "X..............................X",
     "X..............................X",
-    "X........XX....................X",
-    "X.........XX...................X",
-    "X..........XX..................X",
-    "X..........XX..................X",
-    "X.........XX...................X",
-    "X........XX....................X",
     "X..............................X",
     "X..............................X",
-    "X..........XXXXXXXXXXX.........X",
+    "X.......O......................X",
+    "X........O.....................X",
+    "X.........O....................X",
+    "X..........O...................X",
+    "X..........O...................X",
+    "X.........O....................X",
+    "X........O.....................X",
+    "X.......O......................X",
+    "X......OOOOOOO.................X",
     "X..............................X",
     "X..............................X",
     "X..............................X",
     "X..............................X",
     "X..............................X",
+    "X.........OOOOOOOOOOO..........X",
+    "X.........OOOOOOOOOOO..........X",
+    "X.........OOOOOOOOOOO..........X",
     "X..............................X",
     "X..............................X",
     "X..............................X",
@@ -79,66 +80,66 @@ static const char icon_clock[32][33] = {
     "................................",
     "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
     "..X..........................X..",
-    "..X..........................X..",
-    "..X...........XXX............X..",
-    "..X...........XXX............X..",
-    "..X...........XXX............X..",
+    "..X...........OOO............X..",
+    "..X...........OOO............X..",
     "..X..........................X..",
     "..X..........................X..",
-    "..X...........XXX............X..",
-    "..X...........XXX............X..",
-    "..X...........XXX............X..",
-    "..X...........XXX............X..",
-    "..X...........XXX............X..",
-    "..X.XXX........XXXXXXXXX.XXX.X..",
-    "..X.XXX........XXXXXXXXX.XXX.X..",
-    "..X...........XXX............X..",
-    "..X...........XXX............X..",
-    "..X...........XXX............X..",
-    "..X...........XXX............X..",
-    "..X...........XXX............X..",
-    "..X...........XXX............X..",
+    "..X............OO............X..",
+    "..X............OO............X..",
+    "..X............OO............X..",
+    "..X............OO............X..",
+    "..X............OO............X..",
+    "..X.OO.........OO.........OO.X..",
+    "..X.OO.........OO.........OO.X..",
+    "..X.OO..OOOOOOOOOOOOOOOO..OO.X..",
+    "..X.....OOOOOOOOOOOOOOOO.....X..",
+    "..X............OO............X..",
+    "..X............OO............X..",
+    "..X............OO............X..",
+    "..X............OO............X..",
     "..X..........................X..",
-    "..X...........XXX............X..",
-    "..X...........XXX............X..",
-    "..X...........XXX............X..",
+    "..X..........................X..",
+    "..X...........OOO............X..",
+    "..X...........OOO............X..",
     "..X..........................X..",
     "..X..........................X..",
     "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
+    "................................",
+    "................................",
     "................................",
     "................................",
 };
 
 static const char icon_unknown[32][33] = {
     "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
     "X..............................X",
     "X..............................X",
-    "X..............................X",
-    "X..........XXXXXXX.............X",
-    "X.........XXXXXXXX.............X",
-    "X.........XXXXXXXX.............X",
-    "X........XX....XXX.............X",
-    "X........XX....XXX.............X",
-    "X........XX....XXX.............X",
-    "X.............XXX..............X",
-    "X.............XX...............X",
-    "X............XX................X",
-    "X............XX................X",
-    "X..............................X",
-    "X..............................X",
-    "X............XX................X",
-    "X............XX................X",
-    "X..............................X",
-    "X..............................X",
-    "X..............................X",
-    "X..............................X",
-    "X..............................X",
-    "X..............................X",
-    "X..............................X",
-    "X..............................X",
-    "X..............................X",
-    "X..............................X",
+    "X..XXXXXXXXXXXXXXXXXXXXXXXXXX..X",
+    "X..X........................X..X",
+    "X..X........................X..X",
+    "X..X........................X..X",
+    "X..X.....OOOOOOOO...........X..X",
+    "X..X.............O..........X..X",
+    "X..X.............O..........X..X",
+    "X..X........OOOOO...........X..X",
+    "X..X........O...............X..X",
+    "X..X........O...............X..X",
+    "X..X........O...............X..X",
+    "X..X.........OOO............X..X",
+    "X..X...........O............X..X",
+    "X..X...........O............X..X",
+    "X..X........................X..X",
+    "X..X........................X..X",
+    "X..X........................X..X",
+    "X..X...........O............X..X",
+    "X..X...........O............X..X",
+    "X..X........................X..X",
+    "X..X........................X..X",
+    "X..X........................X..X",
+    "X..X........................X..X",
+    "X..X........................X..X",
+    "X..X........................X..X",
+    "X..XXXXXXXXXXXXXXXXXXXXXXXXXX..X",
     "X..............................X",
     "X..............................X",
     "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
@@ -147,11 +148,11 @@ static const char icon_unknown[32][33] = {
 static const char icon_folder[32][33] = {
     "................................",
     "................................",
-    "..XXXXXXXXXXXXXXXXXXXXXXXXXXX...",
-    "..XXXXXXXXXXXXXXXXXXXXXXXXXXX...",
-    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
     "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
     "..X..........................X..",
+    "..XOOOOOOOOOOOOOOOOOOOOOOOOOOX..",
+    "..XOOOOOOOOOOOOOOOOOOOOOOOOOOX..",
+    "..XOOOOOOOOOOOOOOOOOOOOOOOOOOX..",
     "..X..........................X..",
     "..X..........................X..",
     "..X..........................X..",
@@ -172,8 +173,8 @@ static const char icon_folder[32][33] = {
     "..X..........................X..",
     "..X..........................X..",
     "..X..........................X..",
-    "..X..........................X..",
-    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
+    "................................",
     "................................",
     "................................",
     "................................",
@@ -182,62 +183,62 @@ static const char icon_folder[32][33] = {
 static const char icon_file[32][33] = {
     "................................",
     "................................",
-    "....XXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-    "....X..........................X",
-    "....X..........................X",
-    "....X..XXXXXXXXX...............X",
-    "....X..X.......X...............X",
-    "....X..X.......X...............X",
-    "....X..XXXXXXXXX...............X",
-    "....X..........................X",
-    "....X..........................X",
-    "....X..XXXXXXXXX...............X",
-    "....X..X.......X...............X",
-    "....X..X.......X...............X",
-    "....X..XXXXXXXXX...............X",
-    "....X..........................X",
-    "....X..........................X",
-    "....X..XXXXXXXXX...............X",
-    "....X..X.......X...............X",
-    "....X..X.......X...............X",
-    "....X..XXXXXXXXX...............X",
-    "....X..........................X",
-    "....X..........................X",
-    "....X..........................X",
-    "....X..........................X",
-    "....X..........................X",
-    "....X..........................X",
-    "....XXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-    "................................",
-    "................................",
+    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X...OOOOOOOOOOOOOOOOOOO....X..",
+    "..X...OOOOOOOOOOOOOOOOOOO....X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X...OOOOOOOOOOOOOOOOOOO....X..",
+    "..X...OOOOOOOOOOOOOOOOOOO....X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X...OOOOOOOOOOOOOOOOOOO....X..",
+    "..X...OOOOOOOOOOOOOOOOOOO....X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X...OOOOOOOOOOOOO..........X..",
+    "..X...OOOOOOOOOOOOO..........X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
     "................................",
     "................................",
 };
 
 static const char icon_image[32][33] = {
     "................................",
+    "................................",
     "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
     "..X..........................X..",
-    "..X.........XXXX.............X..",
-    "..X........X....X............X..",
-    "..X........X....X............X..",
-    "..X.......X......X...........X..",
-    "..X.......X......X...........X..",
-    "..X......X........X..........X..",
-    "..X......X........X..........X..",
-    "..X.....X..........X.........X..",
-    "..X.....X..........X.........X..",
-    "..X....X............X........X..",
-    "..X....X............X........X..",
-    "..X...X..............X.......X..",
-    "..X...X..............X.......X..",
-    "..X..X................X......X..",
-    "..X..X................X......X..",
-    "..X.X..................X.....X..",
-    "..X.X..................X.....X..",
-    "..XX....................X....X..",
-    "..X......................X...X..",
-    "..X......................X...X..",
+    "..X..........................X..",
+    "..X...OOOOO..................X..",
+    "..X...OOOOO..................X..",
+    "..X...OOOOO..................X..",
+    "..X...OOOOO..................X..",
+    "..X...OOOOO..O...............X..",
+    "..X.........O.O..............X..",
+    "..X........O...O.............X..",
+    "..X.......O.....OOOO.........X..",
+    "..X......O......OO..O........X..",
+    "..X.....O......O..O..O.......X..",
+    "..X....O......O....O..O......X..",
+    "..X...O......O......O..O.....X..",
+    "..X..O......O........O..O....X..",
+    "..X.O......O..........O..OOOOX..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
+    "..X..........................X..",
     "..XXXXXXXXXXXXXXXXXXXXXXXXXXXX..",
     "................................",
     "................................",
@@ -391,6 +392,7 @@ static void draw_desktop_gradient(int x0, int y0, int x1, int y1) {
     }
 }
 
+static void fb_put(int x, int y, unsigned int rgb);
 static void draw_close_btn(const struct win *wn);
 static int cursor_overlaps(int x, int y, int w, int h);
 static void draw_dock(void);
@@ -514,14 +516,14 @@ static int dock_y0(void) { return (int)fb_h - DOCK_H - DOCK_MARGIN; }
 
 static int dock_width(void) { return 16 + dock_nitems() * DOCK_STRIDE; }
 
-static void draw_icon(int x, int y, const char icon[DOCK_ICON][DOCK_ICON + 1],
-                      unsigned int fg) {
-    unsigned int *fb = (unsigned int *)fb_addr;
-    unsigned int pitch = fb_pitch >> 2;
-    for (int r = 0; r < DOCK_ICON; r++)
-        for (int c = 0; c < DOCK_ICON; c++)
-            if (icon[r][c] == 'X')
-                fb[(unsigned)(y + r) * pitch + (unsigned)(x + c)] = fg;
+static void draw_icon2(int x, int y, const char art[32][33],
+                       unsigned int fg, unsigned int accent) {
+    for (int r = 0; r < 32; r++)
+        for (int c = 0; c < 32; c++) {
+            char ch = art[r][c];
+            if (ch == 'X') fb_put(x + c, y + r, fg);
+            else if (ch == 'O') fb_put(x + c, y + r, accent);
+        }
 }
 
 static void draw_dock(void) {
@@ -532,8 +534,9 @@ static void draw_dock(void) {
     fb_hline(dx0 + 5, dy0 + 1, dx0 + dw - 6, lighten(col_dock_bg, 2));
     fb_hline(dx0 + 5, dy0 + 2, dx0 + dw - 6, lighten(col_dock_bg, 1));
     int iy = dy0 + DOCK_PAD_Y;
-    draw_icon(dx0 + DOCK_PAD_X, iy, icon_term, COL_ICON_FG);
-    draw_icon(dx0 + DOCK_PAD_X + DOCK_STRIDE, iy, icon_clock, COL_ICON_FG);
+    draw_icon2(dx0 + DOCK_PAD_X, iy, icon_term, col_icon_fg, col_accent);
+    draw_icon2(dx0 + DOCK_PAD_X + DOCK_STRIDE, iy, icon_clock,
+               col_icon_fg, col_accent);
     int di = 2;
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (!wins[i].used) continue;
@@ -542,7 +545,7 @@ static void draw_dock(void) {
         else if (wins[i].app == APP_CLOCK) ic = icon_clock;
         else ic = icon_unknown;
         int ix = dx0 + DOCK_PAD_X + di * DOCK_STRIDE;
-        draw_icon(ix, iy, ic, COL_ICON_FG);
+        draw_icon2(ix, iy, ic, col_icon_fg, col_accent);
         unsigned int *fb = (unsigned int *)fb_addr;
         unsigned int pitch = fb_pitch >> 2;
         int dotx = ix + DOCK_ICON / 2 - 2;
@@ -615,14 +618,6 @@ static void fb_put(int x, int y, unsigned int rgb) {
     if (x < clip_x0 || x >= clip_x1 || y < clip_y0 || y >= clip_y1) return;
     unsigned int *fb = (unsigned int *)fb_addr;
     ((unsigned int *)fb)[(unsigned)y * (fb_pitch >> 2) + (unsigned)x] = rgb;
-}
-
-// Clip-aware 1bpp icon art: 'X' = foreground pixel.
-static void draw_icon_art(int x, int y, const char art[ICON_W][ICON_W + 1],
-                          unsigned int fg) {
-    for (int r = 0; r < ICON_W; r++)
-        for (int c = 0; c < ICON_W; c++)
-            if (art[r][c] == 'X') fb_put(x + c, y + r, fg);
 }
 
 static int utf8_vis_len(const char *s) {
@@ -734,7 +729,7 @@ static void draw_ico_file(int i, int x, int y) {
                 if (p & 0xFF000000) fb_put(x + c, y + r, p & 0x00FFFFFF);
             }
     } else {
-        draw_icon_art(x, y, icon_image, COL_ICON_FG);
+        draw_icon2(x, y, icon_image, col_icon_fg, col_accent);
     }
 }
 
@@ -745,14 +740,14 @@ static void draw_desktop_icons(void) {
         if (x + ICON_W < clip_x0 || x >= clip_x1) continue;
         if (y + ICON_H < clip_y0 || y >= clip_y1) continue;
         switch (files[i].kind) {
-        case K_FOLDER: draw_icon_art(x, y, icon_folder, COL_ICON_FG); break;
+        case K_FOLDER: draw_icon2(x, y, icon_folder, col_icon_fg, col_accent); break;
         case K_ICO:    draw_ico_file(i, x, y); break;
-        case K_TEXT:   draw_icon_art(x, y, icon_file, COL_ICON_FG); break;
-        default:       draw_icon_art(x, y, icon_unknown, COL_ICON_FG); break;
+        case K_TEXT:   draw_icon2(x, y, icon_file, col_icon_fg, col_accent); break;
+        default:       draw_icon2(x, y, icon_unknown, col_icon_fg, col_accent); break;
         }
         if (y + ICON_H + 2 < clip_y1)
-            fb_text(x, y + ICON_H + 2, files[i].name, COL_ICON_FG,
-                    COL_DESKTOP);
+            fb_text(x, y + ICON_H + 2, files[i].name, col_icon_fg,
+                    wp_top);
     }
 }
 
