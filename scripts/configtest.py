@@ -331,7 +331,8 @@ def main():
         pass
     with open(IMG, "wb") as f:
         f.write(build_sfs([("sys/config.cfg",
-                            b"timezone=+180\nwallpaper_top=0x102030\n")]))
+                            b"timezone=+180\nwallpaper_top=0x102030\n"
+                            b"theme_accent=0xFF00FF\n")]))
     subprocess.run(["truncate", "-s", "4M", IMG], check=True)
     qemu = boot_qemu(disk=True)
     try:
@@ -349,6 +350,8 @@ def main():
         snap(BB)
         assert_pixel(BB, 700, 0, WALL,
                      "wallpaper_top from disk config via theme_load")
+        assert_pixel(BB, 480, 708, ACCENT,
+                     "dock top accent line == theme_accent")
         print("  ok: disk-seeded timezone +180 and wallpaper_top applied")
     finally:
         terminate(qemu)

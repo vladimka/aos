@@ -14,15 +14,18 @@
 #define CUR_R       8           // cursor snapshot half-size
 
 #define COL_DESKTOP      0x1A2030
-#define COL_BORDER       0x000000
-#define COL_TITLE        0x2E4E7B
-#define COL_TITLE_FOCUS  0x4A7AB5
 #define COL_TITLE_TEXT   0xFFFFFF
 #define COL_CURSOR       0xFFFFFF
 
-// Desktop gradient colors; overridden from sys/config.cfg if present.
+// Themed colors; overridden from sys/config.cfg if present.
 static unsigned int wp_top = COL_DESKTOP;
 static unsigned int wp_bot = 0x0E1620;
+static unsigned int col_title = 0x263C5E;
+static unsigned int col_title_focus = 0x4E86C7;
+static unsigned int col_border = 0x12161F;
+static unsigned int col_border_focus = 0x6B9BD2;
+static unsigned int col_dock_bg = 0x232C40;
+static unsigned int col_accent = 0x5B93D8;
 
 // ---- dock ----------------------------------------------------------------
 
@@ -33,10 +36,7 @@ static unsigned int wp_bot = 0x0E1620;
 #define DOCK_ICON    32
 #define DOCK_STRIDE  40
 
-#define COL_DOCK_BG      0x20283A
-#define COL_DOCK_BORDER  0x2E4E7B
 #define COL_ICON_FG      0xE8EEF8
-#define COL_DOCK_ACTIVE  0x4A7AB5
 
 // 32x32 1bpp icons, 'X' = foreground pixel, anything else = transparent.
 static const char icon_term[32][33] = {
@@ -333,6 +333,36 @@ static void fb_fill(int x, int y, int w, int h, unsigned int rgb) {
             fb[(unsigned)yy * pitch + (unsigned)xx] = rgb;
 }
 
+static void fb_hline(int x, int y, int x1, unsigned int rgb) {
+    if (y < clip_y0 || y >= clip_y1) return;
+    if (x < clip_x0) x = clip_x0;
+    if (x1 > clip_x1) x1 = clip_x1;
+    if (x >= x1) return;
+    unsigned int *fb = (unsigned int *)fb_addr;
+    unsigned int pitch = fb_pitch >> 2;
+    for (; x < x1; x++) fb[(unsigned)y * pitch + (unsigned)x] = rgb;
+}
+
+// Return c lightened by amt/16 toward white, per channel.
+static unsigned int lighten(unsigned int c, unsigned int amt) {
+    unsigned int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+    r += ((0xFF - r) * amt) >> 4;
+    g += ((0xFF - g) * amt) >> 4;
+    b += ((0xFF - b) * amt) >> 4;
+    return (r << 16) | (g << 8) | b;
+}
+
+// Fill rect (x,y,w,h) with rgb, cutting a stair-stepped r-pixel L-shape from
+// the two top corners. Corner pixels are left untouched (background shows).
+// Radius-r stair: row dy (0..r-1) cuts (r-1-dy) px from each edge.
+static void fb_round_fill_top(int x, int y, int w, int h, int r,
+                              unsigned int rgb) {
+    for (int yy = 0; yy < h; yy++) {
+        int cut = (yy < r) ? (r - 1 - yy) : 0;
+        fb_hline(x + cut, y + yy, x + w - cut, rgb);
+    }
+}
+
 // Vertical gradient from wp_top to wp_bot over the full screen height.
 static void draw_desktop_gradient(int x0, int y0, int x1, int y1) {
     int w = x1 - x0, h = y1 - y0;
@@ -374,8 +404,12 @@ static void draw_menu(void);
 static void draw_dialog(void);
 
 static void draw_title(const struct win *wn) {
-    unsigned int tcol = (wn->pid == focus_pid) ? COL_TITLE_FOCUS : COL_TITLE;
+    unsigned int tcol = (wn->pid == focus_pid) ? col_title_focus : col_title;
     fb_fill(wn->x + BORDER, wn->y + BORDER, wn->cw, TITLE_H, tcol);
+    fb_fill(wn->x + BORDER, wn->y + BORDER, wn->cw, 1,
+            lighten(tcol, 4));                       // lighter top strip
+    fb_fill(wn->x + BORDER, wn->y + BORDER + 1, wn->cw, 1,
+            lighten(tcol, 2));                       // mid strip
     char buf[8];
     int2str(buf, wn->winid);
     unsigned int *sc = scratch;
@@ -441,13 +475,10 @@ static void composite_rect(int x0, int y0, int x1, int y1) {
         if (!wn->used) continue;
         if (wn->x < x1 && wn->x + wn->cw + 2 * BORDER > x0 &&
             wn->y < y1 && wn->y + wn->ch + TITLE_H + 2 * BORDER > y0) {
-            fb_fill(wn->x, wn->y, wn->cw + 2 * BORDER, BORDER, COL_BORDER);
-            fb_fill(wn->x, wn->y + wn->ch + TITLE_H + BORDER,
-                    wn->cw + 2 * BORDER, BORDER, COL_BORDER);
-            fb_fill(wn->x, wn->y, BORDER, wn->ch + TITLE_H + 2 * BORDER,
-                    COL_BORDER);
-            fb_fill(wn->x + wn->cw + BORDER, wn->y, BORDER,
-                    wn->ch + TITLE_H + 2 * BORDER, COL_BORDER);
+            unsigned int bcol = (wn->pid == focus_pid) ? col_border_focus
+                                                       : col_border;
+            fb_round_fill_top(wn->x, wn->y, wn->cw + 2 * BORDER,
+                              wn->ch + TITLE_H + 2 * BORDER, 4, bcol);
             draw_title(wn);
             blit_content(wn);
         }
@@ -496,16 +527,10 @@ static void draw_icon(int x, int y, const char icon[DOCK_ICON][DOCK_ICON + 1],
 static void draw_dock(void) {
     int dx0 = dock_x0(), dy0 = dock_y0();
     int dw = dock_width();
-    fb_fill(dx0, dy0, dw, DOCK_H, COL_DOCK_BG);
-    fb_fill(dx0, dy0, dw, 1, COL_DOCK_BORDER);
-    fb_fill(dx0, dy0 + DOCK_H - 1, dw, 1, COL_DOCK_BORDER);
-    fb_fill(dx0, dy0, 1, DOCK_H, COL_DOCK_BORDER);
-    fb_fill(dx0 + dw - 1, dy0, 1, DOCK_H, COL_DOCK_BORDER);
-    // fake rounded corners
-    fb_fill(dx0, dy0, 1, 1, COL_DESKTOP);
-    fb_fill(dx0 + dw - 1, dy0, 1, 1, COL_DESKTOP);
-    fb_fill(dx0, dy0 + DOCK_H - 1, 1, 1, COL_DESKTOP);
-    fb_fill(dx0 + dw - 1, dy0 + DOCK_H - 1, 1, 1, COL_DESKTOP);
+    fb_round_fill_top(dx0, dy0, dw, DOCK_H, 6, col_dock_bg);
+    fb_hline(dx0 + 5, dy0, dx0 + dw - 6, col_accent);            // accent line
+    fb_hline(dx0 + 5, dy0 + 1, dx0 + dw - 6, lighten(col_dock_bg, 2));
+    fb_hline(dx0 + 5, dy0 + 2, dx0 + dw - 6, lighten(col_dock_bg, 1));
     int iy = dy0 + DOCK_PAD_Y;
     draw_icon(dx0 + DOCK_PAD_X, iy, icon_term, COL_ICON_FG);
     draw_icon(dx0 + DOCK_PAD_X + DOCK_STRIDE, iy, icon_clock, COL_ICON_FG);
@@ -524,7 +549,7 @@ static void draw_dock(void) {
         int doty = iy + DOCK_ICON + 4;
         for (int r = 0; r < 4; r++)
             for (int c = 0; c < 4; c++)
-                fb[(unsigned)(doty + r) * pitch + (unsigned)(dotx + c)] = COL_DOCK_ACTIVE;
+                fb[(unsigned)(doty + r) * pitch + (unsigned)(dotx + c)] = col_accent;
         di++;
     }
 }
@@ -962,6 +987,12 @@ int main(void) {
     theme_load();
     wp_top = theme_color("wallpaper_top", 0x1A2030);
     wp_bot = theme_color("wallpaper_bot", 0x0E1620);
+    col_title = theme_color("theme_title", 0x263C5E);
+    col_title_focus = theme_color("theme_title_focus", 0x4E86C7);
+    col_border = theme_color("theme_border", 0x12161F);
+    col_border_focus = theme_color("theme_border_focus", 0x6B9BD2);
+    col_dock_bg = theme_color("theme_dock_bg", 0x232C40);
+    col_accent = theme_color("theme_accent", 0x5B93D8);
 
     int last_mx = 0, last_my = 0, last_mb = 0;
     int drag_i = -1, drag_dx = 0, drag_dy = 0;
