@@ -19,6 +19,7 @@
 #include "vfs.h"
 #include "sfs2.h"
 #include "aosipc.h"
+#include "klog.h"
 
 volatile unsigned int tick = 0;
 unsigned int __saved_mb_info = 0;
@@ -125,6 +126,8 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     sfs2_selftest();
 
     config_load();
+
+    klog(KLOG_INFO, "klog: ready");
 
     terminal_init();
 

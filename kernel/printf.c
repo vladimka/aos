@@ -1,11 +1,13 @@
 #include "printf.h"
 #include "vga.h"
 #include "serial.h"
+#include "klog.h"
 #include <stdarg.h>
 
 static void putc(char c) {
     vga_putchar(c);
     serial_putchar(c);
+    klog_putc(c);
 }
 
 static void print_str(const char *s) {
