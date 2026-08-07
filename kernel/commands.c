@@ -23,6 +23,103 @@ void shell_set_status(int code) {
     shell_status_code = code;
 }
 
+// ---- Environment variables (shell-local; per-task env is P1) ----
+#define ENV_MAX 16
+static struct {
+    char name[24];
+    char val[64];
+} shell_env[ENV_MAX];
+static unsigned int shell_env_count = 0;
+
+static int env_name_char(char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
+static const char *env_get(const char *name) {
+    for (unsigned int i = 0; i < shell_env_count; i++)
+        if (strcmp(shell_env[i].name, name) == 0)
+            return shell_env[i].val;
+    return 0;
+}
+
+static void env_set(const char *name, const char *val) {
+    for (unsigned int i = 0; i < shell_env_count; i++)
+        if (strcmp(shell_env[i].name, name) == 0) {
+            strncpy(shell_env[i].val, val, 63);
+            shell_env[i].val[63] = '\0';
+            return;
+        }
+    if (shell_env_count < ENV_MAX) {
+        strncpy(shell_env[shell_env_count].name, name, 23);
+        shell_env[shell_env_count].name[23] = '\0';
+        strncpy(shell_env[shell_env_count].val, val, 63);
+        shell_env[shell_env_count].val[63] = '\0';
+        shell_env_count++;
+    }
+}
+
+static void cmd_export(const char *arg) {
+    while (*arg == ' ') arg++;
+    if (!*arg) {
+        for (unsigned int i = 0; i < shell_env_count; i++) {
+            terminal_print("\n");
+            terminal_print(shell_env[i].name);
+            terminal_print("=");
+            terminal_print(shell_env[i].val);
+        }
+        return;
+    }
+    char name[24];
+    unsigned int n = 0;
+    while (*arg && *arg != '=' && *arg != ' ' && n < 23) name[n++] = *arg++;
+    name[n] = '\0';
+    if (n == 0) return;
+    if (*arg == '=') {
+        arg++;
+        while (*arg == ' ') arg++;
+        env_set(name, arg);
+    } else {
+        env_set(name, "");
+    }
+}
+
+// Expand $NAME and $? into `out`. Unknown vars become "". A '$' not followed
+// by a name char or '?' is copied literally. Truncates at outsz-1.
+static void shell_expand(const char *in, char *out, unsigned int outsz) {
+    unsigned int o = 0;
+    while (*in && o + 1 < outsz) {
+        if (*in == '$' && in[1] == '?') {
+            int st = shell_status();
+            char tmp[12];
+            unsigned int t = 0;
+            if (st == 0) { tmp[t++] = '0'; }
+            else {
+                unsigned int v = (st < 0) ? (unsigned int)(-st) : (unsigned int)st;
+                while (v > 0) { tmp[t++] = '0' + (v % 10); v /= 10; }
+            }
+            while (t > 0) out[o++] = tmp[--t];
+            in += 2;
+            continue;
+        }
+        if (*in == '$' && env_name_char(in[1])) {
+            char name[24];
+            unsigned int n = 0;
+            const char *p = in + 1;
+            while (env_name_char(*p) && n < 23) name[n++] = *p++;
+            name[n] = '\0';
+            const char *val = env_get(name);
+            if (val)
+                for (unsigned int i = 0; val[i] && o + 1 < outsz; i++)
+                    out[o++] = val[i];
+            in = p;
+            continue;
+        }
+        out[o++] = *in++;
+    }
+    out[o] = '\0';
+}
+
 static void cmd_format(void) {
     terminal_print("\nFormatting filesystem...");
     vfs_format();
@@ -255,6 +352,11 @@ static void run_command_raw(const char *line) {
         return;
     }
 
+    if (strcmp(cmd, "export") == 0) {
+        cmd_export(arg);
+        return;
+    }
+
     if (exec_from_path(cmd, arg, 0)) return;
 
     terminal_print("\nUnknown command: ");
@@ -391,13 +493,16 @@ void commands_execute(const char *line) {
         return;
     }
 
+    char expanded[LINE_BUF_SIZE];
+    shell_expand(line, expanded, sizeof(expanded));
+
     int op;
-    if (find_operator(line, &op)) {
-        exec_stage(line);
+    if (find_operator(expanded, &op)) {
+        exec_stage(expanded);
         terminal_set_prompt();
         return;
     }
 
-    run_command_raw(line);
+    run_command_raw(expanded);
     terminal_set_prompt();
 }
