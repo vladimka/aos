@@ -400,10 +400,12 @@ void syscall_handler(struct registers *r) {
         r->eax = terminal_read_key();
         break;
     case SYS_EXIT:
-        if (task_current_pid() == 0)
+        if (task_current_pid() == 0) {
+            shell_set_status((int)r->ebx);
             user_program_exit();
-        else
+        } else {
             task_exit_current(r->ebx);
+        }
         break;
     case SYS_YIELD:
         r->eax = 0;

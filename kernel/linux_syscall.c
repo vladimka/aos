@@ -49,6 +49,7 @@ static int lin_fd_valid(int fd) {
 
 static void linux_exit(unsigned int code) {
     if (task_current_pid() == 0) {
+        shell_set_status((int)code);
         task_set_abi_current(ABI_AOS);
         linux_ctx_init(task_current_lctx());
         user_program_exit();

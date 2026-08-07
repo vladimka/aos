@@ -13,4 +13,10 @@ void commands_set_path(const char *p);
 // Returns 0 on success, -1 on overflow / too-long name.
 int path_norm(const char *cwd, const char *in, char *out, unsigned int outsz);
 
+// Exit status of the last command ("$?"). Set by the kernel on program exit
+// (pid 0 in-place path), read by the shell's $? expansion and background
+// spawn code. 0 = success, 127 = command not found.
+int shell_status(void);
+void shell_set_status(int code);
+
 #endif

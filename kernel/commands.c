@@ -13,6 +13,16 @@
 
 char command_path[PATH_MAX] = "/bin";
 
+static int shell_status_code = 0;
+
+int shell_status(void) {
+    return shell_status_code;
+}
+
+void shell_set_status(int code) {
+    shell_status_code = code;
+}
+
 static void cmd_format(void) {
     terminal_print("\nFormatting filesystem...");
     vfs_format();
