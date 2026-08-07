@@ -224,9 +224,9 @@ static int try_exec(const char *full_path, const char *arg, int trace) {
     return 0;
 }
 
-// Locate `cmd` in the PATH (or as a raw path) and execute it in-place.
-// Returns 1 if a program was found and ran to its exit.
-static int exec_from_path(const char *cmd, const char *arg, int trace) {
+// Locate `cmd` in PATH (or as a raw path). On success fills `out` (up to
+// outsz bytes) with the resolved full path and returns 1; else 0.
+static int path_resolve(const char *cmd, char *out, unsigned int outsz) {
     struct aos_stat st2;
     char path_copy[PATH_MAX];
     strncpy(path_copy, command_path, PATH_MAX - 1);
@@ -252,17 +252,44 @@ static int exec_from_path(const char *cmd, const char *arg, int trace) {
             }
             full_path[i] = '\0';
 
-            if (vfs_kernel_stat(full_path, &st2) == 0)
-                if (try_exec(full_path, arg, trace)) return 1;
+            if (vfs_kernel_stat(full_path, &st2) == 0) {
+                if (out && outsz > 0) {
+                    for (int k = 0; k <= i && k < (int)outsz - 1; k++)
+                        out[k] = full_path[k];
+                    out[outsz - 1] = '\0';
+                }
+                return 1;
+            }
         }
 
         if (!has_sep) break;
         dir = next + 1;
     }
 
-    if (vfs_kernel_stat(cmd, &st2) == 0)
-        if (try_exec(cmd, arg, trace)) return 1;
+    if (vfs_kernel_stat(cmd, &st2) == 0) {
+        if (out && outsz > 0) {
+            int k = 0;
+            while (cmd[k] && k < (int)outsz - 1) { out[k] = cmd[k]; k++; }
+            out[k] = '\0';
+        }
+        return 1;
+    }
     return 0;
+}
+
+// Run `cmd` in-place in the current task (task 0). Returns 1 if a program
+// was found and ran to its exit.
+static int exec_from_path(const char *cmd, const char *arg, int trace) {
+    char full_path[PATH_MAX];
+    if (!path_resolve(cmd, full_path, sizeof(full_path)))
+        return 0;
+    return try_exec(full_path, arg, trace);
+}
+
+static int cmd_is_builtin(const char *cmd) {
+    return strcmp(cmd, "format") == 0 || strcmp(cmd, "setpath") == 0 ||
+           strcmp(cmd, "cd") == 0 || strcmp(cmd, "pwd") == 0 ||
+           strcmp(cmd, "strace") == 0 || strcmp(cmd, "export") == 0;
 }
 
 // strace <prog> [args]: run <prog> in-place with this task's syscalls traced,
@@ -486,6 +513,123 @@ static void exec_stage(const char *line) {
     }
 }
 
+// Spawn `line` (a simple "cmd args" line, no operators) as a background task.
+// Prints "bg: pid N" on success and sets $?; returns 1 on success, 0 on
+// failure. Builtins are NOT handled here (caller runs them inline).
+static int bg_spawn(const char *line, unsigned int *out_pid) {
+    while (*line == ' ') line++;
+    if (!*line) return 0;
+
+    const char *arg = line;
+    while (*arg && *arg != ' ') arg++;
+    unsigned int cmd_len = (unsigned int)(arg - line);
+    while (*arg == ' ') arg++;
+
+    char cmd[16];
+    unsigned int cl = cmd_len < 15 ? cmd_len : 15;
+    strncpy(cmd, line, cl);
+    cmd[cl] = '\0';
+
+    char full_path[PATH_MAX];
+    if (!path_resolve(cmd, full_path, sizeof(full_path))) {
+        terminal_print("\nUnknown command: ");
+        terminal_write(line, cmd_len);
+        terminal_print(". Type 'help'");
+        shell_set_status(127);
+        return 0;
+    }
+
+    unsigned int pid;
+    if (task_spawn(full_path, arg, 0, &pid) != 0) {
+        terminal_print("\nbg: spawn failed");
+        shell_set_status(1);
+        return 0;
+    }
+    shell_set_status(0);
+    terminal_print("\nbg: pid ");
+    terminal_print_dec(pid);
+    if (out_pid) *out_pid = pid;
+    return 1;
+}
+
+// Background command with a >/>>/< redirect: spawn the left side and wire the
+// child's stdout/stdin fd to the opened file.
+static void run_bg_redirect(const char *line, int op, const char *op_pos) {
+    unsigned int left_len = (unsigned int)(op_pos - line);
+    while (left_len > 0 && line[left_len - 1] == ' ') left_len--;
+
+    const char *right = op_pos + (op == OP_GTG ? 2 : 1);
+    while (*right == ' ') right++;
+
+    char left_buf[LINE_BUF_SIZE];
+    if (left_len >= LINE_BUF_SIZE) left_len = LINE_BUF_SIZE - 1;
+    for (unsigned int i = 0; i < left_len; i++) left_buf[i] = line[i];
+    left_buf[left_len] = '\0';
+
+    const char *fn_end = skip_token(right);
+    unsigned int fn_len = (unsigned int)(fn_end - right);
+    if (fn_len == 0) {
+        terminal_print("\nredirect: missing file name");
+        return;
+    }
+    char fn[PATH_MAX];
+    if (fn_len >= PATH_MAX) fn_len = PATH_MAX - 1;
+    for (unsigned int i = 0; i < fn_len; i++) fn[i] = right[i];
+    fn[fn_len] = '\0';
+
+    struct vfs_inode *cwd = current_task_cwd();
+    int flags = (op == OP_LT)
+        ? VFS_O_RDONLY
+        : (VFS_O_WRONLY | VFS_O_CREAT | (op == OP_GTG ? VFS_O_APPEND : VFS_O_TRUNC));
+    int fd = vfs_open_fd(cwd, fn, flags);
+    vfs_put(cwd);
+    if (fd < 0) {
+        terminal_print("\nredirect: cannot open ");
+        terminal_print(fn);
+        return;
+    }
+
+    unsigned int pid;
+    if (!bg_spawn(left_buf, &pid)) {
+        vfs_close_fd(fd);   // spawn failed / not found: close, nothing wired
+        return;
+    }
+
+    struct task *c = task_slot(pid);
+    c->fds[fd] = vfs_ofile_ptr(fd);
+    if (op == OP_LT) c->stdin_fd = fd;
+    else             c->stdout_fd = fd;
+}
+
+static void run_bg(const char *line) {
+    while (*line == ' ') line++;
+    if (!*line) return;
+
+    const char *arg = line;
+    while (*arg && *arg != ' ') arg++;
+    char cmd[16];
+    unsigned int cl = ((unsigned int)(arg - line)) < 15 ? (unsigned int)(arg - line) : 15;
+    strncpy(cmd, line, cl);
+    cmd[cl] = '\0';
+
+    if (cmd_is_builtin(cmd)) {
+        run_command_raw(line);   // builtins run inline; & is ignored
+        return;
+    }
+
+    int op;
+    const char *op_pos = find_operator(line, &op);
+    if (op == OP_PIPE) {
+        terminal_print("\nbg: pipes not supported");
+        return;
+    }
+    if (op != OP_NONE) {
+        run_bg_redirect(line, op, op_pos);
+        return;
+    }
+    bg_spawn(line, 0);
+}
+
 void commands_execute(const char *line) {
     while (*line == ' ') line++;
     if (!*line) {
@@ -495,6 +639,23 @@ void commands_execute(const char *line) {
 
     char expanded[LINE_BUF_SIZE];
     shell_expand(line, expanded, sizeof(expanded));
+
+    // Trailing '&' = background. Strip it (and surrounding spaces).
+    unsigned int len = 0;
+    while (expanded[len]) len++;
+    while (len > 0 && expanded[len - 1] == ' ') expanded[--len] = '\0';
+    int bg = 0;
+    if (len > 0 && expanded[len - 1] == '&') {
+        bg = 1;
+        expanded[--len] = '\0';
+        while (len > 0 && expanded[len - 1] == ' ') expanded[--len] = '\0';
+    }
+
+    if (bg) {
+        run_bg(expanded);
+        terminal_set_prompt();
+        return;
+    }
 
     int op;
     if (find_operator(expanded, &op)) {
