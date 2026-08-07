@@ -3,6 +3,7 @@
 #include "terminal.h"
 #include "kmm.h"
 #include "interrupts.h"
+#include "serial.h"
 
 struct trace_name {
     const char *name;
@@ -277,10 +278,12 @@ static void dump_one(struct task *t) {
 }
 
 void trace_session_dump(void) {
+    serial_print("TDMP:start\n");
     for (unsigned int i = 0; i < MAX_TASKS; i++) {
         struct task *t = task_slot(i);
         if (t) dump_one(t);
     }
+    serial_print("TDMP:done\n");
 }
 
 // Live render (procfs path): runs in the reader's syscall context, IF=0, so

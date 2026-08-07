@@ -87,7 +87,7 @@ kernel/progs.c: $(PROG_ELFS) scripts/demo.ico scripts/gen_progs.py $(LINUX_BINS)
 	$(PYTHON) scripts/gen_progs.py $(PROG_ELFS) --data demo.ico=scripts/demo.ico \
 		$(LINUX_EMBED) > $@
 
-compile_commands.json: scripts/gen_compile_commands.py $(wildcard kernel/*.c drivers/*.c arch/i386/*.c boot/*.c programs/*.c)
+compile_commands.json: scripts/gen_compile_commands.py $(wildcard kernel/*.c drivers/*.c arch/i386/*.c boot/*.c programs/musl/*.c)
 	$(PYTHON) scripts/gen_compile_commands.py
 
 # Two-pass link: link once (with the previous kernel/symtab.c), nm it to

@@ -31,9 +31,9 @@ void backtrace(uint32_t *ebp, int max_frames) {
         unsigned int off;
         const char *nm = addr_to_sym(eip, &off);
         if (nm)
-            printf("  [%d] eip=0x%08x  %s+0x%x\n", i, eip, nm, off);
+            printf("  [%d] eip=0x%x  %s+0x%x\n", i, eip, nm, off);
         else
-            printf("  [%d] eip=0x%08x\n", i, eip);
+            printf("  [%d] eip=0x%x\n", i, eip);
         uint32_t *next = (uint32_t *)ebp[0];
         if (next <= ebp)
             break;

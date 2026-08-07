@@ -1,6 +1,7 @@
 #include "user.h"
 #include "gdt.h"
 #include "terminal.h"
+#include "serial.h"
 
 #define USER_STACK_TOP 0x01804000
 
@@ -40,6 +41,9 @@ void user_program_start_linux(void (*entry)(void), unsigned int esp) {
 }
 
 void user_program_exit(void) {
+    serial_print("UPX:saved_esp=0x");
+    serial_print_hex(saved_esp);
+    serial_print("\n");
     program_active = 0;
     user_exit_asm();
 }

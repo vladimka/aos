@@ -6,33 +6,10 @@ import subprocess
 import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ISO = os.path.join(ROOT, "aos.iso")
-MON = "/tmp/aos-netloop.sock"
-SER = "/tmp/aos-netloop.log"
+from qtest import wait_for
+
 PORT = 9400
-
-
-def wait_for(path, seconds=15):
-    end = time.time() + seconds
-    while time.time() < end:
-        if os.path.exists(path):
-            return
-        time.sleep(0.05)
-    raise RuntimeError("timeout waiting for " + path)
-
-
-def wait_for_serial(text, seconds=25):
-    end = time.time() + seconds
-    while time.time() < end:
-        try:
-            with open(SER, "r", errors="replace") as f:
-                if text in f.read():
-                    return True
-        except FileNotFoundError:
-            pass
-        time.sleep(0.2)
-    return False
+SER = "/tmp/aos-netloop.log"
 
 
 def recv_exact(s, n):
@@ -46,27 +23,36 @@ def recv_exact(s, n):
 
 
 def main():
-    for path in (MON, SER):
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
-    qemu = subprocess.Popen([
-        "qemu-system-i386", "-m", "256", "-cdrom", ISO, "-display", "none",
-        "-serial", "file:" + SER, "-monitor", "unix:" + MON + ",server,nowait",
+    try:
+        os.unlink(SER)
+    except FileNotFoundError:
+        pass
+    cmd = [
+        "qemu-system-i386", "-m", "256", "-cdrom", "aos.iso", "-display", "none",
+        "-serial", "file:" + SER,
+        "-monitor", "unix:/tmp/aos-netloop.sock,server,nowait",
         "-netdev", "socket,id=n0,listen=127.0.0.1:%d" % PORT,
         "-device", "virtio-net-pci,disable-modern=on,mac=52:54:00:12:34:56,netdev=n0",
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ]
+    qemu = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        wait_for(MON)
-        if not wait_for_serial("vnet: ready"):
+        wait_for("/tmp/aos-netloop.sock")
+        end = time.time() + 25
+        ready = False
+        while time.time() < end:
+            try:
+                with open(SER, "r", errors="replace") as f:
+                    if "vnet: ready" in f.read():
+                        ready = True
+                        break
+            except FileNotFoundError:
+                pass
+            time.sleep(0.2)
+        if not ready:
             raise AssertionError("virtio-net did not initialize")
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(20)
         s.connect(("127.0.0.1", PORT))
-        # QEMU's stream socket netdev frames every packet with a 4-byte
-        # big-endian length prefix (net_socket_send / net_fill_rstate), so
-        # we must send len+frame and strip the prefix on receive.
         frame = b"\xff" * 6 + b"\x52\x54\x00\x12\x34\x56" + b"\x08\x00" + b"A" * 46
         s.sendall(struct.pack(">I", len(frame)) + frame)
         hdr = recv_exact(s, 4)

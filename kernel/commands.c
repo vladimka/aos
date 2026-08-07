@@ -208,10 +208,21 @@ static int try_exec(const char *full_path, const char *arg, int trace) {
     if (trace) me->trace_on = 1;
     void (*entry)(void) = program_load(full_path, arg);
     if (entry) {
+        extern unsigned int saved_esp;
+        serial_print("LAUNCH:saved_esp=0x");
+        serial_print_hex(saved_esp);
+        serial_print(" top=0x");
+        serial_print_hex(user_kstack_top());
+        serial_print(" margin=0x");
+        serial_print_hex(user_kstack_top() - saved_esp);
+        serial_print("\n");
         if (task_current_abi() == ABI_LINUX)
             user_program_start_linux(entry, task_current_lctx()->stack_sp);
         else
             user_program_start(entry);
+        serial_print("TREX:returned trace=");
+        serial_print_dec((unsigned int)trace);
+        serial_print("\n");
         if (trace) {
             trace_session_dump();
             me->trace_on = 0;

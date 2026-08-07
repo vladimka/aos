@@ -1,5 +1,7 @@
 ## Workflow convention
 
+- **Язык общения и документации — русский.** Ответы пользователю, а также все создаваемые документы и спеки (включая `docs/superpowers/specs/*` и `docs/superpowers/plans/*`) пишутся **только на русском**. Код, сообщения коммитов и комментарии в коде — на английском (как в остальном репозитории). Технические идентификаторы (имена файлов, функций, syscall'ов) остаются без перевода. Правило действует всегда, в том числе при работе по скиллам (brainstorming, writing-plans, executing-plans и т.д.): скиллы задают процесс, но язык вывода определяет это правило.
+
 - **UI/QEMU test suites are run by the human, not the assistant.** Do not launch `make test`, the individual `scripts/*.py` GUI tests, `qemu-system-i386`, or any other headless QEMU harness on the assistant's own initiative — hand the run to the user instead (e.g. "build is ready, run `make test`"). Builds (`make`) and static checks are fine for the assistant. This is because the QEMU GUI tests are timing-sensitive under TCG and their results are evaluated by the human.
 
 ## Terminal (`kernel/terminal.c`)
@@ -36,7 +38,7 @@ No dedicated test, lint, or typecheck commands.
 - No libc; own `string.c` (`strcmp`, `strncpy`, `strlen`)
 - Include paths: `-Ikernel -Idrivers -Iarch/i386 -Iboot`
 - **1 MB ramdisk at `0x400000`** (`kernel/block.h` `RAMDISK_BASE`, above kernel BSS, below the staging buffer) — flat SFS (Simple File System), `SFS_MAX_FILES=64`
-- **33 syscalls via `int 0x80`** (DPL 3 gate, `idt_install_irq_flags(0x80, isr128, 0xEE)`), R/O user-level interface in `programs/libaos.c`
+- **33 syscalls via `int 0x80`** (DPL 3 gate, `idt_install_irq_flags(0x80, isr128, 0xEE)`), R/O user-level interface in `programs/aosabi.h`
 - `printf()` in `kernel/printf.c` writes to **both** VGA and COM1 (used for all kernel banners)
 - **Privilege separation**: paging enabled (`kernel/paging.c`), user programs run in **ring 3** via TSS (`arch/i386/gdt.c`, `kernel/user.c`/`user_tramp.S`), kernel stays in ring 0
 
@@ -75,7 +77,7 @@ No dedicated test, lint, or typecheck commands.
 
 - Segments load to `0x01000000..0x01100000` (`PROG_LOAD_MIN/MAX`); header, entry point, and every PT_LOAD range (vaddr + memsz) are bounds-checked against this window
 - Uses `fs_read_at()` — no longer limited to a 4096-byte file read
-- `programs/%.o` programs expose `void main(void)`; `programs/libaos.o` provides the `_start()` trampoline that calls `main()`, then `SYS_EXIT`
+- Programs expose `void main(void)`; musl's own crt provides `_start()` that calls `main()`, then `SYS_EXIT`
 
 ### Argument passing to `kernel_main`
 
@@ -100,10 +102,10 @@ All commands (`help`, `uptime`, `clear`, `echo`, `tick`, `info`, `reboot`, `pani
 
 - Compiled for load address `0x01000000` (`programs/programs.ld`)
 - Statically linked (`-static -nostdlib -n`), **no INTERP segment**
-- Linked against `programs/libaos.o` (syscall wrappers + `_start` trampoline)
+- Compiled from `programs/musl/*.c` via static musl i386 toolchain; include path `-Iprograms` for `aosabi.h`
 - Embedded into kernel at build time by `scripts/gen_progs.py` → `kernel/progs.c`
 - Stored in ramdisk as `bin/<name>`; loaded by `elf_load()` which parses PT_LOAD segments
-- Run in **ring 3**; `programs/test.c` exercises `malloc`/`free`, blocking `read_key()`, and syscall pointer validation
+- Run in **ring 3**; `bin/test` (aos_test framework) exercises `malloc/free`, blocking `read_key()`, and syscall pointer validation
 
 ### Program search order (shell, `kernel/commands.c`)
 
@@ -148,7 +150,7 @@ PIT runs at **1000 Hz** (divisor 1193). `timer_handler` increments `tick`, drain
 
 - `kernel_main` prints a 5-line ASCII **AOS** banner (rows of `AAA/OOO/SSS`) to VGA+COM1 right after `vga_init()` — the first thing in the serial log.
 - **`sys/config.cfg`** (SFS, `kernel/config.c`): parsed by `config_load()` after `fs_init()`. If absent, it is created with defaults and the serial banner prints `config: created sys/config.cfg`; on subsequent boots `config: loaded sys/config.cfg`. Keys: `timezone=<min>` (applied via `rtc_set_tz`, see RTC), `wallpaper_top=<0xRRGGBB>`/`wallpaper_bot=<0xRRGGBB>`, and the ten `theme_*` keys (see Theme subsection) — the WM and GUI apps re-read the file via the userland `theme_load()`, the kernel's ring-0 parser ignores the theme keys (they are for userland). The timezone banner uses a manual `+`/`-` sign (kernel `printf` has no `%+d` flag).
-- **Gradient wallpaper** (`programs/wm.c`): `draw_desktop_gradient()` fills each damage rect with a per-color fixed-point ramp seeded at the rect's absolute `y0` (no per-pixel division); top = `wp_top` (default `0x1A2030`, from `theme_load()`), bottom = `wp_bot` (`0x0E1620`). `refresh_files()` skips `sys/` so the config file never shows on the desktop.
+- **Gradient wallpaper** (`programs/musl/wm.c`): `draw_desktop_gradient()` fills each damage rect with a per-color fixed-point ramp seeded at the rect's absolute `y0` (no per-pixel division); top = `wp_top` (default `0x1A2030`, from `theme_load()`), bottom = `wp_bot` (`0x0E1620`). `refresh_files()` skips `sys/` so the config file never shows on the desktop.
 
 ### Interrupt acknowledgement (`kernel/interrupts.c`)
 
@@ -173,10 +175,10 @@ PIT runs at **1000 Hz** (divisor 1193). `timer_handler` increments `tick`, drain
 - **Dock & z-order**: `wm.c` draws a centered bottom dock bar (`DOCK_H=52`) with launcher icons (`bin/term`, `bin/clock`) plus one icon per running window. Launcher click spawns the app (logs `wm: dock spawn failed` on failure) or `raise_pid()`s it if already running; a running window's dock icon raises it too. A 4x4 indicator dot (`col_accent`) under the icon marks the focused window. Z-order lives in `zorder[]`/`nz`; `raise_pid` forces a redraw on any z-order change, not just a focus change.
 - **Test script**: `python3 scripts/guitester.py` — dumps PPM screenshots to `/tmp/aos-G*.ppm`, checks pixel colors. `QEMU` monitor socket at `/tmp/aos-gui.sock`. Serial log at `/tmp/aos-gui.log`. The guest cursor re-centers at (511,383) on boot but `/tmp/aos-mouse.state` keeps the last tracked position, so after **each** QEMU restart run `python3 scripts/guitester.py resetmouse 511 383` (or delete the state file) before the first click.
 - **Screen layout**: term window at ~(20,20) 640×416px; clock at ~(44,48) 260×100px; desktop gradient top = 0x1A2030 = (26,32,48) (bottom 0x0E1620, see config). Term content bg = 0x101010 = (16,16,16). Clock title unfocused = 0x263C5E (`theme_title`), focused = 0x4E86C7 (`theme_title_focus`).
-- **Desktop file icons**: `wm.c` lists the SFS ramdisk and shows every non-`bin/`/`lin/` entry as a 32×32 icon on a grid (`GRID_X0 16`, `GRID_Y0 24`, cell stride 52, row height 56; label under the icon). Kinds: `K_FOLDER` (name ends `/`), `K_TEXT` (`*.txt`), `K_ICO` (decoded via `programs/ico.c` — pure-C ICO/BMP decoder, up to 32×32, palette + 32bpp + AND mask; on decode failure falls back to `icon_image` art), `K_OTHER`. Left-click on a text/other file spawns `bin/notepad <name>`; `.ico` and folders are no-ops. `bin/` and `lin/` prefixes are hidden (system payload lives in the dock / shell PATH, not the desktop).
+- **Desktop file icons**: `wm.c` lists the SFS ramdisk and shows every non-`bin/`/`lin/` entry as a 32×32 icon on a grid (`GRID_X0 16`, `GRID_Y0 24`, cell stride 52, row height 56; label under the icon). Kinds: `K_FOLDER` (name ends `/`), `K_TEXT` (`*.txt`), `K_ICO` (decoded via `programs/musl/ico.c` — pure-C ICO/BMP decoder, up to 32×32, palette + 32bpp + AND mask; on decode failure falls back to `icon_image` art), `K_OTHER`. Left-click on a text/other file spawns `bin/notepad <name>`; `.ico` and folders are no-ops. `bin/` and `lin/` prefixes are hidden (system payload lives in the dock / shell PATH, not the desktop).
 - **Context menu + create dialog**: right-click on desktop (not a window/dock) opens a menu (`MENU_W 176`) with «Новый файл» / «Новая папка». Left-clicking an item opens a modal name-input dialog (`dlg_open/dlg_mode/dlg_name[40]/dlg_len`); while open the WM consumes `MSG_KEY` itself (printable ASCII, `\b`, Enter=confirm, Esc=cancel) instead of forwarding. Confirm writes an empty SFS file; folders are names ending in `/`. Then `files_dirty=1`.
 - **WM refresh/redraw pitfall**: the main loop runs `refresh_files()` (if `files_dirty` or every 128 iterations) **before** the message loop. So a file created by a message (dialog Enter) lists only on the *next* iteration, by which time the same-iteration `redraw=1` has already been consumed → the new icon never renders. Fix: `refresh_files()` sets `redraw=1` when `nfiles` changed (`if (nfiles != old_n) redraw = 1`).
-- **Notepad**: `programs/notepad.c` GUI text editor (window 640×416 = 80×26 chars via `MSG_CREATE`), model `lines[200][80]` codepoints, cursor + `scroll`. Ctrl+S saves (kernel emits Ctrl+letter as `cp & 0x1F`, so Ctrl+S = `0x13`), `\r`/`\b`/GUI_KEY_* (UP `0x0101`..END `0x0106`, DEL `0x0107`) edit. Status bar shows `Файл: <name>` and a brief `сохранено`/`ошибка` (~200 ticks) after a save. Default filename `untitled.txt`.
+- **Notepad**: `programs/musl/notepad.c` GUI text editor (window 640×416 = 80×26 chars via `MSG_CREATE`), model `lines[200][80]` codepoints, cursor + `scroll`. Ctrl+S saves (kernel emits Ctrl+letter as `cp & 0x1F`, so Ctrl+S = `0x13`), `\r`/`\b`/GUI_KEY_* (UP `0x0101`..END `0x0106`, DEL `0x0107`) edit. Status bar shows `Файл: <name>` and a brief `сохранено`/`ошибка` (~200 ticks) after a save. Default filename `untitled.txt`.
 - **Embedded data**: `scripts/gen_ico.py` generates `scripts/demo.ico` (32×32 32bpp green disc, correct AND mask); `gen_progs.py --data demo.ico=scripts/demo.ico` embeds it into the ramdisk as `embedded_data[]`; `load_embedded_data()` writes it to the SFS on first boot so a demo icon shows on the desktop. `kernel/progs.c` is generated, never edit by hand.
 - **notepadtest.py**: `python3 scripts/notepadtest.py` is the E2E regression (boots the ISO, asserts demo.ico pixels, right-click → «Новый файл» → types `note.txt`, opens it in notepad, types + Ctrl+S, then `cat note.txt` in a term). Own QEMU socket `/tmp/aos-notepad.sock`; uses `notepadtest`-prefixed PPM names and its own mouse-state file so it does not collide with `guitester.py`.
 - **No panic ≠ success**: the WM may continue running after corruption but render black/garbage. Always check pixel values on screen.
@@ -186,7 +188,7 @@ PIT runs at **1000 Hz** (divisor 1193). `timer_handler` increments `tick`, drain
 - **Shared loader**: `programs/musl/theme.c` + `theme.h` (musl build — the WM/apps link it, NOT `libaos`; see the Makefile `build/prog/wm.elf`/`term.elf`/`clock.elf`/`notepad.elf` rules). `theme_load()` reads `sys/config.cfg` once (first call wins, later calls no-op) and fills a static table; `theme_color(key, fallback)` returns the parsed value or `fallback`. Unknown/duplicate keys are ignored (first occurrence wins); invalid hex leaves the default. `wm.c`'s old `load_wallpaper_config()` is replaced by `theme_load()` + `theme_color("wallpaper_top"/"wallpaper_bot", ...)`.
 - **Keys + defaults** (written into the generated `sys/config.cfg` by `kernel/config.c`, `theme_load`'s compile-time defaults must match): `theme_title` 0x263C5E, `theme_title_focus` 0x4E86C7, `theme_border` 0x12161F, `theme_border_focus` 0x6B9BD2, `theme_dock_bg` 0x232C40, `theme_accent` 0x5B93D8, `theme_menu_bg` 0x20283A, `theme_menu_fg` 0xFFFFFF, `theme_text_fg` 0xD8D8D8, `theme_text_bg` 0x101010.
 - **Corner radii** (stair-stepped, no AA; corner pixels left untouched so the background shows; hit-testing stays bounding-box): windows r=4 top corners only (`fb_round_fill_top`), dock r=6 top, menu/dialog r=3 all corners (`fb_round_fill`). Title bar gets a lighter top/mid strip via `lighten()`, windows a per-focus frame (`theme_border`/`theme_border_focus`) and title (`theme_title`/`theme_title_focus`), dock an accent top line (`theme_accent`) + active dot, menu/dialog an accent frame + accent hover highlight on the item under the cursor.
-- **Two-color icons**: `draw_icon2(x, y, art, fg, accent)` — `'X'` pixels draw `col_icon_fg` (white), `'O'` draw `col_accent`, anything else transparent; clip-aware via `fb_put`. Used by dock launchers, the running-window loop, and desktop icons. Desktop `.ico` files still render decoded pixels (`draw_ico_file`, `programs/ico.c`); only the `icon_image` fallback routes through `draw_icon2`.
+- **Two-color icons**: `draw_icon2(x, y, art, fg, accent)` — `'X'` pixels draw `col_icon_fg` (white), `'O'` draw `col_accent`, anything else transparent; clip-aware via `fb_put`. Used by dock launchers, the running-window loop, and desktop icons. Desktop `.ico` files still render decoded pixels (`draw_ico_file`, `programs/musl/ico.c`); only the `icon_image` fallback routes through `draw_icon2`.
 - **Apps**: `term.c`/`notepad.c` use `theme_text_fg`/`theme_text_bg`; notepad's status bar uses `theme_dock_bg`/`theme_text_fg`; `clock.c` draws the time in `theme_accent` with the date/sub dimmed from it.
 - **`configtest.py` Boot B** seeds a disk `sys/config.cfg` with `timezone=+180`, `wallpaper_top=0x102030`, `theme_accent=0xFF00FF` and asserts the desktop pixel at (700,0) plus the dock accent line at (480,708), proving config edits apply without a rebuild.
 

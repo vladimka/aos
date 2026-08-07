@@ -66,6 +66,11 @@ static void drain_zombies(void) {
     while (nzombies > 0) {
         struct task *z = zombies[--nzombies];
         if (z->kstack) {
+            serial_print("DZ:pid=");
+            serial_print_dec(z->pid);
+            serial_print(" kstack=0x");
+            serial_print_hex((unsigned int)z->kstack);
+            serial_print("\n");
             kfree(z->kstack);
             z->kstack = 0;
             z->kstack_top = 0;
@@ -205,6 +210,17 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
     if (!next) next = current_task;
 
     if (next != current_task) {
+        if (current_task->pid == 2 || next->pid == 2) {
+            serial_print("SW:");
+            serial_print_dec(current_task->pid);
+            serial_print("->");
+            serial_print_dec(next->pid);
+            serial_print(" exited=");
+            serial_print_dec(exited);
+            serial_print(" curkesp=0x");
+            serial_print_hex(current_task->kernel_esp);
+            serial_print("\n");
+        }
         next->state = TASK_RUNNING;
         current_task = next;
         tss_set_esp0(next->kstack_top);
@@ -244,6 +260,13 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         }
         if (nzombies < MAX_TASKS)
             zombies[nzombies++] = dead;
+        serial_print("SWX:dead=");
+        serial_print_dec(dead->pid);
+        serial_print(" next=");
+        serial_print_dec(next->pid);
+        serial_print(" nextkesp=0x");
+        serial_print_hex(next->kernel_esp);
+        serial_print("\n");
     }
 
     return next->kernel_esp;
@@ -443,6 +466,11 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
 }
 
 void task_exit_current(unsigned int code) {
+    serial_print("TEC:pid=");
+    serial_print_dec(task_current_pid());
+    serial_print(" code=");
+    serial_print_dec(code);
+    serial_print("\n");
     current_exit_code = code;
     current_exited = 1;
 }

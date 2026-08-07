@@ -2,66 +2,22 @@
 import os
 import subprocess
 import sys
-import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ISO = os.path.join(ROOT, "aos.iso")
-MON = "/tmp/aos-virtiotest.sock"
-SER = "/tmp/aos-virtiotest.log"
+from qtest import QTest
+
 IMG = "/tmp/aos-virtiotest.img"
 
 
-def wait_for(path, seconds=15):
-    end = time.time() + seconds
-    while time.time() < end:
-        if os.path.exists(path):
-            return
-        time.sleep(0.05)
-    raise RuntimeError("timeout waiting for " + path)
-
-
-def wait_for_serial(text, seconds=25):
-    end = time.time() + seconds
-    while time.time() < end:
-        try:
-            with open(SER, "r", errors="replace") as f:
-                if text in f.read():
-                    return True
-        except FileNotFoundError:
-            pass
-        time.sleep(0.2)
-    return False
-
-
-def boot(expect_new_disk):
-    for path in (MON, SER):
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
-    qemu = subprocess.Popen([
-        "qemu-system-i386", "-m", "256", "-cdrom", ISO, "-display", "none",
-        "-serial", "file:" + SER, "-monitor", "unix:" + MON + ",server,nowait",
-        "-drive", "file=" + IMG + ",format=raw,if=none,id=d0",
-        "-device", "virtio-blk-pci,disable-modern=on,drive=d0",
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        wait_for(MON)
-        tag = "SFS2 formatting new disk." if expect_new_disk else "SFS2 mounted (disk)."
-        if not wait_for_serial(tag):
-            raise AssertionError("expected serial %r" % tag)
-        if not wait_for_serial("Terminal ready."):
-            raise AssertionError("kernel did not finish booting "
-                                 "(format flush incomplete)")
-        log = open(SER, "r", errors="replace").read()
-        if "KERNEL PANIC" in log:
-            raise AssertionError("kernel panic during virtio boot")
-    finally:
-        qemu.terminate()
-        try:
-            qemu.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            qemu.kill()
+def boot_and_check(q, expect_new_disk):
+    q.boot_and_ready()
+    tag = "SFS2 formatting new disk." if expect_new_disk else "SFS2 mounted (disk)."
+    if not q.serial_wait(tag):
+        raise AssertionError("expected serial %r" % tag)
+    if not q.serial_wait("Terminal ready."):
+        raise AssertionError("kernel did not finish booting (format flush incomplete)")
+    log = q.serial_read()
+    if "KERNEL PANIC" in log:
+        raise AssertionError("kernel panic during virtio boot")
 
 
 def main():
@@ -70,13 +26,21 @@ def main():
     except FileNotFoundError:
         pass
     subprocess.run(["truncate", "-s", "4M", IMG], check=True)
-    boot(expect_new_disk=True)
+    extra = [
+        "-drive", "file=" + IMG + ",format=raw,if=none,id=d0",
+        "-device", "virtio-blk-pci,disable-modern=on,drive=d0",
+    ]
+    # Boot A: new disk
+    with QTest("virtiotest", extra_args=extra) as q:
+        boot_and_check(q, expect_new_disk=True)
     data = open(IMG, "rb").read()
     if data[:4] != b"SFS2":
         raise AssertionError("disk image does not start with SFS2 after boot A")
     if b"help" not in data:
         raise AssertionError("embedded program name not flushed to disk")
-    boot(expect_new_disk=False)
+    # Boot B: existing disk
+    with QTest("virtiotest", extra_args=extra, boot_wait=6) as q:
+        boot_and_check(q, expect_new_disk=False)
     print("PASS: SFS persists on the virtio disk across reboots")
     return 0
 

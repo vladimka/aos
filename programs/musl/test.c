@@ -3,15 +3,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "aosabi.h"
+#include "aos_test.h"
 
 int main(void) {
-    printf("Test\n");
+    TEST_SUITE("test");
 
     char *buf = malloc(64);
-    if (!buf) {
-        printf("malloc failed\n");
-        return 1;
-    }
+    TEST_ASSERT(buf != NULL);
+    if (!buf) TEST_PASS();
     buf[0] = 'H';
     buf[1] = 'i';
     buf[2] = 0;
@@ -27,16 +26,12 @@ int main(void) {
     printf("key: %x\n", (unsigned int)k);
 
     int fd = open("/bin/help", O_RDONLY);
-    if (fd < 0) {
-        printf("BAD: cannot open file for bad-ptr test\n");
-        return 1;
+    TEST_ASSERT_GE(fd, 0);
+    if (fd >= 0) {
+        int r = read(fd, (void *)0x100000, 16);
+        TEST_ASSERT(r < 0);
+        close(fd);
     }
-    int r = read(fd, (void *)0x100000, 16);
-    if (r < 0)
-        printf("bad-ptr rejected\n");
-    else {
-        printf("BAD: bad-ptr accepted (%d)\n", r);
-    }
-    close(fd);
-    return 0;
+
+    TEST_PASS();
 }

@@ -15,6 +15,7 @@
 #include "kmm.h"
 #include "rtc.h"
 #include "trace.h"
+#include "serial.h"
 
 extern volatile unsigned int tick;
 
@@ -401,6 +402,9 @@ void syscall_handler(struct registers *r) {
         break;
     case SYS_EXIT:
         if (task_current_pid() == 0) {
+            serial_print("SEXIT:pid0 code=");
+            serial_print_dec((unsigned int)r->ebx);
+            serial_print("\n");
             shell_set_status((int)r->ebx);
             user_program_exit();
         } else {

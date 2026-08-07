@@ -13,6 +13,7 @@
 #include "ports.h"
 #include "vrng.h"
 #include "trace.h"
+#include "serial.h"
 
 static struct linux_ctx *cur_lctx(void) {
     return task_current_lctx();
@@ -48,6 +49,11 @@ static int lin_fd_valid(int fd) {
 }
 
 static void linux_exit(unsigned int code) {
+    serial_print("LX:pid=");
+    serial_print_dec(task_current_pid());
+    serial_print(" code=");
+    serial_print_dec(code);
+    serial_print("\n");
     if (task_current_pid() == 0) {
         shell_set_status((int)code);
         task_set_abi_current(ABI_AOS);

@@ -94,10 +94,7 @@ def main():
         # 5. Close notepad, open term, cat the file back.
         q.mouse_click(650, 30)                       # close button of notepad
         time.sleep(0.5)
-        q.mouse_click(472, 724)                      # dock: term launcher
-        time.sleep(1)
-        q.mouse_click(300, 30)                       # term title bar -> focus
-        time.sleep(0.3)
+        q.dock_spawn_term()
         q.screenshot("/tmp/notepad-6-term.ppm")
         before = count_bright("/tmp/notepad-6-term.ppm", 21, 39, 660, 70)
         q.type_text("cat note.txt\n")

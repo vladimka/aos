@@ -11,7 +11,7 @@ CFLAGS = [
 ]
 
 sources = []
-for pattern in ("kernel/*.c", "drivers/*.c", "arch/i386/*.c", "boot/*.c", "programs/*.c"):
+for pattern in ("kernel/*.c", "drivers/*.c", "arch/i386/*.c", "boot/*.c", "programs/musl/*.c"):
     sources += sorted(glob.glob(os.path.join(ROOT, pattern)))
 
 entries = []
