@@ -238,7 +238,8 @@ input.
 - `scripts/shelltest.py` — one burst, asserts on the serial log:
   - `export FOO=bar` then `echo $FOO` → `bar`;
   - `lin/hello` then `echo $?` → `0`;
-  - `cat /nonexistent` then `echo $?` → `1`;
+  - `exitto` then `echo $?` → `7` (`exitto` is `_exit(7)`, so the status is
+    deterministic; `cat /nonexistent` returns 0 and cannot be used here);
   - `uptime &` then `echo $?` → `0` (spawn status), plus a `bg: pid`
     line and the spawned task's `uptime` output appearing;
   - `echo hi > /bg.txt &` then `cat /bg.txt` then `cat /bg.txt` again
