@@ -19,7 +19,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               kernel/config.o kernel/user.o \
               kernel/user_tramp.o kernel/printf.o kernel/progs.o \
                kernel/task.o kernel/linux_syscall.o kernel/block.o kernel/sfs2.o \
-               kernel/klog.o kernel/trace.o
+               kernel/klog.o kernel/trace.o kernel/symtab.o
 
 PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest exitto random fstest procinfo bgspawn
 
@@ -90,7 +90,13 @@ kernel/progs.c: $(PROG_ELFS) scripts/demo.ico scripts/gen_progs.py $(LINUX_BINS)
 compile_commands.json: scripts/gen_compile_commands.py $(wildcard kernel/*.c drivers/*.c arch/i386/*.c boot/*.c programs/*.c)
 	$(PYTHON) scripts/gen_compile_commands.py
 
-aos.elf: $(KERNEL_OBJS) linker.ld
+# Two-pass link: link once (with the previous kernel/symtab.c), nm it to
+# regenerate kernel/symtab.c, recompile kernel/symtab.o, relink. symtab.o is
+# the LAST object, so its own .rodata never shifts other symbols' addresses.
+aos.elf: $(KERNEL_OBJS) linker.ld scripts/gen_symtab.py
+	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
+	$(PYTHON) scripts/gen_symtab.py $@ kernel/symtab.c
+	$(CC) $(CFLAGS) -c -o kernel/symtab.o kernel/symtab.c
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
 
 aos.iso: aos.elf
