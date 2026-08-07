@@ -121,7 +121,7 @@ run: aos.iso disk.img
 # linhello/lincat need the musl Linux payload, so they are included only when
 # the musl toolchain is installed.
 LINUX_TESTS = $(if $(LINUX_BINS),linhello lincat lindirtest)
-TESTS = ipctest manytest notepadtest sleeptest rngtest blktest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive $(LINUX_TESTS)
+TESTS = ipctest manytest notepadtest sleeptest rngtest blktest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest $(LINUX_TESTS)
 
 # Fast subset for CI: quick boots, no extra virtio devices. The musl Linux
 # tests are included only when the musl toolchain is installed.
