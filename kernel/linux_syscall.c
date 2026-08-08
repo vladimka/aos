@@ -121,7 +121,8 @@ void linux_syscall_handler(struct registers *r) {
             route_text(buf, count);
             r->eax = count;
         } else {
-            r->eax = -9;                                      // -EBADF
+            if (!lin_fd_valid(fd)) { r->eax = -9; break; }    // -EBADF
+            r->eax = vfs_write_fd(fd, buf, count);
         }
         break;
     }
