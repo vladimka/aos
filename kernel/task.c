@@ -115,6 +115,12 @@ static void task_free_addrspace(struct task *t) {
     t->cr3 = 0;
 }
 
+// Task 0's resume frame is (re)installed by user_exit_asm after an in-place
+// guest exits, so the scheduler never resumes the abandoned sys_stack frame.
+void task_set_kernel_esp0(unsigned int esp) {
+    tasks[0].kernel_esp = esp;
+}
+
 void task_init(void) {
     memset(tasks, 0, sizeof(tasks));
     for (int i = 0; i < MAX_TASKS; i++) {
@@ -209,18 +215,30 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
     // would overwrite kernel_esp of an outer scheduler frame on the stack.
     if (!next) next = current_task;
 
-    if (next != current_task) {
-        if (current_task->pid == 2 || next->pid == 2) {
-            serial_print("SW:");
-            serial_print_dec(current_task->pid);
-            serial_print("->");
-            serial_print_dec(next->pid);
-            serial_print(" exited=");
-            serial_print_dec(exited);
-            serial_print(" curkesp=0x");
-            serial_print_hex(current_task->kernel_esp);
-            serial_print("\n");
+    // Stale-resume guard for task 0 (the in-place program host). Task 0 is
+    // special: while an in-place user program runs (program_active) its only
+    // legitimate ring-0 context is the shared sys_stack (TSS esp0) — a
+    // main/boot-stack kernel_esp then is the abandoned serial-command chain,
+    // and resuming it would re-enter the shell command processing. After the
+    // program exits via user_program_exit (which bypasses the scheduler) the
+    // reverse holds: a sys_stack kernel_esp is the dead program's ring-3
+    // syscall frame. Iret'ing into either faults/panics, so only resume task 0
+    // from a frame consistent with its current mode. While the current task is
+    // alive we simply stay on it (it resumes into its own valid frame); when
+    // it is exiting there is no safe target, so fall through and let the stale
+    // iret fault deliberately — the message above pins the bug.
+    if (next->pid == 0) {
+        unsigned int ktop = user_kstack_top();
+        int on_sys = next->kernel_esp >= ktop - 8192 &&
+                     next->kernel_esp < ktop;
+        int stale = user_program_active() ? !on_sys : on_sys;
+        if (stale) {
+            if (!exited)
+                next = current_task;
         }
+    }
+
+    if (next != current_task) {
         next->state = TASK_RUNNING;
         current_task = next;
         tss_set_esp0(next->kstack_top);
@@ -260,13 +278,6 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         }
         if (nzombies < MAX_TASKS)
             zombies[nzombies++] = dead;
-        serial_print("SWX:dead=");
-        serial_print_dec(dead->pid);
-        serial_print(" next=");
-        serial_print_dec(next->pid);
-        serial_print(" nextkesp=0x");
-        serial_print_hex(next->kernel_esp);
-        serial_print("\n");
     }
 
     return next->kernel_esp;
@@ -477,6 +488,21 @@ void task_exit_current(unsigned int code) {
 
 unsigned int task_current_pid(void) {
     return current_task->pid;
+}
+
+unsigned int task_kernel_esp(unsigned int pid) {
+    if (pid >= MAX_TASKS) return 0;
+    return tasks[pid].kernel_esp;
+}
+
+unsigned int task_kstack_top(unsigned int pid) {
+    if (pid >= MAX_TASKS) return 0;
+    return tasks[pid].kstack_top;
+}
+
+unsigned int task_state(unsigned int pid) {
+    if (pid >= MAX_TASKS) return 0xFFFFFFFF;
+    return tasks[pid].state;
 }
 
 unsigned int task_current_sink(void) {

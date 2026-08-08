@@ -21,7 +21,10 @@ static int e0_prefix = 0;
 #define PROMPT_LEN 5
 
 // ---- Input queue (for user programs) ----
-#define KEY_QUEUE_SIZE 64
+// Large enough to buffer a burst of serial shell lines while an in-place
+// program runs (serial bytes are diverted here, see terminal_serial_byte);
+// the idle loop drains leftovers back into the line editor.
+#define KEY_QUEUE_SIZE 256
 static int key_queue[KEY_QUEUE_SIZE];
 static unsigned int key_queue_head = 0;
 static unsigned int key_queue_tail = 0;
@@ -497,10 +500,52 @@ void terminal_set_prompt(void) {
     terminal_print(PROMPT);
 }
 
+// Completed command lines are executed by the idle task (pid 0), never inside
+// the IRQ that delivered the Enter key. process_line runs in the context of
+// whatever task was interrupted (usually the WM); an in-place program launched
+// from there would run as a "guest" of that task and its exit_group would kill
+// the host instead of unwinding back to the shell. The idle loop drains this
+// FIFO, so commands always launch in-place on task 0. The FIFO (instead of a
+// single slot) lets a burst of serial lines survive until the idle loop gets
+// to them; the leftover key_queue drain below recovers lines that arrived
+// while an in-place program was running (serial bytes are diverted to the key
+// queue during a program, see terminal_serial_byte).
+#define PENDING_MAX 16
+static char pending_queue[PENDING_MAX][LINE_BUF_SIZE];
+static unsigned int pending_head = 0;
+static unsigned int pending_tail = 0;
+static unsigned int pending_count = 0;
+
+int terminal_pending_cmd(void) {
+    return pending_count > 0;
+}
+
+void terminal_run_pending(void) {
+    if (pending_count == 0) return;
+    unsigned int head = pending_head;
+    pending_head = (pending_head + 1) % PENDING_MAX;
+    pending_count--;
+    commands_execute(pending_queue[head]);
+    // Recover serial bytes that were buffered in the key queue while the
+    // in-place program just executed: feed them through the line editor so a
+    // burst typed/sent during the program becomes shell commands, not dead
+    // input. Keyboard codepoints end up here too when a GUI-less program was
+    // running and left keys unread; feeding them to the console is the same
+    // "no consumer, goes to the shell" policy.
+    while (key_queue_head != key_queue_tail)
+        terminal_serial_byte((unsigned char)terminal_read_key());
+}
+
 static void process_line(void) {
     line_buf[line_pos] = '\0';
     hist_push();
-    commands_execute(line_buf);
+    if (pending_count < PENDING_MAX) {
+        for (unsigned int i = 0; i <= line_pos && i < LINE_BUF_SIZE - 1; i++)
+            pending_queue[pending_tail][i] = line_buf[i];
+        pending_queue[pending_tail][LINE_BUF_SIZE - 1] = '\0';
+        pending_tail = (pending_tail + 1) % PENDING_MAX;
+        pending_count++;
+    }
     line_pos = 0;
     cursor_pos = 0;
     hist_cur = -1;

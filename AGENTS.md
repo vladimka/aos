@@ -2,7 +2,9 @@
 
 - **Язык общения и документации — русский.** Ответы пользователю, а также все создаваемые документы и спеки (включая `docs/superpowers/specs/*` и `docs/superpowers/plans/*`) пишутся **только на русском**. Код, сообщения коммитов и комментарии в коде — на английском (как в остальном репозитории). Технические идентификаторы (имена файлов, функций, syscall'ов) остаются без перевода. Правило действует всегда, в том числе при работе по скиллам (brainstorming, writing-plans, executing-plans и т.д.): скиллы задают процесс, но язык вывода определяет это правило.
 
-- **UI/QEMU test suites are run by the human, not the assistant.** Do not launch `make test`, the individual `scripts/*.py` GUI tests, `qemu-system-i386`, or any other headless QEMU harness on the assistant's own initiative — hand the run to the user instead (e.g. "build is ready, run `make test`"). Builds (`make`) and static checks are fine for the assistant. This is because the QEMU GUI tests are timing-sensitive under TCG and their results are evaluated by the human.
+- **UI/QEMU test suites may be run by the assistant.** `make test`, the individual `scripts/*.py` GUI tests, and `qemu-system-i386` launches are allowed. Remember: QEMU GUI tests are timing-sensitive under TCG and their results are evaluated by the human, so keep runs in `test`/`test-fast`-style harnesses unless debugging.
+
+- **Debug launch**: `make debug` (or `scripts/qemu-debug.sh`) boots `aos.iso` headless with VNC (:5907) + QMP + serial Unix sockets. Connect with the qemu-vnc MCP tools via `vm_connect(vnc_host=127.0.0.1, vnc_port=5907, qmp_socket=/tmp/aos-debug.qmp, serial_socket=/tmp/aos-debug.serial)`.
 
 ## Terminal (`kernel/terminal.c`)
 
@@ -13,7 +15,7 @@
 - **Keyboard layouts**: US QWERTY and Russian ЙЦУКЕН; Left Ctrl + Left Shift held simultaneously toggles `ru_layout` flag; scancode mapped to Unicode codepoint (U+0400–U+04FF for Cyrillic, shared ASCII punctuation)
 - **UTF-8 output**: `insert_codepoint()` encodes codepoint as 1–3 byte UTF-8 sequence into `line_buf`; `line_redraw_from()` re-renders from a given byte offset
 - **Caps Lock** (`scancode 0x3A`): toggles `caps_lock` flag, affects only US layout letters
-- **Serial console input**: `timer_handler` (`kernel/kernel.c`) drains the COM1 FIFO (`serial_available`/`serial_read`) into `terminal_serial_byte()`. While a user program is running, serial bytes are pushed to the key queue (`key_queue_push`) instead of the line buffer
+- **Serial console input**: `timer_handler` (`kernel/kernel.c`) drains the COM1 FIFO (`serial_available`/`serial_read`) into `terminal_serial_byte()`. The serial console **always feeds the shell line editor** (system console) — it is NOT rerouted to the GUI even after the WM registers as event consumer; GUI apps receive keyboard input from the PS/2 keyboard via `keyboard_handler` → `route_gui_key`. While a user program is running, serial bytes are pushed to the key queue (`key_queue_push`) instead of the line buffer
 - **Key queue**: circular `key_queue[64]` for user programs. When `user_program_active()`, printable keys (and serial bytes) push to the queue; `terminal_read_key()` pops (returns -1 when empty). `SYS_READ_KEY` is **non-blocking**; `read_key()` blocks in userland by spinning + `yield()`
 
 # AOS — minimal x86 kernel

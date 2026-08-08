@@ -10,7 +10,7 @@ def main():
         q.boot_and_ready(socket=s)
 
         s.sendall(b"strace linrun\n")
-        out = q.serial_drain(s, timeout=45, needle=b"== pid 2 ==")
+        out = q.serial_drain(s, timeout=45, needle=b"TDMP:done")
         tail = out[-1200:]
         try:
             if b"KERNEL PANIC" in out:

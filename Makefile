@@ -116,6 +116,12 @@ run: aos.iso disk.img
 	  -netdev socket,id=n0,listen=127.0.0.1:9400 \
 	  -device virtio-net-pci,disable-modern=on,mac=52:54:00:12:34:56,netdev=n0
 
+# Headless debug launch: VNC + QMP + serial Unix sockets for the qemu-vnc MCP
+# tools (vm_connect vnc_port=5907, qmp_socket=/tmp/aos-debug.qmp,
+# serial_socket=/tmp/aos-debug.serial).
+debug: aos.iso
+	scripts/qemu-debug.sh
+
 # Headless regression suite: each script boots aos.iso under QEMU, drives the
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
 # linhello/lincat need the musl Linux payload, so they are included only when

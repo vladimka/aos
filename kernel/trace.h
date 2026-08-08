@@ -9,7 +9,11 @@
 struct registers;
 struct task;
 
-#define TRACE_MAX 512
+// Ring must outlive at least one full second of a spinning live program
+// (~3000 syscalls/s for a recv/get_tick/sched_yield loop), so the once-per-
+// second AOS_EXT fill/text/send of bin/clock survive until /proc/<pid>/trace
+// is read and the session dump runs.
+#define TRACE_MAX 4096
 
 struct trace_rec {
     unsigned int num;

@@ -11,117 +11,6 @@
 #define PIC1_CMD  0x20
 #define PIC2_CMD  0xA0
 
-// Diagnostic ranges for the strace kernel-panic investigation.
-// linux_syscall_handler's exit case is at +0x274, the task0 exit path at
-// +0x1115 (stable offsets; the function base itself shifts between builds).
-#define LINUX_EXIT_RET_OFF   0x270u     // exit case: mov 0x20(%edi),%esi; call task_current_pid
-#define LINUX_EXIT_PATH_OFF  0x10f0u    // task0 exit path: sub $0xc,%esp .. call user_program_exit
-#define SLAB_LO             0x03000000u
-#define SLAB_HI             0x04000000u
-#define TEXT_LO             0x00100000u
-#define TEXT_HI             0x00115500u  // end of .text (readelf -S)
-
-extern char linux_syscall_handler[];
-
-static void serial_byte(unsigned char b) {
-    static const char *hex = "0123456789ABCDEF";
-    serial_putchar(hex[b >> 4]);
-    serial_putchar(hex[b & 0xF]);
-}
-
-static void serial_dump_range(unsigned int addr, unsigned int len) {
-    for (unsigned int i = 0; i < len; i += 16) {
-        serial_print("  @");
-        serial_print_hex(addr + i);
-        serial_print(": ");
-        for (unsigned int j = 0; j < 16; j++)
-            serial_byte(*(unsigned char *)(addr + i + j));
-        serial_print("\n");
-    }
-}
-
-// Locate dispatch jump tables in .text by the instruction pattern
-// `ff 24 b5 disp32` = jmp *disp32(,%esi,4), then dump the first entries.
-static void dump_dispatch_tables(void) {
-    serial_print("dispatch tables (jmp *disp32(,%esi,4)):\n");
-    for (unsigned int p = TEXT_LO; p + 7 < TEXT_HI; p++) {
-        if (*(unsigned char *)(p + 0) == 0xFF &&
-            *(unsigned char *)(p + 1) == 0x24 &&
-            *(unsigned char *)(p + 2) == 0xB5) {
-            unsigned int tbl = *(unsigned int *)(p + 3);
-            serial_print("  jmp instr @0x");
-            serial_print_hex(p);
-            serial_print(" table=0x");
-            serial_print_hex(tbl);
-            serial_print("\n");
-            serial_dump_range(tbl, 32);
-            serial_print("  table[252]: ");
-            serial_dump_range(tbl + 252 * 4, 8);
-        }
-    }
-}
-
-static void panic_diagnostics(struct registers *r) {
-    serial_print("=== diagnostics ===\n");
-    if (r->eip >= SLAB_LO && r->eip < SLAB_HI) {
-        serial_print("EIP in slab window; page around EIP:\n");
-        unsigned int pg = r->eip & ~0xFFFu;
-        serial_dump_range(pg, 256);
-        if (r->eip >= 0x100000)
-            serial_dump_range(r->eip - 64, 128);
-    }
-    serial_print("linux exit case .text @linux_syscall_handler+0x270:\n");
-    serial_dump_range((unsigned int)linux_syscall_handler + LINUX_EXIT_RET_OFF, 64);
-    serial_print("linux exit path .text @linux_syscall_handler+0x10f0:\n");
-    serial_dump_range((unsigned int)linux_syscall_handler + LINUX_EXIT_PATH_OFF, 80);
-    dump_dispatch_tables();
-    {
-        extern struct task *get_current_task(void);
-        struct task *t = get_current_task();
-        serial_print("current_task ptr=0x");
-        serial_print_hex((unsigned int)t);
-        if (t) {
-            serial_print(" pid=");
-            serial_print_hex(t->pid);
-            serial_print(" state=");
-            serial_print_hex(t->state);
-            serial_print(" abi=");
-            serial_print_hex(t->abi);
-        }
-        serial_print("\n");
-    }
-    {
-        extern struct task *task_slot(unsigned int i);
-        serial_print("task table:\n");
-        for (unsigned int i = 0; i < MAX_TASKS; i++) {
-            struct task *s = task_slot(i);
-            if (!s) break;
-            serial_print("  [");
-            serial_print_hex(i);
-            serial_print("] pid=");
-            serial_print_hex(s->pid);
-            serial_print(" state=");
-            serial_print_hex(s->state);
-            serial_print(" abi=");
-            serial_print_hex(s->abi);
-            serial_print(" kesp=");
-            serial_print_hex(s->kernel_esp);
-            serial_print(" kstack=");
-            serial_print_hex((unsigned int)s->kstack);
-            serial_print(" top=");
-            serial_print_hex(s->kstack_top);
-            serial_print(" cr3=");
-            serial_print_hex(s->cr3);
-            serial_print(" parent=");
-            serial_print_hex(s->parent);
-            serial_print(" sink=");
-            serial_print_hex(s->sink);
-            serial_print("\n");
-        }
-    }
-    serial_print("=== end diagnostics ===\n");
-}
-
 static unsigned int spurious_count[16];
 static unsigned int spurious_log_suppressed[16];
 
@@ -246,30 +135,23 @@ void isr_handler(struct registers *r) {
     printf("ESI: 0x%x  EDI: 0x%x  EBP: 0x%x  ESP: 0x%x\n", r->esi, r->edi, r->ebp, r->esp);
     printf("USER_ESP: 0x%x  SS: 0x%x  DS: 0x%x  ES: 0x%x\n", r->user_esp, r->ss, r->ds, r->es);
     extern unsigned int saved_esp;
-    printf("saved_esp=0x%x  program_active=%d\n", saved_esp, user_program_active());
+    printf("saved_esp=0x%x  program_active=%d  cur_pid=%d\n",
+           saved_esp, user_program_active(), task_current_pid());
+    printf("task0 kesp=0x%x  ktop=0x%x  state=%d\n",
+           task_kernel_esp(0), task_kstack_top(0), task_state(0));
+    printf("--- stack @ esp (0x%x, 24 words) ---\n", r->esp);
+    unsigned int *dp = (unsigned int *)(r->esp & ~3u);
+    for (int i = 0; i < 24; i++) {
+        printf("  esp+%x: %x\n", (unsigned int)(dp + i), dp[i]);
+    }
+    // The syscall frame (syscall_common's pusha region) sits just above the
+    // faulting C frame's EBP: [ebp+12..24] = gs..ds, [ebp+28..56] = edi..esp.
+    printf("--- syscall frame @ ebp (0x%x) ---\n", r->ebp);
+    unsigned int *fp = (unsigned int *)(r->ebp & ~3u);
+    for (int i = 0; i < 20; i++) {
+        printf("  ebp+%x: %x\n", (unsigned int)(fp + i), fp[i]);
+    }
     backtrace((unsigned int *)r->ebp, 16);
-    serial_print("kstack scan:\n");
-    unsigned int *sp = (unsigned int *)&r;
-    for (int i = 0; i < 64 && (unsigned int)sp < 0x3000000; i++, sp++) {
-        unsigned int v = *sp;
-        if (v >= 0x100000 && v <= 0x110000) {
-            serial_print("  [kstack] word=");
-            serial_print_hex(v);
-            serial_print("\n");
-        }
-    }
-    if ((unsigned int)r->esp >= 0x200000 && (unsigned int)r->esp < 0x10000000) {
-        serial_print("fault esp dump:\n");
-        unsigned int *fsp = (unsigned int *)((unsigned int)r->esp & ~0xFu);
-        for (int i = -16; i < 256 && (unsigned int)(fsp + i) < 0x10000000u; i++) {
-            serial_print("  [esp");
-            serial_print_hex((unsigned int)fsp + (unsigned int)i * 4);
-            serial_print("]=0x");
-            serial_print_hex(((unsigned int *)fsp)[i]);
-            serial_print("\n");
-        }
-    }
-    panic_diagnostics(r);
     for (;;)
         __asm__ volatile("cli; hlt");
 }

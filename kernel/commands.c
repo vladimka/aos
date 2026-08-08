@@ -205,23 +205,22 @@ static void cmd_pwd(void) {
 
 static int try_exec(const char *full_path, const char *arg, int trace) {
     struct task *me = get_current_task();
+    serial_print("TREX:enter path=[");
+    serial_print(full_path);
+    serial_print("] trace=");
+    serial_print_dec((unsigned int)trace);
+    serial_print("\n");
     if (trace) me->trace_on = 1;
     void (*entry)(void) = program_load(full_path, arg);
     if (entry) {
-        extern unsigned int saved_esp;
-        serial_print("LAUNCH:saved_esp=0x");
-        serial_print_hex(saved_esp);
-        serial_print(" top=0x");
-        serial_print_hex(user_kstack_top());
-        serial_print(" margin=0x");
-        serial_print_hex(user_kstack_top() - saved_esp);
-        serial_print("\n");
         if (task_current_abi() == ABI_LINUX)
             user_program_start_linux(entry, task_current_lctx()->stack_sp);
         else
             user_program_start(entry);
-        serial_print("TREX:returned trace=");
-        serial_print_dec((unsigned int)trace);
+        serial_print("POSTRUN: pid=");
+        serial_print_dec(task_current_pid());
+        serial_print(" trace=");
+        serial_print_dec(trace);
         serial_print("\n");
         if (trace) {
             trace_session_dump();
@@ -294,6 +293,11 @@ static int exec_from_path(const char *cmd, const char *arg, int trace) {
     char full_path[PATH_MAX];
     if (!path_resolve(cmd, full_path, sizeof(full_path)))
         return 0;
+    serial_print("EXEC:path=[");
+    serial_print(full_path);
+    serial_print("] trace=");
+    serial_print_dec((unsigned int)trace);
+    serial_print("\n");
     return try_exec(full_path, arg, trace);
 }
 
@@ -306,6 +310,9 @@ static int cmd_is_builtin(const char *cmd) {
 // strace <prog> [args]: run <prog> in-place with this task's syscalls traced,
 // then dump the trace of this task and every task that inherited the flag.
 static void cmd_strace(const char *line) {
+    serial_print("STRACE:line=[");
+    serial_print(line);
+    serial_print("]\n");
     const char *p = line;
     while (*p && *p != ' ') p++;
     unsigned int plen = (unsigned int)(p - line);
@@ -357,6 +364,12 @@ static void run_command_raw(const char *line) {
     unsigned int cl = cmd_len < 15 ? cmd_len : 15;
     strncpy(cmd, line, cl);
     cmd[cl] = '\0';
+
+    serial_print("CMD:[");
+    serial_print(cmd);
+    serial_print("] ARG:[");
+    serial_print(arg);
+    serial_print("]\n");
 
     if (strcmp(cmd, "format") == 0) {
         cmd_format();
@@ -622,6 +635,7 @@ static void run_bg(const char *line) {
     unsigned int cl = ((unsigned int)(arg - line)) < 15 ? (unsigned int)(arg - line) : 15;
     strncpy(cmd, line, cl);
     cmd[cl] = '\0';
+
 
     if (cmd_is_builtin(cmd)) {
         run_command_raw(line);   // builtins run inline; & is ignored

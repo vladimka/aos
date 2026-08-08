@@ -56,6 +56,7 @@ void *program_load(const char *path, const char *args) {
     syscall_set_args(args);
     int abi;
     if (elf_probe(path, &abi) < 0) return 0;
+    printf("PLOAD: abi=%d path=[%s]\n", abi, path);
     if (abi == ABI_LINUX) {
         struct linux_ctx *lc = task_current_lctx();
         linux_ctx_init(lc);

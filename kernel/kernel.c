@@ -32,7 +32,7 @@ static void pit_init_1000(void) {
     outb(0x40, 1193 >> 8);
 }
 
-// Forward a serial byte or scancode event to the GUI event consumer's mailbox.
+// Forward a PS/2 scancode event to the GUI event consumer's mailbox.
 static void route_gui_key(int key) {
     if (key < 0) return;
     int ep = task_event_pid();
@@ -42,12 +42,10 @@ static void route_gui_key(int key) {
 
 static void timer_handler(void) {
     tick++;
-    while (serial_available()) {
-        if (task_event_pid() > 0)
-            route_gui_key(serial_read());
-        else
-            terminal_serial_byte(serial_read());
-    }
+    // The serial console always feeds the shell line editor (system console);
+    // GUI apps get keyboard input from the PS/2 keyboard via keyboard_handler.
+    while (serial_available())
+        terminal_serial_byte(serial_read());
     if (tick % 500 == 0 && task_event_pid() == 0)
         vga_cursor_toggle();
 }
@@ -149,6 +147,12 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     }
 
     while (1) {
+        // Serial/console commands accumulate in the terminal's pending buffer
+        // (set by the serial IRQ handler); execute them here, on task 0, so an
+        // in-place program launched by the command belongs to the kernel shell
+        // task and its exit unwinds back to this loop (never to the WM).
+        if (terminal_pending_cmd())
+            terminal_run_pending();
         // Wheel scrolls run here (IF=1), never inside an IRQ: the multi-MB
         // redraw would stall the interrupt for tens of ms in TCG and overflow
         // the 16-byte emulated PS/2 queue. Here keyboard/mouse IRQs keep

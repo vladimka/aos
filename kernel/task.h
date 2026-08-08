@@ -84,4 +84,10 @@ struct task *get_current_task(void);
 // Task-table slot accessor (task_slot(i) == 0 for i >= MAX_TASKS).
 struct task *task_slot(unsigned int i);
 
+// Panic-diagnostic accessors.
+unsigned int task_kernel_esp(unsigned int pid);
+unsigned int task_kstack_top(unsigned int pid);
+unsigned int task_state(unsigned int pid);
+void task_set_kernel_esp0(unsigned int esp);
+
 #endif
