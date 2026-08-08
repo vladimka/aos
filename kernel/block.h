@@ -5,7 +5,7 @@
 #define BLOCK_CACHE_SECTORS 128
 
 #define RAMDISK_BASE 0x400000
-#define RAMDISK_SECTORS 2048
+#define RAMDISK_SECTORS 4096
 
 struct sdev {
     int (*read)(unsigned int lba, void *buf);
