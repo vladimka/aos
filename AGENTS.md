@@ -39,7 +39,7 @@ No dedicated test, lint, or typecheck commands.
 - All kernel C code compiled `-ffreestanding -nostdlib -fno-builtin -fno-stack-protector -mno-sse -mno-mmx -mno-80387`
 - No libc; own `string.c` (`strcmp`, `strncpy`, `strlen`)
 - Include paths: `-Ikernel -Idrivers -Iarch/i386 -Iboot`
-- **1 MB ramdisk at `0x400000`** (`kernel/block.h` `RAMDISK_BASE`, above kernel BSS, below the staging buffer) — flat SFS (Simple File System), `SFS_MAX_FILES=64`
+- **2 MB ramdisk at `0x400000`** (`kernel/block.h` `RAMDISK_BASE`, above kernel BSS, below the staging buffer) — flat SFS (Simple File System), `SFS_MAX_FILES=64`
 - **33 syscalls via `int 0x80`** (DPL 3 gate, `idt_install_irq_flags(0x80, isr128, 0xEE)`), R/O user-level interface in `programs/aosabi.h`
 - `printf()` in `kernel/printf.c` writes to **both** VGA and COM1 (used for all kernel banners)
 - **Privilege separation**: paging enabled (`kernel/paging.c`), user programs run in **ring 3** via TSS (`arch/i386/gdt.c`, `kernel/user.c`/`user_tramp.S`), kernel stays in ring 0
@@ -100,7 +100,7 @@ In `boot/boot.S` the stack must have `%ebx` (info ptr) pushed first, `%eax` (mag
 
 ### Programs
 
-All commands (`help`, `uptime`, `clear`, `echo`, `tick`, `info`, `reboot`, `panic`, `ls`, `cat`, `rm`, `shutdown`, `format`, `test`) are **standalone ELF32 programs** under `programs/`:
+All commands (`help`, `uptime`, `clear`, `echo`, `tick`, `info`, `reboot`, `panic`, `ls`, `cat`, `rm`, `shutdown`, `format`, `test`, `cp`, `mv`, `mkdir`, `rmdir`, `head`, `wc`) are **standalone ELF32 programs** under `programs/`:
 
 - Compiled for load address `0x01000000` (`programs/programs.ld`)
 - Statically linked (`-static -nostdlib -n`), **no INTERP segment**
