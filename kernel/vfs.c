@@ -465,7 +465,12 @@ int vfs_open_fd(struct vfs_inode *cwd, const char *path, int flags) {
 int vfs_close_fd(int fd) {
     struct open_file *of = ofile_get(fd);
     if (!of) return VFS_EBADF;
+    struct vfs_fs *fs = of->inode->fs;
+    unsigned int ino = of->inode->ino;
+    int flags = of->flags;
     vfs_put(of->inode);
+    if (fs && fs->close)
+        fs->close(fs, ino, flags);
     of->inode = 0;
     of->refcount = 0;
     return 0;

@@ -74,6 +74,7 @@ struct vfs_fs {
                    char *name_out, unsigned int *ino_out);
     int (*stat)(struct vfs_fs *fs, unsigned int ino, struct aos_stat *st);
     int (*alloc_inode)(struct vfs_fs *fs, unsigned int type);
+    void (*close)(struct vfs_fs *fs, unsigned int ino, int flags);
 };
 
 struct open_file {
