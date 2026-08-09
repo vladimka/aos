@@ -34,7 +34,7 @@ PROG_ELFS = $(if $(MUSL_OK),$(addprefix build/prog/,$(addsuffix .elf,$(PROGRAMS)
 LINUX_CC  = $(MUSL_CC)
 LINUX_SRCS = $(wildcard tools/linux/*.c)
 LINUX_BINS = $(if $(wildcard $(LINUX_CC)),$(patsubst tools/linux/%.c,build/linux/%,$(LINUX_SRCS)))
-LINUX_EMBED = $(if $(LINUX_BINS),--data lin/hello=build/linux/hello --data lin/ls=build/linux/ls --data lin/cat=build/linux/cat --data lin/test.txt=tools/linux/test.txt)
+LINUX_EMBED = $(if $(LINUX_BINS),--data lin/hello=build/linux/hello --data lin/ls=build/linux/ls --data lin/cat=build/linux/cat --data lin/piptest=build/linux/piptest --data lin/test.txt=tools/linux/test.txt)
 
 all: aos.iso
 
@@ -126,7 +126,7 @@ debug: aos.iso
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
 # linhello/lincat need the musl Linux payload, so they are included only when
 # the musl toolchain is installed.
-LINUX_TESTS = $(if $(LINUX_BINS),linhello lincat lindirtest)
+LINUX_TESTS = $(if $(LINUX_BINS),linhello lincat lindirtest pipetest)
 TESTS = ipctest manytest notepadtest sleeptest rngtest blktest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest $(LINUX_TESTS)
 
 # Fast subset for CI: quick boots, no extra virtio devices. The musl Linux

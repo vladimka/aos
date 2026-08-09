@@ -77,7 +77,7 @@ struct registers;
 #define AOS_PANIC         519
 
 void syscall_set_args(const char *args);
-void route_text(const char *s, unsigned int len);
+int route_text(const char *s, unsigned int len);
 struct vfs_inode *current_task_cwd(void);
 void aos_gui_handler(struct registers *r);
 
