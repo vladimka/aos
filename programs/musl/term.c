@@ -1,5 +1,6 @@
 #include <sched.h>
 #include <unistd.h>
+#include <errno.h>
 #include "aosabi.h"
 #include "theme.h"
 
@@ -87,6 +88,11 @@ static void render(void) {
     aos_send((unsigned int)aos_get_event_pid(), &m);
 }
 
+static void print_str(const char *s) {
+    while (*s)
+        put_char((unsigned int)(unsigned char)*s++);
+}
+
 static int read_cmd(char *out, int cap) {
     int n = 0;
     for (int c = cmd_col; c < TW; c++) {
@@ -119,6 +125,36 @@ static void do_enter(void) {
         return;
     }
     if (clen > 60) clen = 60;
+
+    if (clen == 2 && p[0] == 'c' && p[1] == 'd') {
+        char *a = args;
+        while (*a == ' ') a++;
+        if (!*a) {
+            print_str("usage: cd <path>\n");
+        } else if (chdir(a) != 0) {
+            if (errno == EINVAL) {
+                print_str("cd: bad path\n");
+            } else {
+                print_str("cd: no such directory: ");
+                print_str(a);
+                put_char('\n');
+            }
+        }
+        prompt();
+        render();
+        return;
+    }
+    if (clen == 3 && p[0] == 'p' && p[1] == 'w' && p[2] == 'd') {
+        char buf[256];
+        if (getcwd(buf, sizeof(buf)) != NULL) {
+            print_str(buf);
+            put_char('\n');
+        }
+        prompt();
+        render();
+        return;
+    }
+
     char path[70];
     int i = 0;
     for (const char *s = "bin/"; *s; s++) path[i++] = *s;

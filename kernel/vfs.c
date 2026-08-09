@@ -259,9 +259,10 @@ static int path_split(const char *path, char *dirbuf, unsigned int dirsz,
     while (len > 1 && path[len - 1] == '/') len--;   // strip trailing slashes
     if (len == 0) return -1;
     unsigned int last_slash = 0;                       // index of last '/'
+    unsigned int name_begin = 0;                       // char after last '/'
     for (unsigned int i = 0; i < len; i++)
-        if (path[i] == '/') last_slash = i;
-    unsigned int namelen = len - last_slash - 1;
+        if (path[i] == '/') { last_slash = i; name_begin = i + 1; }
+    unsigned int namelen = len - name_begin;
     if (namelen == 0 || namelen > namesz - 1) return -1;
     unsigned int dirlen = last_slash;
     if (dirlen >= dirsz) return -1;
@@ -269,7 +270,7 @@ static int path_split(const char *path, char *dirbuf, unsigned int dirsz,
         dirbuf[i] = path[i];
     dirbuf[dirlen] = '\0';
     for (unsigned int i = 0; i < namelen; i++)
-        name[i] = path[last_slash + 1 + i];
+        name[i] = path[name_begin + i];
     name[namelen] = '\0';
     return 0;
 }
