@@ -96,6 +96,7 @@ struct vfs_inode *vfs_resolve(struct vfs_inode *cwd, const char *path,
                               int flags);   // returns referenced
 
 int vfs_open_fd(struct vfs_inode *cwd, const char *path, int flags);
+int vfs_pipe(int *rd, int *wr);
 int vfs_close_fd(int fd);
 int vfs_read_fd(int fd, void *buf, unsigned int len);
 int vfs_write_fd(int fd, const void *buf, unsigned int len);

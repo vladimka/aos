@@ -1,4 +1,5 @@
 #include "vfs.h"
+#include "pipe.h"
 #include "sfs2.h"
 #include "commands.h"
 #include "string.h"
@@ -460,6 +461,29 @@ int vfs_open_fd(struct vfs_inode *cwd, const char *path, int flags) {
     ofiles[fd].pos = 0;
     ofiles[fd].refcount = 1;
     return fd;
+}
+
+int vfs_pipe(int *rd, int *wr) {
+    int r = -1, w = -1;
+    for (int i = 3; i < VFS_OFILES; i++)
+        if (!ofiles[i].inode) { r = i; break; }
+    if (r < 0) return VFS_EMFILE;
+    for (int i = r + 1; i < VFS_OFILES; i++)
+        if (!ofiles[i].inode) { w = i; break; }
+    if (w < 0) return VFS_EMFILE;
+    struct aos_pipe *p = pipe_alloc();
+    if (!p) return VFS_EMFILE;
+    ofiles[r].inode = &p->inode;
+    ofiles[r].flags = VFS_O_RDONLY;
+    ofiles[r].pos = 0;
+    ofiles[r].refcount = 1;
+    ofiles[w].inode = &p->inode;
+    ofiles[w].flags = VFS_O_WRONLY;
+    ofiles[w].pos = 0;
+    ofiles[w].refcount = 1;
+    *rd = r;
+    *wr = w;
+    return 0;
 }
 
 int vfs_close_fd(int fd) {
