@@ -333,6 +333,7 @@ static void cmd_strace(const char *line) {
 #define OP_GTG    2
 #define OP_LT     3
 #define OP_PIPE   4
+#define PIPE_STAGES_MAX 8
 
 static const char *find_operator(const char *line, int *op) {
     const char *p = line;
@@ -349,6 +350,114 @@ static const char *find_operator(const char *line, int *op) {
     }
     *op = OP_NONE;
     return 0;
+}
+
+// Pipeline execution: "a | b | c". Every stage runs as its own task wired to
+// N-1 pipes; the shell (task 0) waits for all stages. $? = last stage's code.
+static void exec_pipe(const char *line) {
+    char parts[PIPE_STAGES_MAX][LINE_BUF_SIZE];
+    char full[PIPE_STAGES_MAX][PATH_MAX];
+    char args[PIPE_STAGES_MAX][LINE_BUF_SIZE];
+    unsigned int pids[PIPE_STAGES_MAX];
+    int rd[PIPE_STAGES_MAX - 1], wr[PIPE_STAGES_MAX - 1];
+    int n = 0;
+
+    // Split on '|' operators (find_operator requires a space before them).
+    const char *cur = line;
+    for (;;) {
+        int op;
+        const char *pos = find_operator(cur, &op);
+        unsigned int len = pos ? (unsigned int)(pos - cur) : 0;
+        if (!pos) { while (cur[len]) len++; }
+        while (len > 0 && cur[len - 1] == ' ') len--;
+        const char *s = cur;
+        while (*s == ' ') s++;
+        unsigned int sl = (unsigned int)(s - cur);
+        if (n >= PIPE_STAGES_MAX) {
+            terminal_print("\npipe: too many stages");
+            return;
+        }
+        unsigned int cplen = (len > sl) ? len - sl : 0;
+        if (cplen >= LINE_BUF_SIZE) cplen = LINE_BUF_SIZE - 1;
+        for (unsigned int i = 0; i < cplen; i++) parts[n][i] = s[i];
+        parts[n][cplen] = '\0';
+        n++;
+        if (!pos) break;
+        cur = pos + 1;
+    }
+    if (n < 2) { terminal_print("\npipe: empty pipeline"); return; }
+
+    // Validate every stage before spawning anything: no builtins, no
+    // redirects, and every command must resolve through PATH.
+    for (int i = 0; i < n; i++) {
+        const char *p = parts[i];
+        const char *a = p;
+        while (*a && *a != ' ') a++;
+        unsigned int cl = (unsigned int)(a - p);
+        while (*a == ' ') a++;
+        char cmd[16];
+        unsigned int cc = cl < 15 ? cl : 15;
+        for (unsigned int k = 0; k < cc; k++) cmd[k] = p[k];
+        cmd[cc] = '\0';
+        if (cmd_is_builtin(cmd)) {
+            terminal_print("\npipe: builtin not supported in pipeline");
+            return;
+        }
+        int op;
+        if (find_operator(parts[i], &op)) {
+            terminal_print("\npipe: redirect not supported in pipe part");
+            return;
+        }
+        if (!path_resolve(cmd, full[i], sizeof(full[i]))) {
+            terminal_print("\nUnknown command: ");
+            terminal_write(cmd, cc);
+            terminal_print(". Type 'help'");
+            shell_set_status(127);
+            return;
+        }
+        unsigned int al = 0;
+        while (a[al]) al++;
+        if (al >= LINE_BUF_SIZE) al = LINE_BUF_SIZE - 1;
+        for (unsigned int k = 0; k < al; k++) args[i][k] = a[k];
+        args[i][al] = '\0';
+    }
+
+    // Create the N-1 pipes (global ofiles[] slots, inode refcount 2 each).
+    for (int i = 0; i < n - 1; i++) {
+        if (vfs_pipe(&rd[i], &wr[i]) != 0) {
+            for (int j = 0; j < i; j++) { vfs_close_fd(rd[j]); vfs_close_fd(wr[j]); }
+            terminal_print("\npipe: cannot create pipe");
+            return;
+        }
+    }
+
+    // Spawn all stages. Wire each child's stdin/stdout to its pipe ends
+    // right after spawn (the scheduler has not run the child yet).
+    for (int i = 0; i < n; i++) {
+        unsigned int pid;
+        if (task_spawn(full[i], args[i], 0, &pid) != 0) {
+            for (int j = 0; j < n - 1; j++) { vfs_close_fd(rd[j]); vfs_close_fd(wr[j]); }
+            terminal_print("\npipe: spawn failed");
+            shell_set_status(1);
+            return;
+        }
+        pids[i] = pid;
+        struct task *c = task_slot(pid);
+        if (i > 0) {
+            c->fds[rd[i - 1]] = vfs_ofile_ptr(rd[i - 1]);
+            c->stdin_fd = rd[i - 1];
+        }
+        if (i < n - 1) {
+            c->fds[wr[i]] = vfs_ofile_ptr(wr[i]);
+            c->stdout_fd = wr[i];
+        }
+    }
+
+    // Wait for every stage; $? is the last stage's exit code.
+    int last = 0;
+    for (int i = 0; i < n; i++)
+        last = task_waitpid(pids[i]);
+    shell_set_status(last);
 }
 
 static void run_command_raw(const char *line) {
@@ -502,38 +611,8 @@ static void exec_stage(const char *line) {
     }
 
     if (op == OP_PIPE) {
-        struct vfs_inode *cwd = current_task_cwd();
-        int fd = vfs_open_fd(cwd, "/pipe_tmp", VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC);
-        vfs_put(cwd);
-        if (fd < 0) {
-            terminal_print("\npipe: cannot create temp file");
-            return;
-        }
-        int saved_out = t->stdout_fd;
-        t->stdout_fd = fd;
-        exec_stage(left_buf);
-        t->stdout_fd = saved_out;
-        vfs_close_fd(fd);
-
-        cwd = current_task_cwd();
-        int ifd = vfs_open_fd(cwd, "/pipe_tmp", VFS_O_RDONLY);
-        vfs_put(cwd);
-        if (ifd < 0) {
-            terminal_print("\npipe: cannot read temp file");
-            struct vfs_inode *ucwd = current_task_cwd();
-            vfs_unlink(ucwd, "/pipe_tmp");
-            vfs_put(ucwd);
-            return;
-        }
-        int saved_in = t->stdin_fd;
-        t->stdin_fd = ifd;
-        run_command_raw(right);
-        t->stdin_fd = saved_in;
-        vfs_close_fd(ifd);
-
-        cwd = current_task_cwd();
-        vfs_unlink(cwd, "/pipe_tmp");
-        vfs_put(cwd);
+        exec_pipe(line);
+        return;
     }
 }
 

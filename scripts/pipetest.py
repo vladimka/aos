@@ -65,8 +65,11 @@ def main():
         print("PASS: boot OK")
 
         # pipe() syscall test: musl falls back from pipe2 to pipe (42).
+        # Drain past PIPETEST OK to the next shell prompt so lin/piptest has
+        # fully exited before the next command is sent (serial bytes sent
+        # while it still runs are diverted to the key queue and lost).
         s.sendall(b"lin/piptest\n")
-        out = drain(s, b"", time.time() + 30, b"PIPETEST OK")
+        out = drain(s, b"", time.time() + 30, b"AOS>")
         if b"KERNEL PANIC" in out:
             raise AssertionError("kernel panic in pipe():\n"
                                  + out[-400:].decode(errors="replace"))
@@ -75,17 +78,19 @@ def main():
                                  + out[-600:].decode(errors="replace"))
         print("PASS: pipe() syscall (lin/piptest)")
 
-        # Pipeline: AOS writer (ls) -> Linux reader (lin/cat) through a pipe.
-        s.sendall(b"ls | lin/cat\n")
+        # Pipeline: AOS writer (ls /bin) -> Linux reader (lin/cat) through a
+        # pipe. `ls /bin` lists the bin directory (contains uptime), so the
+        # listing flowing through the pipe proves the writer->reader wiring.
+        s.sendall(b"ls /bin | lin/cat\n")
         out = drain(s, b"", time.time() + 30, b"AOS>")
         if b"KERNEL PANIC" in out:
-            raise AssertionError("kernel panic in 'ls | lin/cat':\n"
+            raise AssertionError("kernel panic in 'ls /bin | lin/cat':\n"
                                  + out[-400:].decode(errors="replace"))
         otext = out.decode(errors="replace")
         if b"uptime" not in out:
-            raise AssertionError("'ls | lin/cat' did not print the bin list; "
-                                 "out:\n" + otext[-600:])
-        print("PASS: ls | lin/cat")
+            raise AssertionError("'ls /bin | lin/cat' did not print the bin "
+                                 "list; out:\n" + otext[-600:])
+        print("PASS: ls /bin | lin/cat")
 
         # Pipeline with a procfs source.
         s.sendall(b"cat /proc/uptime | lin/cat\n")
