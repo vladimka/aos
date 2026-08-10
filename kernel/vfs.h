@@ -74,6 +74,7 @@ struct vfs_fs {
                    char *name_out, unsigned int *ino_out);
     int (*stat)(struct vfs_fs *fs, unsigned int ino, struct aos_stat *st);
     int (*alloc_inode)(struct vfs_fs *fs, unsigned int type);
+    void (*close)(struct vfs_fs *fs, unsigned int ino, int flags);
 };
 
 struct open_file {
@@ -95,6 +96,7 @@ struct vfs_inode *vfs_resolve(struct vfs_inode *cwd, const char *path,
                               int flags);   // returns referenced
 
 int vfs_open_fd(struct vfs_inode *cwd, const char *path, int flags);
+int vfs_pipe(int *rd, int *wr);
 int vfs_close_fd(int fd);
 int vfs_read_fd(int fd, void *buf, unsigned int len);
 int vfs_write_fd(int fd, const void *buf, unsigned int len);

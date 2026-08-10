@@ -4,8 +4,8 @@
 #include <unistd.h>
 
 int main(int argc, char **argv) {
-    if (argc < 3) {
-        printf("\nUsage: head <file> <lines>");
+    if (argc < 2) {
+        printf("\nUsage: head <file> [lines]");
         return 0;
     }
     int lines = 10;

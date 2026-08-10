@@ -118,10 +118,11 @@ void linux_syscall_handler(struct registers *r) {
         unsigned int count = r->edx;
         if (!in_luser(buf, count)) { r->eax = -14; break; }   // -EFAULT
         if (fd <= 2) {
-            route_text(buf, count);
-            r->eax = count;
+            int rc = route_text(buf, count);
+            r->eax = (rc < 0) ? rc : (int)count;
         } else {
-            r->eax = -9;                                      // -EBADF
+            if (!lin_fd_valid(fd)) { r->eax = -9; break; }    // -EBADF
+            r->eax = vfs_write_fd(fd, buf, count);
         }
         break;
     }
@@ -262,6 +263,10 @@ void linux_syscall_handler(struct registers *r) {
         if (!in_luser(buf, count)) { r->eax = -14; break; }
         if (fd == 0) {
             if (count == 0) { r->eax = 0; break; }
+            if (get_current_task()->stdin_fd >= 0) {
+                r->eax = vfs_read_fd(get_current_task()->stdin_fd, buf, count);
+                break;
+            }
             int k = terminal_read_key();
             r->eax = (k < 0) ? -11 : 1;                     // -EAGAIN when empty
             if (k >= 0) buf[0] = (char)k;
@@ -269,6 +274,21 @@ void linux_syscall_handler(struct registers *r) {
         }
         if (!lin_fd_valid(fd)) { r->eax = -9; break; }
         r->eax = vfs_read_fd(fd, buf, count);
+        break;
+    }
+
+    case 42: {  // pipe(int fds[2])
+        unsigned int *fds = (unsigned int *)r->ebx;
+        if (!in_luser(fds, 8)) { r->eax = -14; break; }    // -EFAULT
+        int rd, wr;
+        int rc = vfs_pipe(&rd, &wr);
+        if (rc < 0) { r->eax = rc; break; }
+        struct task *t = get_current_task();
+        t->fds[rd] = vfs_ofile_ptr(rd);
+        t->fds[wr] = vfs_ofile_ptr(wr);
+        fds[0] = (unsigned int)rd;
+        fds[1] = (unsigned int)wr;
+        r->eax = 0;
         break;
     }
 

@@ -205,23 +205,22 @@ static void cmd_pwd(void) {
 
 static int try_exec(const char *full_path, const char *arg, int trace) {
     struct task *me = get_current_task();
+    serial_print("TREX:enter path=[");
+    serial_print(full_path);
+    serial_print("] trace=");
+    serial_print_dec((unsigned int)trace);
+    serial_print("\n");
     if (trace) me->trace_on = 1;
     void (*entry)(void) = program_load(full_path, arg);
     if (entry) {
-        extern unsigned int saved_esp;
-        serial_print("LAUNCH:saved_esp=0x");
-        serial_print_hex(saved_esp);
-        serial_print(" top=0x");
-        serial_print_hex(user_kstack_top());
-        serial_print(" margin=0x");
-        serial_print_hex(user_kstack_top() - saved_esp);
-        serial_print("\n");
         if (task_current_abi() == ABI_LINUX)
             user_program_start_linux(entry, task_current_lctx()->stack_sp);
         else
             user_program_start(entry);
-        serial_print("TREX:returned trace=");
-        serial_print_dec((unsigned int)trace);
+        serial_print("POSTRUN: pid=");
+        serial_print_dec(task_current_pid());
+        serial_print(" trace=");
+        serial_print_dec(trace);
         serial_print("\n");
         if (trace) {
             trace_session_dump();
@@ -294,6 +293,11 @@ static int exec_from_path(const char *cmd, const char *arg, int trace) {
     char full_path[PATH_MAX];
     if (!path_resolve(cmd, full_path, sizeof(full_path)))
         return 0;
+    serial_print("EXEC:path=[");
+    serial_print(full_path);
+    serial_print("] trace=");
+    serial_print_dec((unsigned int)trace);
+    serial_print("\n");
     return try_exec(full_path, arg, trace);
 }
 
@@ -306,6 +310,9 @@ static int cmd_is_builtin(const char *cmd) {
 // strace <prog> [args]: run <prog> in-place with this task's syscalls traced,
 // then dump the trace of this task and every task that inherited the flag.
 static void cmd_strace(const char *line) {
+    serial_print("STRACE:line=[");
+    serial_print(line);
+    serial_print("]\n");
     const char *p = line;
     while (*p && *p != ' ') p++;
     unsigned int plen = (unsigned int)(p - line);
@@ -326,6 +333,7 @@ static void cmd_strace(const char *line) {
 #define OP_GTG    2
 #define OP_LT     3
 #define OP_PIPE   4
+#define PIPE_STAGES_MAX 8
 
 static const char *find_operator(const char *line, int *op) {
     const char *p = line;
@@ -344,6 +352,114 @@ static const char *find_operator(const char *line, int *op) {
     return 0;
 }
 
+// Pipeline execution: "a | b | c". Every stage runs as its own task wired to
+// N-1 pipes; the shell (task 0) waits for all stages. $? = last stage's code.
+static void exec_pipe(const char *line) {
+    char parts[PIPE_STAGES_MAX][LINE_BUF_SIZE];
+    char full[PIPE_STAGES_MAX][PATH_MAX];
+    char args[PIPE_STAGES_MAX][LINE_BUF_SIZE];
+    unsigned int pids[PIPE_STAGES_MAX];
+    int rd[PIPE_STAGES_MAX - 1], wr[PIPE_STAGES_MAX - 1];
+    int n = 0;
+
+    // Split on '|' operators (find_operator requires a space before them).
+    const char *cur = line;
+    for (;;) {
+        int op;
+        const char *pos = find_operator(cur, &op);
+        unsigned int len = pos ? (unsigned int)(pos - cur) : 0;
+        if (!pos) { while (cur[len]) len++; }
+        while (len > 0 && cur[len - 1] == ' ') len--;
+        const char *s = cur;
+        while (*s == ' ') s++;
+        unsigned int sl = (unsigned int)(s - cur);
+        if (n >= PIPE_STAGES_MAX) {
+            terminal_print("\npipe: too many stages");
+            return;
+        }
+        unsigned int cplen = (len > sl) ? len - sl : 0;
+        if (cplen >= LINE_BUF_SIZE) cplen = LINE_BUF_SIZE - 1;
+        for (unsigned int i = 0; i < cplen; i++) parts[n][i] = s[i];
+        parts[n][cplen] = '\0';
+        n++;
+        if (!pos) break;
+        cur = pos + 1;
+    }
+    if (n < 2) { terminal_print("\npipe: empty pipeline"); return; }
+
+    // Validate every stage before spawning anything: no builtins, no
+    // redirects, and every command must resolve through PATH.
+    for (int i = 0; i < n; i++) {
+        const char *p = parts[i];
+        const char *a = p;
+        while (*a && *a != ' ') a++;
+        unsigned int cl = (unsigned int)(a - p);
+        while (*a == ' ') a++;
+        char cmd[16];
+        unsigned int cc = cl < 15 ? cl : 15;
+        for (unsigned int k = 0; k < cc; k++) cmd[k] = p[k];
+        cmd[cc] = '\0';
+        if (cmd_is_builtin(cmd)) {
+            terminal_print("\npipe: builtin not supported in pipeline");
+            return;
+        }
+        int op;
+        if (find_operator(parts[i], &op)) {
+            terminal_print("\npipe: redirect not supported in pipe part");
+            return;
+        }
+        if (!path_resolve(cmd, full[i], sizeof(full[i]))) {
+            terminal_print("\nUnknown command: ");
+            terminal_write(cmd, cc);
+            terminal_print(". Type 'help'");
+            shell_set_status(127);
+            return;
+        }
+        unsigned int al = 0;
+        while (a[al]) al++;
+        if (al >= LINE_BUF_SIZE) al = LINE_BUF_SIZE - 1;
+        for (unsigned int k = 0; k < al; k++) args[i][k] = a[k];
+        args[i][al] = '\0';
+    }
+
+    // Create the N-1 pipes (global ofiles[] slots, inode refcount 2 each).
+    for (int i = 0; i < n - 1; i++) {
+        if (vfs_pipe(&rd[i], &wr[i]) != 0) {
+            for (int j = 0; j < i; j++) { vfs_close_fd(rd[j]); vfs_close_fd(wr[j]); }
+            terminal_print("\npipe: cannot create pipe");
+            return;
+        }
+    }
+
+    // Spawn all stages. Wire each child's stdin/stdout to its pipe ends
+    // right after spawn (the scheduler has not run the child yet).
+    for (int i = 0; i < n; i++) {
+        unsigned int pid;
+        if (task_spawn(full[i], args[i], 0, &pid) != 0) {
+            for (int j = 0; j < n - 1; j++) { vfs_close_fd(rd[j]); vfs_close_fd(wr[j]); }
+            terminal_print("\npipe: spawn failed");
+            shell_set_status(1);
+            return;
+        }
+        pids[i] = pid;
+        struct task *c = task_slot(pid);
+        if (i > 0) {
+            c->fds[rd[i - 1]] = vfs_ofile_ptr(rd[i - 1]);
+            c->stdin_fd = rd[i - 1];
+        }
+        if (i < n - 1) {
+            c->fds[wr[i]] = vfs_ofile_ptr(wr[i]);
+            c->stdout_fd = wr[i];
+        }
+    }
+
+    // Wait for every stage; $? is the last stage's exit code.
+    int last = 0;
+    for (int i = 0; i < n; i++)
+        last = task_waitpid(pids[i]);
+    shell_set_status(last);
+}
+
 static void run_command_raw(const char *line) {
     while (*line == ' ') line++;
     if (!*line) return;
@@ -357,6 +473,12 @@ static void run_command_raw(const char *line) {
     unsigned int cl = cmd_len < 15 ? cmd_len : 15;
     strncpy(cmd, line, cl);
     cmd[cl] = '\0';
+
+    serial_print("CMD:[");
+    serial_print(cmd);
+    serial_print("] ARG:[");
+    serial_print(arg);
+    serial_print("]\n");
 
     if (strcmp(cmd, "format") == 0) {
         cmd_format();
@@ -489,38 +611,8 @@ static void exec_stage(const char *line) {
     }
 
     if (op == OP_PIPE) {
-        struct vfs_inode *cwd = current_task_cwd();
-        int fd = vfs_open_fd(cwd, "/pipe_tmp", VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC);
-        vfs_put(cwd);
-        if (fd < 0) {
-            terminal_print("\npipe: cannot create temp file");
-            return;
-        }
-        int saved_out = t->stdout_fd;
-        t->stdout_fd = fd;
-        exec_stage(left_buf);
-        t->stdout_fd = saved_out;
-        vfs_close_fd(fd);
-
-        cwd = current_task_cwd();
-        int ifd = vfs_open_fd(cwd, "/pipe_tmp", VFS_O_RDONLY);
-        vfs_put(cwd);
-        if (ifd < 0) {
-            terminal_print("\npipe: cannot read temp file");
-            struct vfs_inode *ucwd = current_task_cwd();
-            vfs_unlink(ucwd, "/pipe_tmp");
-            vfs_put(ucwd);
-            return;
-        }
-        int saved_in = t->stdin_fd;
-        t->stdin_fd = ifd;
-        run_command_raw(right);
-        t->stdin_fd = saved_in;
-        vfs_close_fd(ifd);
-
-        cwd = current_task_cwd();
-        vfs_unlink(cwd, "/pipe_tmp");
-        vfs_put(cwd);
+        exec_pipe(line);
+        return;
     }
 }
 
@@ -622,6 +714,7 @@ static void run_bg(const char *line) {
     unsigned int cl = ((unsigned int)(arg - line)) < 15 ? (unsigned int)(arg - line) : 15;
     strncpy(cmd, line, cl);
     cmd[cl] = '\0';
+
 
     if (cmd_is_builtin(cmd)) {
         run_command_raw(line);   // builtins run inline; & is ignored

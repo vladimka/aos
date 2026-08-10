@@ -60,6 +60,8 @@ static void irq_save(unsigned int *flags) {
 static void irq_restore(unsigned int flags) {
     if (flags & 0x200)
         __asm__ volatile("sti");
+    else
+        __asm__ volatile("cli");
 }
 
 static void drain_zombies(void) {
@@ -113,6 +115,12 @@ static void task_free_addrspace(struct task *t) {
     page_free(t->pd);
     t->pd = 0;
     t->cr3 = 0;
+}
+
+// Task 0's resume frame is (re)installed by user_exit_asm after an in-place
+// guest exits, so the scheduler never resumes the abandoned sys_stack frame.
+void task_set_kernel_esp0(unsigned int esp) {
+    tasks[0].kernel_esp = esp;
 }
 
 void task_init(void) {
@@ -203,24 +211,36 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         if (t->state == TASK_READY) { next = t; break; }
     }
     // No READY task: resume whatever was current. If it is blocked this just
-    // iret's back into its own sti;hlt;cli wait loop, which re-checks and hlts
+    // iret's back into its own sti;hlt wait loop, which re-checks and hlts
     // again. Never wait inside the scheduler itself: the timer IRQ that would
     // wake a sleeper re-enters task_switch_kernel, and a nested wait there
     // would overwrite kernel_esp of an outer scheduler frame on the stack.
     if (!next) next = current_task;
 
-    if (next != current_task) {
-        if (current_task->pid == 2 || next->pid == 2) {
-            serial_print("SW:");
-            serial_print_dec(current_task->pid);
-            serial_print("->");
-            serial_print_dec(next->pid);
-            serial_print(" exited=");
-            serial_print_dec(exited);
-            serial_print(" curkesp=0x");
-            serial_print_hex(current_task->kernel_esp);
-            serial_print("\n");
+    // Stale-resume guard for task 0 (the in-place program host). Task 0 is
+    // special: while an in-place user program runs (program_active) its only
+    // legitimate ring-0 context is the shared sys_stack (TSS esp0) — a
+    // main/boot-stack kernel_esp then is the abandoned serial-command chain,
+    // and resuming it would re-enter the shell command processing. After the
+    // program exits via user_program_exit (which bypasses the scheduler) the
+    // reverse holds: a sys_stack kernel_esp is the dead program's ring-3
+    // syscall frame. Iret'ing into either faults/panics, so only resume task 0
+    // from a frame consistent with its current mode. While the current task is
+    // alive we simply stay on it (it resumes into its own valid frame); when
+    // it is exiting there is no safe target, so fall through and let the stale
+    // iret fault deliberately — the message above pins the bug.
+    if (next->pid == 0) {
+        unsigned int ktop = user_kstack_top();
+        int on_sys = next->kernel_esp >= ktop - 8192 &&
+                     next->kernel_esp < ktop;
+        int stale = user_program_active() ? !on_sys : on_sys;
+        if (stale) {
+            if (!exited)
+                next = current_task;
         }
+    }
+
+    if (next != current_task) {
         next->state = TASK_RUNNING;
         current_task = next;
         tss_set_esp0(next->kstack_top);
@@ -260,13 +280,6 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         }
         if (nzombies < MAX_TASKS)
             zombies[nzombies++] = dead;
-        serial_print("SWX:dead=");
-        serial_print_dec(dead->pid);
-        serial_print(" next=");
-        serial_print_dec(next->pid);
-        serial_print(" nextkesp=0x");
-        serial_print_hex(next->kernel_esp);
-        serial_print("\n");
     }
 
     return next->kernel_esp;
@@ -479,6 +492,21 @@ unsigned int task_current_pid(void) {
     return current_task->pid;
 }
 
+unsigned int task_kernel_esp(unsigned int pid) {
+    if (pid >= MAX_TASKS) return 0;
+    return tasks[pid].kernel_esp;
+}
+
+unsigned int task_kstack_top(unsigned int pid) {
+    if (pid >= MAX_TASKS) return 0;
+    return tasks[pid].kstack_top;
+}
+
+unsigned int task_state(unsigned int pid) {
+    if (pid >= MAX_TASKS) return 0xFFFFFFFF;
+    return tasks[pid].state;
+}
+
 unsigned int task_current_sink(void) {
     return current_task->sink;
 }
@@ -499,31 +527,44 @@ int task_alive(unsigned int pid) {
 // kernel stack: each timer IRQ may switch away and back; on resume the loop
 // re-checks tick. State is re-marked TASK_SLEEPING before every hlt because the
 // scheduler's no-ready fallback forces the resumed task to TASK_RUNNING.
+// IF is preserved across the loop: the trailing `cli` of the old `sti;hlt;cli`
+// pattern stuck when the wait ran in kernel context (exec_pipe's task_waitpid
+// on the main-loop stack), leaving the shell's main `hlt` with IF=0 forever.
 void task_sleep(unsigned int ms) {
+    unsigned int f;
+    irq_save(&f);
     current_task->wake_tick = tick + (ms & 0x7FFFFFFF);
     while ((int)(tick - current_task->wake_tick) < 0) {
         current_task->state = TASK_SLEEPING;
-        __asm__ volatile("sti; hlt; cli");
+        __asm__ volatile("sti; hlt");
     }
     current_task->wake_tick = 0;
     current_task->state = TASK_RUNNING;
+    irq_restore(f);
 }
 
 // Wait for a specific child to exit and return its exit code, reaping it.
 // Returns -1 if pid is not a child of the current task or is already gone.
+// IF is preserved across the wait loop (see task_sleep): exec_pipe calls this
+// on the main-loop stack in kernel context, and a leftover IF=0 would freeze
+// the shell's main `hlt`.
 int task_waitpid(unsigned int pid) {
     if (pid == 0 || pid >= MAX_TASKS || tasks[pid].parent != current_task->pid)
         return -1;
+    unsigned int f;
+    irq_save(&f);
     for (;;) {
         struct task *c = &tasks[pid];
         if (c->state == TASK_ZOMBIE) {
             current_task->wait_pid = 0;
             int code = (int)c->exit_code;
             c->state = TASK_FREE;   // reap
+            irq_restore(f);
             return code;
         }
         if (c->state == TASK_FREE) {
             current_task->wait_pid = 0;
+            irq_restore(f);
             return -1;              // reaped out from under us (spawn reuse)
         }
         // Child still alive: block until the scheduler promotes us. wait_pid
@@ -532,7 +573,7 @@ int task_waitpid(unsigned int pid) {
         // scheduler's no-ready fallback forces the resumed task to TASK_RUNNING.
         current_task->wait_pid = pid;
         current_task->state = TASK_WAITING;
-        __asm__ volatile("sti; hlt; cli");
+        __asm__ volatile("sti; hlt");
     }
 }
 

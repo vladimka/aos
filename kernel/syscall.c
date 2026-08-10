@@ -77,12 +77,10 @@ void syscall_set_args(const char *args) {
     prog_args[i] = '\0';
 }
 
-void route_text(const char *s, unsigned int len) {
+int route_text(const char *s, unsigned int len) {
     struct task *t = get_current_task();
-    if (t->stdout_fd >= 0) {
-        vfs_write_fd(t->stdout_fd, s, len);
-        return;
-    }
+    if (t->stdout_fd >= 0)
+        return vfs_write_fd(t->stdout_fd, s, len);
     unsigned int pid = task_current_pid();
     unsigned int sink = task_current_sink();
     if (pid > 0 && sink > 0 && task_alive(sink)) {
@@ -101,9 +99,10 @@ void route_text(const char *s, unsigned int len) {
             }
             task_mailbox_send(sink, MSG_DATA, n, b, c, d);
         }
-        return;
+        return 0;
     }
     terminal_write(s, len);
+    return 0;
 }
 
 static void route_hex(unsigned int n) {
@@ -218,6 +217,10 @@ void syscall_handler(struct registers *r) {
                 r->eax = -5;
                 break;
             }
+            if (get_current_task()->stdin_fd >= 0) {
+                r->eax = vfs_read_fd(get_current_task()->stdin_fd, buf, len);
+                break;
+            }
             int k = terminal_read_key();
             if (k < 0) {
                 r->eax = -1;             // non-blocking, like SYS_READ_KEY
@@ -245,8 +248,8 @@ void syscall_handler(struct registers *r) {
             break;
         }
         if (fd == 1 || fd == 2) {
-            route_text(buf, len);
-            r->eax = (int)len;
+            int rc = route_text(buf, len);
+            r->eax = (rc < 0) ? rc : (int)len;
         } else if (fd == 0) {
             r->eax = VFS_EBADF;          // can't write stdin
         } else {
@@ -402,9 +405,6 @@ void syscall_handler(struct registers *r) {
         break;
     case SYS_EXIT:
         if (task_current_pid() == 0) {
-            serial_print("SEXIT:pid0 code=");
-            serial_print_dec((unsigned int)r->ebx);
-            serial_print("\n");
             shell_set_status((int)r->ebx);
             user_program_exit();
         } else {

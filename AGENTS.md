@@ -2,7 +2,9 @@
 
 - **Язык общения и документации — русский.** Ответы пользователю, а также все создаваемые документы и спеки (включая `docs/superpowers/specs/*` и `docs/superpowers/plans/*`) пишутся **только на русском**. Код, сообщения коммитов и комментарии в коде — на английском (как в остальном репозитории). Технические идентификаторы (имена файлов, функций, syscall'ов) остаются без перевода. Правило действует всегда, в том числе при работе по скиллам (brainstorming, writing-plans, executing-plans и т.д.): скиллы задают процесс, но язык вывода определяет это правило.
 
-- **UI/QEMU test suites are run by the human, not the assistant.** Do not launch `make test`, the individual `scripts/*.py` GUI tests, `qemu-system-i386`, or any other headless QEMU harness on the assistant's own initiative — hand the run to the user instead (e.g. "build is ready, run `make test`"). Builds (`make`) and static checks are fine for the assistant. This is because the QEMU GUI tests are timing-sensitive under TCG and their results are evaluated by the human.
+- **UI/QEMU test suites may be run by the assistant.** `make test`, the individual `scripts/*.py` GUI tests, and `qemu-system-i386` launches are allowed. Remember: QEMU GUI tests are timing-sensitive under TCG and their results are evaluated by the human, so keep runs in `test`/`test-fast`-style harnesses unless debugging.
+
+- **Debug launch**: `make debug` (or `scripts/qemu-debug.sh`) boots `aos.iso` headless with VNC (:5907) + QMP + serial Unix sockets. Connect with the qemu-vnc MCP tools via `vm_connect(vnc_host=127.0.0.1, vnc_port=5907, qmp_socket=/tmp/aos-debug.qmp, serial_socket=/tmp/aos-debug.serial)`.
 
 ## Terminal (`kernel/terminal.c`)
 
@@ -13,7 +15,7 @@
 - **Keyboard layouts**: US QWERTY and Russian ЙЦУКЕН; Left Ctrl + Left Shift held simultaneously toggles `ru_layout` flag; scancode mapped to Unicode codepoint (U+0400–U+04FF for Cyrillic, shared ASCII punctuation)
 - **UTF-8 output**: `insert_codepoint()` encodes codepoint as 1–3 byte UTF-8 sequence into `line_buf`; `line_redraw_from()` re-renders from a given byte offset
 - **Caps Lock** (`scancode 0x3A`): toggles `caps_lock` flag, affects only US layout letters
-- **Serial console input**: `timer_handler` (`kernel/kernel.c`) drains the COM1 FIFO (`serial_available`/`serial_read`) into `terminal_serial_byte()`. While a user program is running, serial bytes are pushed to the key queue (`key_queue_push`) instead of the line buffer
+- **Serial console input**: `timer_handler` (`kernel/kernel.c`) drains the COM1 FIFO (`serial_available`/`serial_read`) into `terminal_serial_byte()`. The serial console **always feeds the shell line editor** (system console) — it is NOT rerouted to the GUI even after the WM registers as event consumer; GUI apps receive keyboard input from the PS/2 keyboard via `keyboard_handler` → `route_gui_key`. While a user program is running, serial bytes are pushed to the key queue (`key_queue_push`) instead of the line buffer
 - **Key queue**: circular `key_queue[64]` for user programs. When `user_program_active()`, printable keys (and serial bytes) push to the queue; `terminal_read_key()` pops (returns -1 when empty). `SYS_READ_KEY` is **non-blocking**; `read_key()` blocks in userland by spinning + `yield()`
 
 # AOS — minimal x86 kernel
@@ -37,7 +39,7 @@ No dedicated test, lint, or typecheck commands.
 - All kernel C code compiled `-ffreestanding -nostdlib -fno-builtin -fno-stack-protector -mno-sse -mno-mmx -mno-80387`
 - No libc; own `string.c` (`strcmp`, `strncpy`, `strlen`)
 - Include paths: `-Ikernel -Idrivers -Iarch/i386 -Iboot`
-- **1 MB ramdisk at `0x400000`** (`kernel/block.h` `RAMDISK_BASE`, above kernel BSS, below the staging buffer) — flat SFS (Simple File System), `SFS_MAX_FILES=64`
+- **2 MB ramdisk at `0x400000`** (`kernel/block.h` `RAMDISK_BASE`, above kernel BSS, below the staging buffer) — flat SFS (Simple File System), `SFS_MAX_FILES=64`
 - **33 syscalls via `int 0x80`** (DPL 3 gate, `idt_install_irq_flags(0x80, isr128, 0xEE)`), R/O user-level interface in `programs/aosabi.h`
 - `printf()` in `kernel/printf.c` writes to **both** VGA and COM1 (used for all kernel banners)
 - **Privilege separation**: paging enabled (`kernel/paging.c`), user programs run in **ring 3** via TSS (`arch/i386/gdt.c`, `kernel/user.c`/`user_tramp.S`), kernel stays in ring 0
@@ -98,7 +100,7 @@ In `boot/boot.S` the stack must have `%ebx` (info ptr) pushed first, `%eax` (mag
 
 ### Programs
 
-All commands (`help`, `uptime`, `clear`, `echo`, `tick`, `info`, `reboot`, `panic`, `ls`, `cat`, `rm`, `shutdown`, `format`, `test`) are **standalone ELF32 programs** under `programs/`:
+All commands (`help`, `uptime`, `clear`, `echo`, `tick`, `info`, `reboot`, `panic`, `ls`, `cat`, `rm`, `shutdown`, `format`, `test`, `cp`, `mv`, `mkdir`, `rmdir`, `head`, `wc`) are **standalone ELF32 programs** under `programs/`:
 
 - Compiled for load address `0x01000000` (`programs/programs.ld`)
 - Statically linked (`-static -nostdlib -n`), **no INTERP segment**
@@ -204,3 +206,14 @@ Step 1 runs **static musl i386** binaries (ET_EXEC, no INTERP) as user programs.
 - **TLS**: musl's `__set_thread_area` computes the selector as `entry_number*8 + 3` — a **GDT** selector (TI bit never set) — so the descriptor must live in the GDT, not an LDT. `set_thread_area`/`modify_ldt` record the user_desc in `lctx`, install it at GDT slot `TLS_ENTRY=6` (Linux's `GDT_ENTRY_TLS_MIN`) via `ldt_set_tls` (`arch/i386/gdt.c`), and return `entry_number = 6` → musl loads `%gs = 0x33`. `task_switch_kernel` re-installs the descriptor and calls `tls_reload_gs()` (`mov %gs, 0x33`) when the incoming task is `ABI_LINUX` with `tls_seg32` set; `linux_ctx_init` clears it for AOS tasks.
 - **brk/stack/mmap pointers all within the window** — do not touch the AOS user area (0x01000000..0x01804000), so Linux and AOS tasks never collide.
 - **Test harnesses**: `scripts/linhello.py` (musl hello in the kernel shell), `scripts/lincat.py` (musl cat reads `lin/test.txt`), both boot the ISO and check serial output for panics. Full regression: `manytest.py`, `ipctest.py`, `notepadtest.py` must stay green (the `lin/*` payload is hidden from the desktop icon grid alongside `bin/` in `wm.c refresh_files()`).
+
+## Pipes & shell pipelines
+
+- **`kernel/pipe.c`** — static array `pipes[PIPE_MAX=8]` of `struct aos_pipe` (4096-byte circular buffer, `nreaders`/`nwriters`), registered as VFS via `struct vfs_fs pipefs_fs` (`name="pipefs"`, per-fs `close` hook from `42500f1`). `read` blocks with `sti;hlt;cli` while `count==0 && nwriters>0` and returns 0 (EOF) when writers are gone; `write` blocks while the buffer is full and returns `-32` (EPIPE) when `nreaders==0`. `pipe_close` decrements the matching counter (VFS_O_WRONLY vs read) and frees the slot when both reach 0. Each pipe has a fake inode (`refcount=2`, `valid=0` so `vfs_put` never frees it).
+- **`kernel/vfs.c` `vfs_pipe(&rd,&wr)`** — allocates two global `ofiles[]` slots (`VFS_O_RDONLY`/`VFS_O_WRONLY`) backed by one `pipe_alloc()`'d pipe. `vfs_close_fd` now runs `fs->close` to update reader/writer counts.
+- **Pipe ends are global fds**: the read end `rd` and write end `wr` are slots in the shared `ofiles[]`, so a pipeline wires children by copying `c->fds[fd] = vfs_ofile_ptr(fd)` into each spawned task's own fd table (the spawned task has not been scheduled yet, so no race). `SYS_PIPE` (Linux syscall 42) fills a user `int fds[2]` and points the current task's `fds[rd]/fds[wr]` at them (musl `pipe()` falls back from pipe2 to pipe 42).
+- **Shell `exec_pipe()`** (`kernel/commands.c`): `a | b | c` splits on `|` operators (requires a SPACE before them, shared `find_operator` with redirects, max `PIPE_STAGES_MAX=8`), validates all stages up front (no builtins — prints `pipe: builtin not supported in pipeline`; no redirects; every cmd must resolve via `path_resolve`), creates N-1 pipes, spawns each stage, then wires the child's `stdin_fd`/`stdout_fd` (and `fds[]`) to the pipe ends after each `task_spawn`. `$?` = last stage's exit code via `task_waitpid` on each child in order. Task 0 (shell) is the parent of all stages.
+- **IF preservation is critical for pipelines**: `task_sleep`/`task_waitpid` use `irq_save`/`irq_restore` (pushfl/cli, sti-or-cli restore) instead of inlining `sti;hlt;cli`. The old trailing `cli` stuck when the wait ran in kernel context (exec_pipe's `task_waitpid` on the main-loop stack), leaving the shell's main `hlt` with IF=0 forever and freezing the whole system. `d5797d0`+`f5d1c1a` make the restore exact (added the `else cli`).
+- **Supported pipelines**: AOS writer → Linux reader (e.g. `ls /bin | lin/cat`), procfs source (`cat /proc/uptime | lin/cat`), blocking stress (`lin/piptest gen 20000 | lin/cat` through a 4096-byte buffer). Not supported: builtins as stages, redirects inside a stage.
+- **Test harness**: `scripts/pipetest.py` (boots the ISO headless, serial-only) checks boot OK, `lin/piptest` (in `tools/linux/piptest.c`, syscall-42 smoke) prints `PIPETEST OK`, the two pipelines above, and the stress case where the writer must block mid-way. It is a Linux test (needs `lin/piptest`), so it lives in `LINUX_TESTS` → part of `make test` regression alongside `linhello`/`lincat`/`lindirtest`.
+- **AGENTS.md `Test harnesses` note for `lindirtest`**: `scripts/lindirtest.py` (musl `ls` on SFS root + `/proc`) needs the qtest VNC keymap to include `slash` for the `/` argument — if the harness drops it, the listing renders but the assertion on root rows fails. Keep `qtest.py`'s typing mapping in sync when adding keys.

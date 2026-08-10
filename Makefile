@@ -18,10 +18,10 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
                kernel/progload.o kernel/paging.o kernel/pmm.o kernel/kmm.o \
               kernel/config.o kernel/user.o \
               kernel/user_tramp.o kernel/printf.o kernel/progs.o \
-               kernel/task.o kernel/linux_syscall.o kernel/block.o kernel/sfs2.o \
+               kernel/task.o kernel/linux_syscall.o kernel/pipe.o kernel/block.o kernel/sfs2.o \
                kernel/klog.o kernel/trace.o kernel/symtab.o
 
-PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest exitto random fstest procinfo bgspawn
+PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest exitto random fstest procinfo bgspawn cp mv mkdir rmdir head wc
 
 # All AOS programs are now built with the static musl i386 toolchain (Task 30).
 # If it is not installed, the program ELFs are skipped (fallback like lin/*):
@@ -34,7 +34,7 @@ PROG_ELFS = $(if $(MUSL_OK),$(addprefix build/prog/,$(addsuffix .elf,$(PROGRAMS)
 LINUX_CC  = $(MUSL_CC)
 LINUX_SRCS = $(wildcard tools/linux/*.c)
 LINUX_BINS = $(if $(wildcard $(LINUX_CC)),$(patsubst tools/linux/%.c,build/linux/%,$(LINUX_SRCS)))
-LINUX_EMBED = $(if $(LINUX_BINS),--data lin/hello=build/linux/hello --data lin/ls=build/linux/ls --data lin/cat=build/linux/cat --data lin/test.txt=tools/linux/test.txt)
+LINUX_EMBED = $(if $(LINUX_BINS),--data lin/hello=build/linux/hello --data lin/ls=build/linux/ls --data lin/cat=build/linux/cat --data lin/piptest=build/linux/piptest --data lin/test.txt=tools/linux/test.txt)
 
 all: aos.iso
 
@@ -116,12 +116,18 @@ run: aos.iso disk.img
 	  -netdev socket,id=n0,listen=127.0.0.1:9400 \
 	  -device virtio-net-pci,disable-modern=on,mac=52:54:00:12:34:56,netdev=n0
 
+# Headless debug launch: VNC + QMP + serial Unix sockets for the qemu-vnc MCP
+# tools (vm_connect vnc_port=5907, qmp_socket=/tmp/aos-debug.qmp,
+# serial_socket=/tmp/aos-debug.serial).
+debug: aos.iso
+	scripts/qemu-debug.sh
+
 # Headless regression suite: each script boots aos.iso under QEMU, drives the
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
 # linhello/lincat need the musl Linux payload, so they are included only when
 # the musl toolchain is installed.
-LINUX_TESTS = $(if $(LINUX_BINS),linhello lincat lindirtest)
-TESTS = ipctest manytest notepadtest sleeptest rngtest blktest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest $(LINUX_TESTS)
+LINUX_TESTS = $(if $(LINUX_BINS),linhello lincat lindirtest pipetest)
+TESTS = ipctest manytest notepadtest sleeptest rngtest blktest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest $(LINUX_TESTS)
 
 # Fast subset for CI: quick boots, no extra virtio devices. The musl Linux
 # tests are included only when the musl toolchain is installed.

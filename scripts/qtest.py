@@ -148,6 +148,12 @@ class QTest:
         self.qemu = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL)
         wait_for(self.mon)
+        if self.serial_mode == "socket":
+            # Connect the serial socket before the guest boots: a unix-socket
+            # chardev drops guest COM1 output while no client is connected, so
+            # a late connect would lose the early boot lines (and the AOS>
+            # prompt itself) that socket tests assert on.
+            self.serial_socket()
         time.sleep(boot_wait)
         return self
 
@@ -265,7 +271,7 @@ class QTest:
 
     def type_text(self, text):
         """Type a string via sendkey (``\\n`` -> ``ret``, space -> ``spc``)."""
-        keys = {"\n": "ret", " ": "spc"}
+        keys = {"\n": "ret", " ": "spc", "/": "slash"}
         for ch in text:
             self.key(keys.get(ch, ch))
 
@@ -342,8 +348,8 @@ class QTest:
         self._serial_sock = s
         return s
 
-    def serial_drain(self, socket, timeout=30, needle=b""):
-        """Read from *socket* until *needle* or *timeout`` elagues.
+    def serial_drain(self, sock, timeout=30, needle=b""):
+        """Read from *sock* until *needle* or *timeout`` elagues.
 
         Returns the accumulated bytes. Re-raises nothing on timeout -- the
         caller checks the result.
@@ -352,7 +358,7 @@ class QTest:
         end = time.time() + timeout
         while time.time() < end:
             try:
-                d = socket.recv(4096)
+                d = sock.recv(4096)
                 if not d:
                     break
                 out += d
@@ -367,18 +373,21 @@ class QTest:
 
         After the prompt appears, sleeps ``boot_wait`` seconds for the WM to
         settle. Raises if ``KERNEL PANIC`` is seen (unless *panic_ok*).
+        Returns the bytes drained from *socket* in socket mode, else ``None``.
         """
         if socket is not None:
             out = self.serial_drain(socket, timeout=40, needle=b"AOS>")
             if b"KERNEL PANIC" in out and not panic_ok:
                 raise AssertionError("kernel panic during boot:\n"
                                      + out[-400:].decode(errors="replace"))
-        else:
-            if not self.serial_wait("AOS>", timeout=40):
-                raise AssertionError("AOS> prompt missing after boot")
-            if "KERNEL PANIC" in self.serial_read() and not panic_ok:
-                raise AssertionError("kernel panic during boot")
+            time.sleep(self.boot_wait)
+            return out
+        if not self.serial_wait("AOS>", timeout=40):
+            raise AssertionError("AOS> prompt missing after boot")
+        if "KERNEL PANIC" in self.serial_read() and not panic_ok:
+            raise AssertionError("kernel panic during boot")
         time.sleep(self.boot_wait)
+        return None
 
     # -----------------------------------------------------------------
     # Common GUI helpers

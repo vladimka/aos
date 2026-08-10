@@ -20,6 +20,8 @@ static void irq_save(unsigned int *flags) {
 static void irq_restore(unsigned int flags) {
     if (flags & 0x200)
         __asm__ volatile("sti");
+    else
+        __asm__ volatile("cli");
 }
 
 static int class_index(unsigned int size) {

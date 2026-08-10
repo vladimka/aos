@@ -4,6 +4,7 @@
 *.o
 *.d
 *.bin
+disk.img
 kernel/progs.c
 iso/
 .worktrees/

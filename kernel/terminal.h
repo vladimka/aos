@@ -26,5 +26,7 @@ void terminal_serial_byte(unsigned char c);
 int  terminal_read_key(void);
 void terminal_reset_keys(void);
 int  terminal_scan_event(unsigned char scancode);
+int  terminal_pending_cmd(void);
+void terminal_run_pending(void);
 
 #endif

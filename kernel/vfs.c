@@ -1,4 +1,5 @@
 #include "vfs.h"
+#include "pipe.h"
 #include "sfs2.h"
 #include "commands.h"
 #include "string.h"
@@ -259,9 +260,10 @@ static int path_split(const char *path, char *dirbuf, unsigned int dirsz,
     while (len > 1 && path[len - 1] == '/') len--;   // strip trailing slashes
     if (len == 0) return -1;
     unsigned int last_slash = 0;                       // index of last '/'
+    unsigned int name_begin = 0;                       // char after last '/'
     for (unsigned int i = 0; i < len; i++)
-        if (path[i] == '/') last_slash = i;
-    unsigned int namelen = len - last_slash - 1;
+        if (path[i] == '/') { last_slash = i; name_begin = i + 1; }
+    unsigned int namelen = len - name_begin;
     if (namelen == 0 || namelen > namesz - 1) return -1;
     unsigned int dirlen = last_slash;
     if (dirlen >= dirsz) return -1;
@@ -269,7 +271,7 @@ static int path_split(const char *path, char *dirbuf, unsigned int dirsz,
         dirbuf[i] = path[i];
     dirbuf[dirlen] = '\0';
     for (unsigned int i = 0; i < namelen; i++)
-        name[i] = path[last_slash + 1 + i];
+        name[i] = path[name_begin + i];
     name[namelen] = '\0';
     return 0;
 }
@@ -461,10 +463,38 @@ int vfs_open_fd(struct vfs_inode *cwd, const char *path, int flags) {
     return fd;
 }
 
+int vfs_pipe(int *rd, int *wr) {
+    int r = -1, w = -1;
+    for (int i = 3; i < VFS_OFILES; i++)
+        if (!ofiles[i].inode) { r = i; break; }
+    if (r < 0) return VFS_EMFILE;
+    for (int i = r + 1; i < VFS_OFILES; i++)
+        if (!ofiles[i].inode) { w = i; break; }
+    if (w < 0) return VFS_EMFILE;
+    struct aos_pipe *p = pipe_alloc();
+    if (!p) return VFS_EMFILE;
+    ofiles[r].inode = &p->inode;
+    ofiles[r].flags = VFS_O_RDONLY;
+    ofiles[r].pos = 0;
+    ofiles[r].refcount = 1;
+    ofiles[w].inode = &p->inode;
+    ofiles[w].flags = VFS_O_WRONLY;
+    ofiles[w].pos = 0;
+    ofiles[w].refcount = 1;
+    *rd = r;
+    *wr = w;
+    return 0;
+}
+
 int vfs_close_fd(int fd) {
     struct open_file *of = ofile_get(fd);
     if (!of) return VFS_EBADF;
+    struct vfs_fs *fs = of->inode->fs;
+    unsigned int ino = of->inode->ino;
+    int flags = of->flags;
     vfs_put(of->inode);
+    if (fs && fs->close)
+        fs->close(fs, ino, flags);
     of->inode = 0;
     of->refcount = 0;
     return 0;

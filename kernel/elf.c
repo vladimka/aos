@@ -97,6 +97,16 @@ int elf_probe(const char *path, int *abi) {
 // lc->stack_sp. Writes are performed top-down from lc->stack_top.
 #define MAX_ARGC 16
 #define STACK_MARGIN 0x10000   // pages mapped ahead of stack building
+
+// Length of a space-delimited token: runs until ' ' or NUL. argv tokens point
+// into the shared args string and are not NUL-terminated, so strlen() would
+// read past the token into the following arguments.
+static unsigned int arglen(const char *s) {
+    unsigned int n = 0;
+    while (s[n] && s[n] != ' ') n++;
+    return n;
+}
+
 static void stack_build(struct linux_ctx *lc, const char *prog,
                         const char *args, struct elf_header *ehdr,
                         unsigned int phdr_vaddr) {
@@ -117,7 +127,7 @@ static void stack_build(struct linux_ctx *lc, const char *prog,
     unsigned int el = strlen(prog);
     unsigned int str_len = 0;
     for (int i = 0; i < argc; i++)
-        str_len += strlen(argv[i]) + 1;
+        str_len += arglen(argv[i]) + 1;
     unsigned int total = 16 + (el + 1) + str_len + 13 * 8 + 4 + (argc + 1) * 4 + 4;
     unsigned int pad = total & 0xF;   // pad at top so final ESP is 16-aligned
     unsigned char *s = (unsigned char *)lc->stack_top - pad;
@@ -138,9 +148,10 @@ static void stack_build(struct linux_ctx *lc, const char *prog,
     // argv strings (copied into the stack)
     unsigned int arg_addrs[MAX_ARGC];
     for (int i = argc - 1; i >= 0; i--) {
-        unsigned int n = strlen(argv[i]);
+        unsigned int n = arglen(argv[i]);
         s -= n + 1;
-        memcpy(s, argv[i], n + 1);
+        memcpy(s, argv[i], n);
+        s[n] = '\0';
         arg_addrs[i] = (unsigned int)s;
     }
 

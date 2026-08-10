@@ -14,8 +14,7 @@ BOOT_MARKS = [
 def main():
     with QTest("klog", serial_mode="socket") as q:
         s = q.serial_socket()
-        q.boot_and_ready(socket=s)
-        log = q.serial_read()
+        log = q.boot_and_ready(socket=s).decode(errors="replace")
         for mark in BOOT_MARKS:
             if mark not in log:
                 raise AssertionError("serial log missing %r; tail:\n%s"
