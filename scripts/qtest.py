@@ -271,7 +271,7 @@ class QTest:
 
     def type_text(self, text):
         """Type a string via sendkey (``\\n`` -> ``ret``, space -> ``spc``)."""
-        keys = {"\n": "ret", " ": "spc"}
+        keys = {"\n": "ret", " ": "spc", "/": "slash"}
         for ch in text:
             self.key(keys.get(ch, ch))
 
