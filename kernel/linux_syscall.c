@@ -446,13 +446,13 @@ void linux_syscall_handler(struct registers *r) {
         r->eax = 0;
         break;
 
-    case 54: {  // ioctl — FIONBIO only (0x5421)
+    case 54: {  // ioctl(fd, req, arg) — FIONBIO only (0x5421)
         int fd = (int)r->ebx;
-        unsigned int req = r->edx;
+        unsigned int req = r->ecx;
         struct open_file *of = vfs_ofile_ptr(fd);
         if (!of) { r->eax = -9; break; }                       // EBADF
         if (req == 0x5421) {                                    // FIONBIO
-            const int *arg = (const int *)r->ecx;
+            const int *arg = (const int *)r->edx;
             if (!in_luser(arg, 4)) { r->eax = -14; break; }    // EFAULT
             if (*arg) of->flags |= VFS_O_NONBLOCK;
             else of->flags &= ~VFS_O_NONBLOCK;
