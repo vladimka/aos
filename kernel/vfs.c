@@ -503,6 +503,7 @@ int vfs_close_fd(int fd) {
 int vfs_dup_fd(int fd) {
     struct open_file *of = ofile_get(fd);
     if (!of) return VFS_EBADF;
+    int flags = of->flags;
     int fd2 = -1;
     for (int i = 3; i < VFS_OFILES; i++) {
         if (!ofiles[i].inode) {
@@ -514,6 +515,8 @@ int vfs_dup_fd(int fd) {
     ofiles[fd2] = *of;
     ofiles[fd2].refcount = 1;
     vfs_get(of->inode->fs, of->inode->ino);   // extra inode ref for the copy
+    if (of->inode->fs == &pipefs_fs)
+        pipe_dup(of->inode->fs, of->inode->ino, flags);
     return fd2;
 }
 

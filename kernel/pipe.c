@@ -120,6 +120,13 @@ void pipe_close(struct vfs_fs *fs, unsigned int ino, int flags) {
         p->used = 0;
 }
 
+void pipe_dup(struct vfs_fs *fs, unsigned int ino, int flags) {
+    (void)fs;
+    struct aos_pipe *p = &pipes[ino - 1];
+    if (flags & VFS_O_WRONLY) p->nwriters++;
+    else p->nreaders++;
+}
+
 // Stub directory ops: a pipe fd can be passed as a dirfd to openat/fstatat64,
 // which resolves it via vfs_get -> fs->stat (works) and then walks the path
 // with fs->lookup. These must never be NULL.

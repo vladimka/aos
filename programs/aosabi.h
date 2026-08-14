@@ -29,6 +29,8 @@
 #define AOS_UPTIME        517
 #define AOS_GET_TICK      518
 #define AOS_PANIC         519
+#define AOS_SPAWN_FDS     520
+#define AOS_INHERIT_FD    0xFFFFFFFE
 
 #ifndef FIONBIO
 #define FIONBIO 0x5421
@@ -78,6 +80,11 @@ struct aos_fill_req {
     unsigned int pitch;
     int x, y, w, h;
     unsigned int rgb;
+};
+
+struct aos_redir {
+    unsigned int child_fd;
+    unsigned int global_fd;
 };
 
 // Open flags (Linux-compatible values), used by file syscalls. Kept with the
@@ -143,6 +150,12 @@ static __attribute__((unused)) int aos_recv(struct aos_msg *m) { return aos_sysc
 static __attribute__((unused)) int aos_setout(unsigned int pid) { return aos_syscall(AOS_SETOUT, (int)pid, 0, 0, 0, 0); }
 static __attribute__((unused)) int aos_spawn(const char *path, const char *args, unsigned int sink) {
     return aos_syscall(AOS_SPAWN, (int)path, (int)args, (int)sink, 0, 0);
+}
+static __attribute__((unused)) int aos_spawn_fds(const char *path,
+        const char *args, unsigned int sink,
+        const struct aos_redir *redirs) {
+    return aos_syscall(AOS_SPAWN_FDS, (int)path, (int)args, (int)sink,
+                       (int)redirs, 0);
 }
 static __attribute__((unused)) int aos_waitpid(unsigned int pid) { return aos_syscall(AOS_WAITPID, (int)pid, 0, 0, 0, 0); }
 static __attribute__((unused)) int aos_get_children(unsigned int *pids, unsigned int max) {

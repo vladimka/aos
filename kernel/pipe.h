@@ -19,6 +19,7 @@ struct aos_pipe {
 
 struct aos_pipe *pipe_alloc(void);
 void pipe_close(struct vfs_fs *fs, unsigned int ino, int flags);
+void pipe_dup(struct vfs_fs *fs, unsigned int ino, int flags);
 int pipe_read_nonblock(struct vfs_fs *fs, unsigned int ino, void *buf,
                        unsigned int len, unsigned int off);
 int pipe_write_nonblock(struct vfs_fs *fs, unsigned int ino, const void *buf,
