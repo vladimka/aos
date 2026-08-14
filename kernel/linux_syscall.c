@@ -446,9 +446,22 @@ void linux_syscall_handler(struct registers *r) {
         r->eax = 0;
         break;
 
-    case 54:   // ioctl — no ttys
-        r->eax = -25;                                       // -ENOTTY
+    case 54: {  // ioctl — FIONBIO only (0x5421)
+        int fd = (int)r->ebx;
+        unsigned int req = r->edx;
+        struct open_file *of = vfs_ofile_ptr(fd);
+        if (!of) { r->eax = -9; break; }                       // EBADF
+        if (req == 0x5421) {                                    // FIONBIO
+            const int *arg = (const int *)r->ecx;
+            if (!in_luser(arg, 4)) { r->eax = -14; break; }    // EFAULT
+            if (*arg) of->flags |= VFS_O_NONBLOCK;
+            else of->flags &= ~VFS_O_NONBLOCK;
+            r->eax = 0;
+        } else {
+            r->eax = -25;                                      // ENOTTY
+        }
         break;
+    }
 
     case 78: {  // gettimeofday(tv, tz)
         void *tv = (void *)r->ebx;

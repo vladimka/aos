@@ -17,6 +17,7 @@
 #define VFS_O_APPEND   0x00400
 #define VFS_O_DIRECTORY 0x10000
 #define VFS_O_CREAT_DIR 0x20000   // create missing last component as a dir
+#define VFS_O_NONBLOCK  0x400000
 
 // Negative errnos
 #define VFS_EPERM      -1

@@ -527,6 +527,9 @@ int vfs_read_fd(int fd, void *buf, unsigned int len) {
     if (!of) return VFS_EBADF;
     if (of->flags & VFS_O_WRONLY) return VFS_EBADF;
     if (of->inode->type == 2) return VFS_EISDIR;
+    if (of->inode->fs == &pipefs_fs && (of->flags & VFS_O_NONBLOCK))
+        return pipe_read_nonblock(of->inode->fs, of->inode->ino, buf, len,
+                                  of->pos);
     int n = of->inode->fs->read_at(of->inode->fs, of->inode->ino, buf, len,
                                    of->pos);
     if (n > 0) of->pos += (unsigned int)n;
@@ -539,6 +542,9 @@ int vfs_write_fd(int fd, const void *buf, unsigned int len) {
     if (!(of->flags & (VFS_O_WRONLY | VFS_O_RDWR))) return VFS_EBADF;
     if (of->inode->type == 2) return VFS_EISDIR;
     if (of->flags & VFS_O_APPEND) of->pos = of->inode->size;
+    if (of->inode->fs == &pipefs_fs && (of->flags & VFS_O_NONBLOCK))
+        return pipe_write_nonblock(of->inode->fs, of->inode->ino, buf, len,
+                                   of->pos);
     int n = of->inode->fs->write_at(of->inode->fs, of->inode->ino, buf, len,
                                     of->pos);
     if (n > 0) {

@@ -30,6 +30,10 @@
 #define AOS_GET_TICK      518
 #define AOS_PANIC         519
 
+#ifndef FIONBIO
+#define FIONBIO 0x5421
+#endif
+
 // ---- Mailbox message types ----
 #define MSG_KEY     1   // key event: a = codepoint (or GUI_KEY_* special code)
 #define MSG_DATA    2   // stdout data: a = byte count, b/c/d = 12 payload bytes

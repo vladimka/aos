@@ -75,6 +75,39 @@ static int pipe_stat(struct vfs_fs *fs, unsigned int ino, struct aos_stat *st) {
     return 0;
 }
 
+int pipe_read_nonblock(struct vfs_fs *fs, unsigned int ino, void *buf,
+                       unsigned int len, unsigned int off) {
+    (void)fs; (void)off;
+    if (len == 0) return 0;
+    struct aos_pipe *p = &pipes[ino - 1];
+    if (p->count == 0)
+        return p->nwriters > 0 ? -11 : 0;          // EAGAIN / EOF
+    unsigned int n = len < p->count ? len : p->count;
+    for (unsigned int i = 0; i < n; i++) {
+        ((unsigned char *)buf)[i] = p->buf[p->tail];
+        p->tail = (p->tail + 1) % PIPE_BUF_SIZE;
+    }
+    p->count -= n;
+    return (int)n;
+}
+
+int pipe_write_nonblock(struct vfs_fs *fs, unsigned int ino, const void *buf,
+                        unsigned int len, unsigned int off) {
+    (void)fs; (void)off;
+    if (len == 0) return 0;
+    struct aos_pipe *p = &pipes[ino - 1];
+    if (p->nreaders == 0) return -32;              // EPIPE
+    if (p->count == PIPE_BUF_SIZE) return -11;     // EAGAIN
+    unsigned int space = PIPE_BUF_SIZE - p->count;
+    unsigned int n = len < space ? len : space;
+    for (unsigned int i = 0; i < n; i++) {
+        p->buf[p->head] = ((const unsigned char *)buf)[i];
+        p->head = (p->head + 1) % PIPE_BUF_SIZE;
+    }
+    p->count += n;
+    return (int)n;
+}
+
 void pipe_close(struct vfs_fs *fs, unsigned int ino, int flags) {
     (void)fs;
     struct aos_pipe *p = &pipes[ino - 1];
