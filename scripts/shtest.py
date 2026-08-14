@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""E2E smoke test for the userland shell bin/sh (Task 3).
+"""E2E smoke test for the userland shell bin/sh (Task 4).
 
 Boots the ISO headless and drives bin/sh over the serial console: prompt,
 builtins (pwd), PATH lookup (ls /bin), $? status, unknown-command error,
-and exit back to the kernel shell.
+redirection (echo > f, cat f), pipelines (ls | lin/cat, 3-stage with a
+Linux reader), background jobs (&), and exit back to the kernel shell.
+
+NOTE: bin/sh's line editor executes a line on Enter = 0x0D (\\r); a \\n
+(0x0A) byte is dropped. The serial path pushes bytes raw to the key queue
+while a user program runs, so every line must be sent with \\r.
 
 NOTE: bin/sh's line editor executes a line on Enter = 0x0D (\\r); a \\n
 (0x0A) byte is dropped. The serial path pushes bytes raw to the key queue
@@ -105,6 +110,46 @@ def main():
             raise AssertionError("$? != 127 after unknown command; out:\n%s"
                                  % out[-400:].decode(errors="replace"))
         print("PASS: $? == 127 after unknown command")
+
+        # ---- Task 4: redirects ----
+        out = cmd(s, "echo hi > f")
+        log += out
+        out = cmd(s, "cat f")
+        log += out
+        if b"hi" not in out:
+            raise AssertionError("cat f did not print the redirected content; "
+                                 "out:\n%s" % out[-400:].decode(errors="replace"))
+        print("PASS: redirect echo hi > f then cat f")
+
+        # ---- Task 4: pipelines (AOS writer -> Linux reader) ----
+        out = cmd(s, "ls /bin | lin/cat")
+        log += out
+        if b"Files in /bin" not in out or b"sh (" not in out:
+            raise AssertionError("ls /bin | lin/cat did not list sh; out:\n%s"
+                                 % out[-400:].decode(errors="replace"))
+        print("PASS: pipeline ls /bin | lin/cat lists sh")
+
+        out = cmd(s, "bin/ls / | lin/cat | lin/cat")
+        log += out
+        if b"Files in /:" not in out:
+            raise AssertionError("3-stage pipeline did not list /; out:\n%s"
+                                 % out[-400:].decode(errors="replace"))
+        print("PASS: 3-stage pipeline bin/ls / | lin/cat | lin/cat")
+
+        out = cmd(s, "echo $?")
+        log += out
+        if b"\n0\n" not in out:
+            raise AssertionError("$? != 0 after successful pipeline; out:\n%s"
+                                 % out[-400:].decode(errors="replace"))
+        print("PASS: $? == 0 after successful pipeline")
+
+        # ---- Task 4: background job ----
+        out = cmd(s, "ls /bin &")
+        log += out
+        if b"bg: pid " not in out:
+            raise AssertionError("ls /bin & did not print 'bg: pid'; out:\n%s"
+                                 % out[-400:].decode(errors="replace"))
+        print("PASS: background ls /bin & prints bg: pid")
 
         out = cmd(s, "exit")
         log += out

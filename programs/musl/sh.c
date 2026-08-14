@@ -204,10 +204,103 @@ static int run_builtin(int argc, char **argv) {
     return 0;
 }
 
-static void run_stage(int argc, char **argv, int bg) {
-    if (run_builtin(argc, argv)) return;
+static int parse_redirs(char **argv, int *argc, const char **in_f,
+                        const char **out_f, int *append) {
+    int w = 0;
+    for (int i = 0; i < *argc; i++) {
+        if (strcmp(argv[i], ">") == 0 || strcmp(argv[i], ">>") == 0) {
+            if (i + 1 >= *argc) return -1;
+            *out_f = argv[i + 1];
+            *append = (argv[i][1] == '>');
+            i++;
+        } else if (strcmp(argv[i], "<") == 0) {
+            if (i + 1 >= *argc) return -1;
+            *in_f = argv[i + 1];
+            i++;
+        } else {
+            argv[w++] = argv[i];
+        }
+    }
+    *argc = w;
+    return 0;
+}
+
+static void run_stage(int i, int nstages, int argc, char **argv,
+                      int *pipes, int *pids, int bg) {
+    const char *in_f = 0, *out_f = 0;
+    int append = 0;
+    if (nstages == 1) {
+        if (parse_redirs(argv, &argc, &in_f, &out_f, &append) < 0) {
+            write(1, "sh: bad redirect\r\n", 18);
+            last_status = 1;
+            return;
+        }
+    }
+    if (argc == 0) { pids[i] = -1; return; }
+    if (run_builtin(argc, argv)) {
+        // NOTE (plan fix): builtins MUST run for a single command too. The
+        // plan's `nstages > 1 &&` made exit/cd/pwd/export/setpath fall through
+        // to path_resolve and report "Unknown command" for nstages==1. A
+        // builtin inside a pipeline is still rejected.
+        if (nstages > 1) {
+            write(1, "sh: builtin not supported in pipeline\r\n", 39);
+            last_status = 1;
+        }
+        pids[i] = -1;
+        return;
+    }
+    struct aos_redir redirs[2 + MAX_ARGS + 1];
+    int nr = 0;
+    int has_in = 0, has_out = 0;
+    if (i > 0) {
+        redirs[nr].child_fd = 0; redirs[nr].global_fd = pipes[2 * (i - 1)];
+        nr++; has_in = 1;
+    }
+    if (i + 1 < nstages) {
+        redirs[nr].child_fd = 1; redirs[nr].global_fd = pipes[2 * i + 1];
+        nr++; has_out = 1;
+    }
+    int kept[8];
+    int nkeep = 0;
+    if (in_f) {
+        int fd = open(in_f, O_RDONLY, 0);
+        if (fd < 0) {
+            write(1, "sh: cannot open ", 16);
+            write(1, in_f, strlen(in_f));
+            write(1, "\r\n", 2);
+            last_status = 1;
+            return;
+        }
+        redirs[nr].child_fd = 0; redirs[nr].global_fd = fd; nr++;
+        kept[nkeep++] = fd;
+        has_in = 1;
+    }
+    if (out_f) {
+        int flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
+        int fd = open(out_f, flags, 0644);
+        if (fd < 0) {
+            for (int k = 0; k < nkeep; k++) close(kept[k]);
+            write(1, "sh: cannot open ", 16);
+            write(1, out_f, strlen(out_f));
+            write(1, "\r\n", 2);
+            last_status = 1;
+            return;
+        }
+        redirs[nr].child_fd = 1; redirs[nr].global_fd = fd; nr++;
+        kept[nkeep++] = fd;
+        has_out = 1;
+    }
+    if (!has_in) {
+        redirs[nr].child_fd = 0; redirs[nr].global_fd = AOS_INHERIT_FD; nr++;
+    }
+    if (!has_out) {
+        redirs[nr].child_fd = 1; redirs[nr].global_fd = AOS_INHERIT_FD; nr++;
+    }
+    redirs[nr].child_fd = 0xFFFFFFFF; redirs[nr].global_fd = 0; nr++;
+
     char path[160];
     if (!path_resolve(argv[0], path, sizeof path)) {
+        for (int k = 0; k < nkeep; k++) close(kept[k]);
         write(1, "Unknown command: ", 17);
         write(1, argv[0], strlen(argv[0]));
         write(1, "\r\n", 2);
@@ -216,35 +309,42 @@ static void run_stage(int argc, char **argv, int bg) {
     }
     char args[LBUF];
     int o = 0;
-    for (int i = 1; i < argc; i++) {
-        for (char *p = argv[i]; *p && o < (int)sizeof args - 2; p++) args[o++] = *p;
+    for (int a = 1; a < argc; a++) {
+        for (char *p = argv[a]; *p && o < (int)sizeof args - 2; p++) args[o++] = *p;
         args[o++] = ' ';
     }
     if (o) o--;
     args[o] = 0;
-    struct aos_redir redirs[3];
-    redirs[0].child_fd = 0; redirs[0].global_fd = AOS_INHERIT_FD;
-    redirs[1].child_fd = 1; redirs[1].global_fd = AOS_INHERIT_FD;
-    redirs[2].child_fd = 0xFFFFFFFF; redirs[2].global_fd = 0;
+
     int pid = aos_spawn_fds(path, args, 0, redirs);
+    for (int k = 0; k < nkeep; k++) close(kept[k]);
     if (pid < 0) {
         write(1, "cannot run command\r\n", 20);
         last_status = 1;
+        pids[i] = -1;
         return;
     }
+    pids[i] = pid;
     if (bg) {
         char b[32];
         int bn = snprintf(b, sizeof b, "bg: pid %d\r\n", pid);
         write(1, b, (size_t)bn);
-        return;
     }
-    last_status = aos_waitpid((unsigned int)pid);
 }
 
-static int has_operator(const char *s) {
-    for (; *s; s++)
-        if (*s == '|' || *s == '>' || *s == '<' || *s == '&') return 1;
-    return 0;
+static int split_stages(char *s, char **out, int max) {
+    int n = 0;
+    for (;;) {
+        while (*s == ' ' || *s == '\t') s++;
+        if (n >= max) return -1;
+        out[n++] = s;
+        int i = 0;
+        while (s[i] && !(s[i] == '|' && i > 0 && s[i - 1] == ' ')) i++;
+        if (!s[i]) break;
+        s[i] = 0;
+        s = s + i + 1;
+    }
+    return n;
 }
 
 static void expand(char *out, int cap, const char *in) {
@@ -281,9 +381,9 @@ static void execute(void) {
     buf[len] = 0;
     write(1, "\r\n", 2);
     if (len == 0) { redraw(); return; }
-    line[0] = 0;
-    len = 0;
-    cur = 0;
+    // NOTE (plan fix): clear the line after submit (Task 3 fix). Without it
+    // the next input appends to the stale line.
+    line[0] = 0; len = 0; cur = 0;
     char exp[LBUF];
     expand(exp, sizeof exp, buf);
 
@@ -291,15 +391,43 @@ static void execute(void) {
     int n = (int)strlen(exp);
     if (n > 0 && exp[n - 1] == '&') { bg = 1; exp[--n] = 0; }
 
-    if (has_operator(exp)) {
-        write(1, "sh: pipelines and redirects: not implemented yet\r\n", 50);
+    char *stage[MAX_STAGES];
+    int nstages = split_stages(exp, stage, MAX_STAGES);
+    if (nstages < 0) {
+        write(1, "sh: too many stages\r\n", 21);
         last_status = 1;
         redraw();
         return;
     }
-    char *argv[MAX_ARGS];
-    int argc = tokenize(exp, argv, MAX_ARGS);
-    if (argc > 0) run_stage(argc, argv, bg);
+    if (nstages == 0) { redraw(); return; }
+
+    int pipes[2 * (MAX_STAGES - 1)];
+    int npipes = nstages - 1;
+    for (int i = 0; i < npipes; i++) {
+        if (pipe(pipes + 2 * i) != 0) {
+            write(1, "sh: pipe failed\r\n", 17);
+            last_status = 1;
+            redraw();
+            return;
+        }
+    }
+    int pids[MAX_STAGES];
+    for (int i = 0; i < MAX_STAGES; i++) pids[i] = -1;
+
+    for (int i = 0; i < nstages; i++) {
+        char *argv[MAX_ARGS];
+        int argc = tokenize(stage[i], argv, MAX_ARGS);
+        if (argc == 0) { pids[i] = -1; continue; }
+        run_stage(i, nstages, argc, argv, pipes, pids, bg);
+    }
+    for (int i = 0; i < npipes; i++) {
+        close(pipes[2 * i]);
+        close(pipes[2 * i + 1]);
+    }
+    if (!bg) {
+        for (int i = 0; i < nstages; i++)
+            if (pids[i] > 0) last_status = aos_waitpid((unsigned int)pids[i]);
+    }
     redraw();
 }
 
