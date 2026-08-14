@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <dirent.h>
 #include "aosabi.h"
 
 #define LBUF       256
@@ -15,6 +16,12 @@ static char line[LBUF];
 static int len, cur;                     // byte length / byte cursor offset
 static int last_status = 0;
 static char shell_path[128] = "bin";
+
+static char tab_word[64];
+static int tab_word_off;
+static int tab_idx;
+static int tab_nmatches;
+static char tab_matches[40][64];
 
 #define MAX_VARS 16
 static char var_name[MAX_VARS][32];
@@ -55,18 +62,22 @@ static void redraw(void) {
 }
 
 static void insert_byte(unsigned char c) {
+    tab_idx = 0;
     if (len >= LBUF - 1) return;
     memmove(line + cur + 1, line + cur, (size_t)(len - cur));
     line[cur++] = (char)c;
     len++;
+    line[len] = 0;   // keep line NUL-terminated (stale tail breaks hist_push/dedup)
     redraw();
 }
 
 static void backspace(void) {
+    tab_idx = 0;
     if (cur <= 0) return;
     do { cur--; } while (cur > 0 && ((unsigned char)line[cur] & 0xC0) == 0x80);
     memmove(line + cur, line + cur + 1, (size_t)(len - cur - 1));
     len--;
+    line[len] = 0;
     redraw();
 }
 
@@ -75,6 +86,7 @@ static void delete_char(void) {
     int cl = utf8_lead((unsigned char)line[cur]);
     memmove(line + cur, line + cur + cl, (size_t)(len - cur - cl));
     len -= cl;
+    line[len] = 0;
     redraw();
 }
 
@@ -111,6 +123,142 @@ static void env_set(const char *name, const char *val) {
         var_name[var_count][sizeof var_name[0] - 1] = 0;
         var_val[var_count][sizeof var_val[0] - 1] = 0;
         var_count++;
+    }
+}
+
+#define HIST_MAX 16
+static char hist[HIST_MAX][LBUF];
+static int hist_count;
+static int hist_cur = -1;
+
+static void hist_push(void) {
+    if (len == 0) return;
+    if (hist_count > 0 && strcmp(hist[(hist_count - 1) % HIST_MAX], line) == 0) {
+        hist_cur = -1;   // reset browse cursor even on duplicate
+        return;
+    }
+    memcpy(hist[hist_count % HIST_MAX], line, (size_t)len + 1);
+    hist_count++;
+    hist_cur = -1;
+}
+
+static void hist_load(int idx) {
+    memcpy(line, hist[idx % HIST_MAX], LBUF);
+    len = (int)strlen(line);
+    cur = len;
+    redraw();
+}
+
+static void hist_prev(void) {
+    if (hist_count == 0) return;
+    if (hist_cur < 0) hist_cur = hist_count - 1;
+    else if (hist_cur > hist_count - HIST_MAX && hist_cur > 0) hist_cur--;
+    else return;
+    hist_load(hist_cur);
+}
+
+static void hist_next(void) {
+    if (hist_cur < 0) return;
+    if (hist_cur == hist_count - 1) {
+        hist_cur = -1;
+        line[0] = 0; len = 0; cur = 0;
+        redraw();
+        return;
+    }
+    hist_cur++;
+    hist_load(hist_cur);
+}
+
+static void tab_collect(void) {
+    int ws = cur;
+    while (ws > 0 && line[ws - 1] != ' ') ws--;
+    tab_word_off = ws;
+    int wl = cur - ws;
+    if (wl >= (int)sizeof tab_word) wl = (int)sizeof tab_word - 1;
+    memcpy(tab_word, line + ws, (size_t)wl);
+    tab_word[wl] = 0;
+    tab_nmatches = 0;
+    char *p = shell_path;
+    while (*p && tab_nmatches < 40) {
+        char *sep = strchr(p, ':');
+        int plen = sep ? (int)(sep - p) : (int)strlen(p);
+        if (plen > 0) {
+            char dir[96];
+            int o = 0;
+            for (int i = 0; i < plen && o < 95; i++) dir[o++] = p[i];
+            dir[o] = 0;
+            DIR *d = opendir(dir);
+            if (d) {
+                struct dirent *e;
+                while ((e = readdir(d)) && tab_nmatches < 40)
+                    if (strncmp(e->d_name, tab_word, (size_t)wl) == 0)
+                        strncpy(tab_matches[tab_nmatches++], e->d_name, 63);
+                closedir(d);
+            }
+        }
+        if (!sep) break;
+        p = sep + 1;
+    }
+}
+
+static void tab_replace_word(const char *m) {
+    int off = tab_word_off;
+    while (off < len && line[off] != ' ')
+        off += utf8_lead((unsigned char)line[off]);
+    memmove(line + tab_word_off, line + off, (size_t)(len - off));
+    len -= (off - tab_word_off);
+    cur = tab_word_off;
+    for (const char *s = m; *s && len < LBUF - 1; s++) line[cur++] = *s;
+    len = cur;
+    redraw();
+}
+
+static void tab_complete(void) {
+    if (cur != len) return;
+    if (tab_nmatches == 0 || tab_idx == 0) {
+        tab_idx = 0;
+        tab_collect();
+    }
+    if (tab_nmatches == 0) return;
+    if (tab_nmatches == 1) {
+        tab_idx = 1;
+        tab_replace_word(tab_matches[0]);
+        return;
+    }
+    if (tab_idx > 0) {                       // repeated Tab — cycle
+        tab_replace_word(tab_matches[tab_idx % tab_nmatches]);
+        tab_idx++;
+        return;
+    }
+    const char *m0 = tab_matches[0];
+    int pl = 0;
+    for (;;) {
+        int all = 1;
+        for (int i = 1; i < tab_nmatches; i++)
+            if (tab_matches[i][pl] != m0[pl]) { all = 0; break; }
+        if (!all || !m0[pl]) break;
+        pl++;
+    }
+    if (pl > 0) {
+        tab_idx = 1;      // NOTE (plan fix): was 0. With 0, a repeated Tab
+                          // re-enters tab_collect() and keeps completing the
+                          // same common prefix forever — it never cycles the
+                          // matches (kernel terminal behavior: 2nd Tab = next
+                          // match). With 1 the next Tab replaces the word.
+        char pre[64];
+        int o = 0;
+        for (int i = 0; i < pl && o < 63; i++) pre[o++] = m0[i];
+        pre[o] = 0;
+        tab_replace_word(pre);
+    } else {
+        tab_idx = 1;
+        write(1, "\r\n", 2);
+        for (int i = 0; i < tab_nmatches; i++) {
+            write(1, tab_matches[i], strlen(tab_matches[i]));
+            write(1, "  ", 2);
+        }
+        write(1, "\r\n", 2);
+        redraw();
     }
 }
 
@@ -380,6 +528,8 @@ static void execute(void) {
     memcpy(buf, line, (size_t)len);
     buf[len] = 0;
     write(1, "\r\n", 2);
+    hist_push();
+    tab_idx = 0;
     if (len == 0) { redraw(); return; }
     // NOTE (plan fix): clear the line after submit (Task 3 fix). Without it
     // the next input appends to the stale line.
@@ -445,6 +595,8 @@ static void handle_byte(unsigned char b) {
         in_esc = 0;
         if (b == ';') return;
         switch (b) {
+        case 'A': hist_prev(); break;
+        case 'B': hist_next(); break;
         case 'C': cursor_right(); break;
         case 'D': cursor_left(); break;
         case 'H': cur = 0; redraw(); break;
@@ -453,12 +605,13 @@ static void handle_byte(unsigned char b) {
         }
         return;
     }
+    if (b != '\t') tab_idx = 0;              // any non-Tab input resets cycle
     if (b == 0x1b) { in_esc = 1; return; }
     switch (b) {
     case '\r': execute(); break;
     case '\b':
     case '\x7f': backspace(); break;
-    case '\t': break;                        // Task 5
+    case '\t': tab_complete(); break;
     default:
         if (b >= 0x20) insert_byte(b);
         break;

@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""E2E smoke test for the userland shell bin/sh (Task 4).
+"""E2E smoke test for the userland shell bin/sh (Tasks 4-5).
 
 Boots the ISO headless and drives bin/sh over the serial console: prompt,
 builtins (pwd), PATH lookup (ls /bin), $? status, unknown-command error,
 redirection (echo > f, cat f), pipelines (ls | lin/cat, 3-stage with a
-Linux reader), background jobs (&), and exit back to the kernel shell.
-
-NOTE: bin/sh's line editor executes a line on Enter = 0x0D (\\r); a \\n
-(0x0A) byte is dropped. The serial path pushes bytes raw to the key queue
-while a user program runs, so every line must be sent with \\r.
+Linux reader), background jobs (&), history (Up arrow recalls pwd), tab
+completion (ec<Tab> -> echo, l<Tab><Tab> cycles matches), and exit back
+to the kernel shell.
 
 NOTE: bin/sh's line editor executes a line on Enter = 0x0D (\\r); a \\n
 (0x0A) byte is dropped. The serial path pushes bytes raw to the key queue
@@ -48,14 +46,19 @@ def drain_quiet(s, timeout=12, settle=1.0):
     return out
 
 
-def cmd(s, line):
-    """Send one line (Enter = \\r) to the active shell and drain to quiet."""
-    s.sendall(line.encode() + b"\r")
+def send_raw(s, data):
+    """Send raw *data* (no Enter) to the active shell and drain to quiet."""
+    s.sendall(data)
     out = drain_quiet(s)
     if b"KERNEL PANIC" in out:
         raise AssertionError("kernel panic after %r:\n%s"
-                             % (line, out[-400:].decode(errors="replace")))
+                             % (data, out[-400:].decode(errors="replace")))
     return out
+
+
+def cmd(s, line):
+    """Send one line (Enter = \\r) to the active shell and drain to quiet."""
+    return send_raw(s, line.encode() + b"\r")
 
 
 def main():
@@ -150,6 +153,48 @@ def main():
             raise AssertionError("ls /bin & did not print 'bg: pid'; out:\n%s"
                                  % out[-400:].decode(errors="replace"))
         print("PASS: background ls /bin & prints bg: pid")
+
+        # ---- Task 5: history (Up arrow recalls the last command) ----
+        out = cmd(s, "pwd")
+        log += out
+        if b"/\r\n" not in out:
+            raise AssertionError("pwd did not print the cwd; out:\n%s"
+                                 % out[-400:].decode(errors="replace"))
+
+        out = send_raw(s, b"\x1b[A")          # Up: recall pwd (no Enter)
+        log += out
+        if b"AOS> pwd" not in out:
+            raise AssertionError("Up arrow did not recall pwd; out:\n%s"
+                                 % out[-400:].decode(errors="replace"))
+        print("PASS: Up arrow recalls pwd from history")
+
+        out = send_raw(s, b"\r")              # re-submit the recalled pwd
+        log += out
+        if b"/\r\n" not in out:
+            raise AssertionError("re-running the recalled pwd failed; out:\n%s"
+                                 % out[-400:].decode(errors="replace"))
+
+        # ---- Task 5: tab completion, single match ----
+        out = send_raw(s, b"ec\t")
+        log += out
+        if b"AOS> echo" not in out:
+            raise AssertionError("ec<Tab> did not complete to echo; out:\n%s"
+                                 % out[-400:].decode(errors="replace"))
+        print("PASS: ec<Tab> completes to echo")
+
+        out = send_raw(s, b"\r")              # run the completed echo
+        log += out
+
+        # ---- Task 5: tab completion, multi-match cycle ----
+        out = send_raw(s, b"l\t\t")
+        log += out
+        if b"AOS> ls" not in out and b"AOS> linrun" not in out:
+            raise AssertionError("l<Tab><Tab> did not cycle to a match; out:\n%s"
+                                 % out[-400:].decode(errors="replace"))
+        print("PASS: l<Tab><Tab> cycles matches")
+
+        out = send_raw(s, b"\r")              # run ls or linrun; harmless
+        log += out
 
         out = cmd(s, "exit")
         log += out
