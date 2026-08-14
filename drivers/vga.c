@@ -124,6 +124,10 @@ static void draw_pixel(unsigned int x, unsigned int y, unsigned int rgb) {
 static int utf8_state = 0;
 static unsigned int utf8_codepoint = 0;
 
+// ANSI CSI escape state (ESC [ <params> <final>)
+static int ansi_state = 0;
+static int ansi_n = 0;
+
 static unsigned char fb_glyph_from_cp(unsigned short cp) {
     return fb_cp_to_glyph(cp);
 }
@@ -183,6 +187,11 @@ static void text_scroll(void) {
 }
 
 static void text_putchar(char c) {
+    unsigned char uc = (unsigned char)c;
+    if (uc == '\r') {
+        cursor_x = 0;
+        return;
+    }
     if (c == '\n') {
         cursor_x = 0;
         cursor_y++;
@@ -193,6 +202,27 @@ static void text_putchar(char c) {
         if (cursor_x > 0) cursor_x--;
         TEXT_ADDR[cursor_y * TEXT_COLS + cursor_x] = text_color << 8 | ' ';
         screen_mirror[cursor_y][cursor_x] = 0;
+        return;
+    }
+    if (ansi_state == 1) {
+        if (uc == '[') { ansi_state = 2; ansi_n = 0; return; }
+        ansi_state = 0;
+    } else if (ansi_state == 2) {
+        if (uc >= '0' && uc <= '9') { ansi_n = ansi_n * 10 + (uc - '0'); return; }
+        if (uc == ';') return;
+        ansi_state = 0;
+        if (uc == 'K') {
+            vga_clear_eol();
+            return;
+        }
+        if (uc == 'D') {
+            cursor_x -= ansi_n;
+            if (cursor_x < 0) cursor_x = 0;
+            return;
+        }
+        return;
+    } else if (uc == 0x1b) {
+        ansi_state = 1;
         return;
     }
     if (c < 0x20) return;
@@ -224,6 +254,36 @@ static void fb_putchar(char c) {
                           fb_glyph_from_cp(' '), color_rgb[fg_color], color_rgb[bg_color]);
         }
         screen_mirror[cursor_y][cursor_x] = ' ';
+        return;
+    }
+    if (uc == '\r') {
+        cursor_x = 0;
+        return;
+    }
+    if (ansi_state == 1) {
+        if (uc == '[') { ansi_state = 2; ansi_n = 0; return; }
+        ansi_state = 0;
+    } else if (ansi_state == 2) {
+        if (uc >= '0' && uc <= '9') { ansi_n = ansi_n * 10 + (uc - '0'); return; }
+        if (uc == ';') return;
+        ansi_state = 0;
+        if (uc == 'K') {
+            if (scroll_offset == 0) {
+                vga_clear_eol();
+            } else {
+                for (int x = cursor_x; x <= max_x; x++)
+                    screen_mirror[cursor_y][x] = ' ';
+            }
+            return;
+        }
+        if (uc == 'D') {
+            cursor_x -= ansi_n;
+            if (cursor_x < 0) cursor_x = 0;
+            return;
+        }
+        return;
+    } else if (uc == 0x1b) {
+        ansi_state = 1;
         return;
     }
 
@@ -719,6 +779,8 @@ void vga_clear(void) {
     cursor_x = 0;
     cursor_y = 0;
     reset_utf8_state();
+    ansi_state = 0;
+    ansi_n = 0;
 
     if (fb_initialized) {
         unsigned int bg_rgb = color_rgb[bg_color];
