@@ -13,44 +13,87 @@
 
 ## Возможности
 
-- **Ядро с нуля** — загрузчик, GDT/IDT, обработчики прерываний, планировщик задач (кооперативный, до 6 процессов), системные вызовы через `int 0x80`
-- **Защита памяти** — paging, пользовательские процессы в ring 3 через TSS, валидация всех указателей в системных вызовах
-- **30 системных вызовов** — работа с ФС, клавиатурой, мышью, фреймбуфером, задачами и почтовыми ящиками
-- **Собственная ФС** — SFS (Simple File System) в 64-КБ ramdisk, до 64 файлов
+- **Ядро с нуля** — загрузчик, GDT/IDT, обработчики прерываний, планировщик задач (до 24, с блокирующими `sleep`/`waitpid` и зомби-процессами), системные вызовы через `int 0x80`
+- **Защита памяти** — paging, пользовательские процессы в ring 3 через TSS, buddy-аллокатор страниц + slab `kmalloc`, валидация всех указателей в системных вызовах
+- **33 syscall AOS-ABI + Linux ABI** — работа с ФС, клавиатурой, мышью, фреймбуфером, задачами и почтовыми ящиками; плюс исполнение статических musl i386-бинарников (`lin/*`) с собственным набором Linux-сисколлов
+- **Собственная ФС** — SFS2 в 2-МБ ramdisk, до 64 файлов, VFS-слой с `read_at`/`write_at`/`truncate`/`lseek`, пайпы и перенаправления
 - **Графика** — линейный фреймбуфер 1024×768×32, шрифт с кириллицей, UTF-8, программный скроллбек на 512 строк
 - **Ввод** — PS/2 клавиатура (US + ЙЦУКЕН), мышь с колесом, русская раскладка
-- **Оконный менеджер** — окна, dock с иконками запуска, перетаскивание, кнопка закрытия, z-order, общие буферы окон (1 МБ slab на окно)
+- **Оконный менеджер** — окна, dock с иконками запуска, перетаскивание, контекстное меню и создание файлов, z-order, общие буферы окон (slab)
 - **IPC** — почтовые ящики задач, события клавиатуры/мыши, общая память для пиксельных буферов
+- **Userland-шелл `bin/sh`** — полноценный шелл в GUI-терминале (`term.c` как VT-эмулятор): PATH, builtins, `$?`, redirects, пайпы, фон, история, Tab-дополнение
 - **Эмуляция USB** — сканирование PCI и инициализация контроллера UHCI
 
 ## Команды оболочки
 
 ```
-help  uptime  clear  echo  tick  info  reboot  panic  ls  cat  rm
-shutdown  format  test  wm  term  clock  setpath
+help  uptime  clear  echo  tick  info  reboot  panic  ls  cat  rm  sh
+format  shutdown  test  wm  term  clock  date  ipctest  notepad  many
+linrun  sleeptest  exitto  random  fstest  procinfo  bgspawn
+cp  mv  mkdir  rmdir  head  wc  setpath
 ```
+
+Linux-бинарики (musl): `lin/hello`, `lin/ls`, `lin/cat`, `lin/piptest`.
 
 ## Сборка и запуск
 
-Требования: `gcc`, `ld`, `make`, `python3`, `grub-mkrescue`, `qemu-system-i386`.
+### Требования
+
+- `gcc`, `ld` (binutils), `make`, `python3`
+- `grub-mkrescue` (GRUB 2.14) — для создания загрузочного ISO
+- `qemu-system-i386` — для запуска
+- (опционально) статический musl i386-toolchain (`tools/musl-i686/`) — для сборки Linux-бинарников `lin/*` и программ `bin/*`; без него собирается только часть AOS-программ
+
+### Цели make
 
 ```sh
-make        # собирает aos.iso (загрузочный GRUB2 ISO)
-make run    # запускает в QEMU
-make clean  # полная очистка
+make            # собрать aos.iso (загрузочный GRUB2 ISO)
+make run        # запустить в QEMU (GTK-дисплей, virtio-blk/rng/net)
+make debug      # headless-запуск: VNC :5907 + QMP и serial Unix-сокеты
+make test       # полная регрессия (QEMU-тесты ядра, WM и Linux)
+make test-fast  # быстрый набор для CI (ipctest + Linux-тесты)
+make clean      # полная очистка
 ```
+
+`make` идемпотентен — повторная сборка ничего не пересобирает без изменений.
+
+### Запуск в QEMU
+
+```sh
+make run
+```
+
+Открывается GTK-окно с AOS. После загрузки виден рабочий стол с dock (иконки `term`, `clock`); курсор мыши захватывается при наведении (`grab-on-hover`). В serial-консоль (`-serial stdio` конфликтует с монитором — используйте `-serial file:serial.log` при отладке) выводится журнал ядра и доступен ядерный шелл.
+
+### Отладка
+
+```sh
+make debug
+```
+
+Boot в headless-режиме с VNC-сервером (`:5907`), QMP-монитором (`/tmp/aos-debug.qmp`) и serial (`/tmp/aos-debug.serial`). Подключение через qemu-vnc MCP-инструменты.
+
+### Тесты
+
+```sh
+make test        # весь регресс (ядерный шелл, WM, notepad, пайпы, Linux)
+make test-fast   # быстрый CI-набор
+```
+
+Каждый тест — `scripts/*.py`, бутующий `aos.iso` в QEMU и проверяющий serial-лог и/или скриншоты. GUI-тесты чувствительны к таймингам TCG — гоняйте их через `make test`/`make test-fast`, а не вручную.
 
 ## Структура репозитория
 
 ```
-kernel/    — ядро: прерывания, syscall'ы, планировщик, SFS, терминал, ELF-загрузчик
+kernel/    — ядро: прерывания, syscall'ы, планировщик, SFS/VFS, терминал, ELF-загрузчик
 drivers/   — VGA/фреймбуфер, последовательный порт, PS/2 мышь, PCI, UHCI
-programs/  — пользовательские приложения (shell-команды, term, clock, wm)
+programs/  — пользовательские приложения (shell-команды, bin/sh, term, clock, wm)
 arch/i386/ — GDT, IDT
 boot/      — загрузчик Multiboot2, обработчики прерываний
-scripts/   — генерация встроенных программ, guitester.py (проверка пикселей в QEMU)
+tools/     — статический musl i386-toolchain и исходники Linux-бинарников (tools/linux/)
+scripts/   — генерация встроенных программ, тесты (qtest.py — общий QEMU-каркас)
 ```
 
 ## Тестирование
 
-`scripts/guitester.py` запускает QEMU с монитором, делает скриншоты и проверяет пиксели — используется для регрессионной проверки оконного менеджера.
+Каждый тест — `scripts/*.py`, бутующий `aos.iso` в QEMU. Общий каркас `scripts/qtest.py` (класс `QTest`): запуск QEMU, HMP-монитор, абсолютная мышь, PPM-скриншоты и проверка пикселей. Полный регресс — `make test` (ядерный шелл, WM, notepad, пайпы, Linux-бинарики); быстрый CI-набор — `make test-fast`. GUI-тесты (notepadtest, termtest и др.) чувствительны к таймингам TCG — гоняйте их через harness, а не вручную.

@@ -6,9 +6,36 @@
 - **P2** — крупная/долгосрочная работа (обычно требует новых подсистем).
 
 Справочные факты о текущем состоянии (чтобы не предлагать уже сделанное):
-33 syscalls (`int $0x80`, `kernel/syscall.c`), планировщик round-robin на `MAX_TASKS=24` (есть блокирующие `sleep`/`waitpid` с зомби и кодами выхода, `kernel/task.c`); buddy-аллокатор страниц (`kernel/pmm.c`) и kmalloc (`kernel/kmm.c`), ресурсы задач выделяются динамически (`kernel/task.c`), SFS-ramdisk 160 КБ / 64 файла (`kernel/sfs.c`), PIT 1000 Гц, PS/2 клавиатура+мышь, framebuffer 1024×768×32, UHCI-энумерация USB-планшета QEMU (`drivers/uhci.c`), пользовательский heap — bump-аллокатор, программы грузятся из `bin/` в ramdisk.
+fd-API syscalls `SYS_OPEN`=36…`SYS_UNLINK`=48 (`kernel/syscall.h`) плюс GUI/extension-ABI 500–519, планировщик round-robin на `MAX_TASKS=24` (есть блокирующие `sleep`/`waitpid` с зомби и кодами выхода, `kernel/task.c`); buddy-аллокатор страниц (`kernel/pmm.c`) и kmalloc (`kernel/kmm.c`), ресурсы задач выделяются динамически (`kernel/task.c`), SFS2-ramdisk 2 МБ (блочное устройство `kernel/block.c`, VFS-слой `kernel/vfs.c` с `read_at`/`write_at`/`truncate`/`lseek`), PIT 1000 Гц, PS/2 клавиатура+мышь, framebuffer 1024×768×32, UHCI-энумерация USB-планшета QEMU (`drivers/uhci.c`), пользовательский heap — bump-аллокатор, программы грузятся из `bin/` в ramdisk.
 
-**Linux ELF (step 1, готово)**: статические musl i386-бинарники (ET_EXEC, no INTERP) исполняются как user-программы — `lin/hello`, `lin/ls`, `lin/cat` (из `tools/linux/*.c`, musl-toolchain). Адресное пространство `0x08000000..0x10000000` (окно Linux), TLS через GDT-слот 6 (musl-селектор `0x33`), syscalls `int 0x80` в `kernel/linux_syscall.c` (write/writev, open/read/close, brk, mmap2, stat64/getdents64, TLS и др.). См. AGENTS.md → «Linux ELF execution (step 1)». Возможные следующие шаги — шаги 2+: stdin из терминала, больше syscalls (dup/exec/fork), сигналы, пайпы между AOS/Linux.
+**Linux ELF (step 1, готово)**: статические musl i386-бинарники (ET_EXEC, no INTERP) исполняются как user-программы — `lin/hello`, `lin/ls`, `lin/cat`, `lin/piptest` (из `tools/linux/*.c`, musl-toolchain). Адресное пространство `0x08000000..0x10000000` (окно Linux), TLS через GDT-слот 6 (musl-селектор `0x33`), syscalls `int 0x80` в `kernel/linux_syscall.c` (write/writev, open/read/close, brk, mmap2, stat64/getdents64, TLS, ioctl-FIONBIO и др.). Работают пайпы между AOS и Linux (`ls /bin | lin/cat`). См. AGENTS.md → «Linux ELF execution (step 1)». Возможные следующие шаги — шаги 2+: stdin из терминала, больше syscalls (dup/exec/fork), сигналы.
+
+**Userland-шелл `bin/sh` (готово)**: `programs/musl/sh.c` — полноценный мультиплексированный шелл (PATH, builtins `pwd/echo/exit/cd/export/setpath`, `$?`, redirects `> >> <`, пайпы `|`, фон `&`, история Up/Down, Tab-дополнение), спавнится `term.c`, переписанным как VT-эмулятор (ANSI CSI, UTF-8) через `AOS_SPAWN_FDS` с pipe. Ядерный шелл (`kernel/commands.c`) остаётся консолью; параллельно работает `bin/sh` в GUI-терминале. Тесты: `scripts/shtest.py` (serial) + `scripts/termtest.py` (GUI).
+
+---
+
+## Найденные баги
+
+Зафиксировано по ходу работ (реализация userland `bin/sh` + `term.c` как VT). Исправленные — для истории, открытые — актуальные ограничения.
+
+### Исправлены
+
+- **ioctl ABI: `req`/`arg` перепутаны** (`kernel/linux_syscall.c`, case 54). По i386 ABI `int 0x80` аргументы лежат в `ebx/ecx/edx`, т.е. `ioctl(fd, req, arg)` = `ebx=fd, ecx=req, edx=arg`; код читал `req` из `edx`, `arg` из `ecx` — `FIONBIO` (и любой ioctl) никогда не срабатывал, `read` на pipe оставался блокирующим. Исправлено в `5462280`. Долго не ловилось, т.к. ioctl из userland никто не вызывал — сработало, когда `term.c` начал ставить `FIONBIO` на pipe.
+- **sh: хвост `line[]` не NUL-терминирован** (`programs/musl/sh.c` в `insert_byte`/`backspace`/`delete_char`). После строки короче предыдущей в `line[len]` оставался байт прежней команды; `hist_push` (`memcpy(..., len+1)`) копировал его в историю → Up вспоминал `pwd/`, spawn падал «ELF: not found: pwd/». Диагностировано дампом памяти через QMP (`gva2gpa`+`xp`). Исправлено в `8e0e04c`.
+- **sh: `hist_cur` не сбрасывался при дубликате** (`hist_push`). Дедaп-return пропускал `hist_cur = -1` → после повторного ввода последней команды следующий Up ничего не делал. Исправлено в `8e0e04c`.
+- **sh: Tab-цикл по совпадениям не работал** (`tab_complete`). Ветка общего префикса ставила `tab_idx = 0`, из-за чего повторный Tab снова входил в `tab_collect` и не циклил матчи (ядреный терминал: 1-й Tab = общий префикс, 2-й = следующий матч). Исправлено в `8e0e04c` (`tab_idx = 1`).
+- **sh: builtins ломались для одиночных команд** (`run_stage`). Условие `nstages > 1 && run_builtin(...)` отправляло `exit/cd/pwd/export/setpath` в `path_resolve` → «Unknown command» / `$?=127`. Исправлено в `6c1fb04`.
+- **Ядерный терминал не обрабатывал `\r` и CSI `K`/`D`** (`drivers/vga.c`). Перезапись строки оставляла видимый хвост, ANSI-вывод userland-шелла не стирался; добавлен state-машина ANSI (`ansi_state`/`ansi_n`) + `\r`→cursor_x=0. Исправлено в `ebdb84c`.
+- **term.c: спец-кейс `ESC[H` ломал `ESC[r;H`** (CUP с параметрами — `ESC[H` без параметров трактовался раньше общего CUP). Убран в `5462280`.
+
+### Открытые ограничения
+
+- **`bin/cat` не читает stdin** — как читатель в пайпах работает только по имени файла; в тестах пайпов используется `lin/cat` (AOS-писатель → Linux-читатель).
+- **Redirect builtin-команды (`pwd > f`) файл не создаёт** — builtin выводит на консоль, стадия в пайпе вообще запрещена (`sh: builtin not supported in pipeline`).
+- **`make test` может давать тайминг-флейк `shelltest`** под нагрузкой TCG (burst команд из ядерного шелла не укладывается в 30 с ожидания `drain`); повторный прогон — зелёный. Наши изменения ветку `kernel/commands.c`/`shelltest.py` не трогают.
+- **Два шелла параллельно**: ядерный шелл (serial/консоль) и userland `bin/sh` (окно term) — команды и окружение у них раздельные.
+
+---
 
 ---
 
@@ -22,7 +49,7 @@
 - [ ] **P1 — `mmap`/`munmap` и per-process memory map.** Единый API виртуальной памяти: `sys_mmap` для анонимных и файловых регионов, `sys_munmap`, `sys_mprotect` (RO/RW/exec), `sys_brk` поверх существующего bump-аллокатора. Это фундамент для пользовательских куч, shared memory и guard pages.
 - [ ] **P1 — Guard pages + проверка переполнения стека.** Ставить неотображаемую страницу над стеком задачи и детектить переполнение (trap вместо тихого затирания). Сейчас стек ограничен только размером user-области.
 - [ ] **P1 — Copy-on-write + demand paging.** Лениво отображать страницы, COW при fork. Даст реальную изоляцию процессов и уменьшит потребление памяти.
-- [ ] **P1 — Пользовательская куча: first-fit free list, `realloc`, `calloc`.** Сейчас `malloc` — bump-аллокатор без `free`-циклов (`programs/libaos.c`). Для долгоживущих GUI-приложений нужна нормальная куча; вынести в `programs` как общий код.
+- [ ] **P1 — Пользовательская куча: first-fit free list, `realloc`, `calloc`.** Сейчас юзер-куча — bump-аллокатор (`0x01100000` в user-области). Для долгоживущих GUI-приложений нужна нормальная куча с free-циклами.
 - [ ] **P2 — ASLR.** Случайный базовый адрес загрузки ELF и стека при каждом `spawn` (при уже работающем paging это умеренно).
 
 ### 1.2 Процессы и планировщик
@@ -37,11 +64,11 @@
 
 ### 1.3 Файловая система и диски
 
-- [ ] **P0 — Расширить SFS: rename, append, truncate, `fs_write` с offset.** Сейчас `fs_write` всегда перезаписывает с начала, нет rename/truncate, нет офсетов (`kernel/sfs.c`). Это нужно утилитам `mv`, `cp`, дозаписи логов.
+- [x] **P0 — Расширить SFS: rename, append, truncate, `fs_write` с offset.** (готово: VFS-опы `write_at` с offset, `O_APPEND`, `truncate`, `lseek` в `kernel/vfs.c`; `mv` работает через copy+unlink — отдельный VFS-rename не добавляли)
 - [ ] **P1 — Дисковый драйвер ATA PATA (QEMU-совместимый).** Ramdisk в RAM — волатильный; добавить `drivers/ata.c` (PIO) и загружать/сохранять файлы на диск. Порт QEMU: `-hda`.
-- [ ] **P1 — VFS-слой.** Единый интерфейс `open/read/write/close/readdir/stat` поверх SFS и будущего ATA. Сейчас все программы дёргают SFS-специфичные `fs_*` syscalls напрямую.
+- [x] **P1 — VFS-слой.** (готово: `kernel/vfs.c` — inode/fs-интерфейс `read_at`/`write_at`/`readdir`/`stat`/`close`-hook, таблица офайлов, `vfs_dup_fd`; fd-API `SYS_OPEN`=36…`SYS_UNLINK`=48)
 - [ ] **P1 — Настоящие каталоги и пути.** Сейчас «папка» — это имя, кончающееся на `/` (`K_FOLDER` в `wm.c`). Ввести дерево каталогов с `/`-разделителями в VFS; `mkdir/rmdir/cd`.
-- [ ] **P1 — Файловые дескрипторы и потоки.** `open()` возвращает fd, `read(fd,..,offset)`, `dup`, `close`. Это фундамент для пайпов и redirects.
+- [x] **P1 — Файловые дескрипторы и потоки.** (готово: `open/close/read/write/lseek/dup` через VFS-офайлы; фундамент пайпов и redirects)
 - [ ] **P2 — FAT32 или ext2 на диске.** Чтение/запись реального формата — обмен файлами с хостом (QEMU `-hda` образ, монтирование на хосте). P2 из-за объёма (начинать с FAT12/16 read-only).
 - [ ] **P2 — metadata: mtime/size/uid.** `stat` в SFS — сохранять время модификации (из RTC, см. 1.5); показывать в `ls -l`.
 - [ ] **P2 — Файловая блокировка/атомарность.** Для безопасной дозаписи и превентивных правок из нескольких задач.
@@ -49,12 +76,13 @@
 ### 1.4 Системные вызовы / пользовательский API
 
 - [x] **P0 — `time`/`date` syscalls + `sys_uptime`.** Сейчас только `get_tick()`. Добавить получение времени из RTC (см. 1.5) — для `date`, `clock`, таймштампов в `ls -l`. (готово: `SYS_RTC`=34/`SYS_UPTIME`=35, `get_rtc`/`get_uptime` в libaos, команда `date`)
-- [ ] **P0 — `printf`/`sprintf` в libaos.** Сейчас в программах нет форматирования; все собирают строки вручную (`clock.c`, `notepad.c`). Написать компактный `vprintf` с `%d %x %s %c %u`.
-- [ ] **P0 — Пайпы `pipe()`.** Минимальный односторонний канал между двумя задачами через страницу общего буфера + событие. Позволит шеллу делать `a | b`.
+- [x] **P0 — `printf`/`sprintf` в libaos.** (устарел: программы собираются со static musl i386 — `printf`/`sprintf`/`snprintf` уже в libc, собственный vprintf не нужен)
+- [x] **P0 — Пайпы `pipe()`.** (готово: `kernel/pipe.c` — 4096-байтовый кольцевой буфер, pipefs, `vfs_pipe`; шелл `a | b | c`, см. 2.1)
 - [ ] **P1 — Shared memory для пользователей.** Syscall выделения/присоединения разделяемой страницы между задачами (не только слабы WM). Для буферов обмена, многопоточности.
 - [ ] **P1 — `set_stdout`/`MSG_DATA` завернуть в нормальный `write(fd,...)`.** Сейчас stdout-маршрутизация через `SYS_SETOUT` (WM/term). Дать общий API вывода в терминал/файл/пайп.
-- [ ] **P1 — Случайные числа.** Маленький PRNG в ядре + `sys_rand` (или дать доступ к RDTSC).
-- [ ] **P2 — Полный набор: `dup2`, `ioctl`, `stat`, `select/poll`.** По мере появления fd и драйверов.
+- [x] **P1 — Случайные числа.** (готово: `SYS_RANDOM`=33, `programs/musl/random.c` через `getrandom`, `scripts/rngtest.py`)
+- [x] **P1 — `ioctl` (FIONBIO).** (готово: syscall 54 в `kernel/linux_syscall.c` — `FIONBIO` 0x5421 для pipe/VFS-офайлов; `dup2`/`stat`/`select`/`poll` ещё нет)
+- [ ] **P2 — Полный набор: `dup2`, `stat`, `select/poll`.** По мере появления fd и драйверов.
 
 ### 1.5 Драйверы устройств
 
@@ -68,9 +96,9 @@
 
 ### 1.6 Прерывания, безопасность, отладка
 
-- [ ] **P0 — Обработчик spurious IRQ7/IRQ15 + ограждение от вложенности.** Сейчас EOI-first и IF=0 в IRQ-обработчике; добавить защиту от ложных прерываний и диагностику «unexpected interrupt».
-- [ ] **P0 — Бэктрейс и имя паникующей функции.** В `panic()` вывести адреса стека вызовов и сопоставить с `System.map`/адресами символов (ELF). Сейчас panic молчит по сути.
-- [ ] **P1 — Кольцевой лог ядра (`dmesg`).** Заменить разрозненные `serial_print` на буферизованный лог с уровнями; вывод по запросу (`info`, `dmesg`-команда).
+- [x] **P0 — Обработчик spurious IRQ7/IRQ15 + ограждение от вложенности.** (готово: `kernel/interrupts.c` — счётчик spurious IRQ с диагностикой и подавлением лога, «unexpected IRQ»)
+- [x] **P0 — Бэктрейс и имя паникующей функции.** (готово: frame pointers + `kernel/symtab.c` — EIP→имя функции в бэктрейсе panic; `scripts/panictest.py`)
+- [x] **P1 — Кольцевой лог ядра (`dmesg`).** (готово: `kernel/klog.c` — ring с уровнями, читается из `/proc/klog`; `scripts/klogtest.py`; команды `dmesg` в шелле нет)
 - [ ] **P1 — Аудит границ всех syscall-буферов.** Пройтись по каждому `case` в `syscall.c`: сейчас проверка через `in_user()`/`copy_user_str()`, но integer overflow в `count*size` и пр. — проверить тестами (расширить `test.c`).
 - [ ] **P1 — Stack protector в ядре.** `-fstack-protector-strong` + canary в `sys_stack`; при срабатывании — panic с диагностикой.
 - [ ] **P2 — GDB-мост.** Включить `-s`/`-gdb` поддержку в QEMU и символьные `.symtab` для программ; `.gdbinit` с `target remote`.
@@ -82,15 +110,17 @@
 
 ### 2.1 Shell / терминальная консоль (`kernel/terminal.c`, `kernel/commands.c`, `programs/term.c`)
 
-- [ ] **P0 — Пайпы `|` и перенаправление `>`/`<`.** Синтаксический разбор в `terminal.c`, запуск двух задач с `pipe()` (см. 1.4). Сейчас — только последовательные команды.
-- [ ] **P0 — Фоновые задачи `&` и `$?`.** Запуск без блокировки; код возврата последней команды в `$?`.
-- [ ] **P0 — `cd` и cwd.** Команда смены «папки» (с учётом 1.3/1.4); приглашение показывает текущий путь.
-- [ ] **P0 — Переменные окружения: `export VAR=val`, `echo $VAR`.** Плюс подстановка в аргументах.
+- [x] **P0 — Пайпы `|` и перенаправление `>`/`<`.** (готово: `exec_pipe` в `kernel/commands.c` — до `PIPE_STAGES_MAX=8` стадий, `>`/`<`/`>>` через `find_operator`; в пайпе стадии без builtins и redirects)
+- [x] **P0 — Фоновые задачи `&` и `$?`.** (готово: `&` в `kernel/commands.c`, `$?` — exit code последней команды)
+- [x] **P0 — `cd` и cwd.** (готово: `SYS_CHDIR`=44/`SYS_GETCWD`=45, `cd`/`pwd` в шелле и gui-term)
+- [x] **P0 — Переменные окружения: `export VAR=val`, `echo $VAR`.** (готово: `export` + `$NAME`-подстановка в `kernel/commands.c`)
 - [ ] **P1 — Истинный парсер: кавычки, `\`, `&&`/`||`, `;`.** Сейчас аргументы режутся по пробелам без экранирования.
 - [ ] **P1 — Скрипты.** `sh script.txt` — последовательность команд из файла (исполняемые флаги не нужны, достаточно интерпретатора).
-- [ ] **P1 — Дополнение по командам из PATH + аргументов (файлов).** Сейчас Tab дополняет только имена программ.
+- [x] **P1 — Дополнение по командам из PATH + аргументов (файлов).** (готово: Tab-циклы по `format` + каждому PATH-каталогу в `kernel/terminal.c`; дополнения по файлам-аргументам нет)
+- [x] **P1 — Userland-шелл `bin/sh` вместо ядерного в GUI-терминале.** (готово: `programs/musl/sh.c` — PATH, builtins `pwd/echo/exit/cd/export/setpath`, `$?`, redirects `> >> <`, пайпы `|`, фон `&`, история Up/Down, Tab-дополнение; `term.c` переписан как VT-эмулятор (ANSI CSI `A/B/C/D/H/J/K/?25`, UTF-8), спавнит `bin/sh` через `AOS_SPAWN_FDS` с pipe-концами; `scripts/shtest.py` + `scripts/termtest.py`; ядерный шелл остаётся консолью)
 - [ ] **P1 — `help <cmd>`, алиасы, поиск по истории (`history`).** История уже есть (16 записей) — добавить просмотр/переиспользование.
 - [ ] **P1 — `term.c`: копирование/вставка (клипборд), перенос курсора мышью, цвет ANSI-уровня.** Сейчас терминал рендерит монохромно через `render_text`.
+- [ ] **P1 — Скролл/scrollback в `term.c` (VT-эмулятор).** Вывод за пределы `screen[26][80]` сейчас просто сдвигается; добавить историю строк (аналог `scrollback_lines` в ядерном `vga.c`) + прокрутку колесом мыши (`MSG_MOUSE`/wheel от WM) и подсветку режима скролла. Ядерный терминал такой скролл уже имеет.
 
 ### 2.2 WM (`programs/wm.c`)
 
@@ -173,12 +203,12 @@
 
 ## 4. Инфраструктура, сборка, тесты
 
-- [x] **P0 — `make test`.** Единая цель: собрать, прогнать `linhello`/`lincat`/`ipctest`/`manytest`/`notepadtest`; fail-fast вывод (`make test` в Makefile).
-- [ ] **P0 — CI (`.github/workflows/build.yml`): запускать тесты, а не только сборку.** Сейчас workflow собирает ISO; добавить headless QEMU-шаги с pixel-ассертами (в CI доступен QEMU).
-- [ ] **P0 — Вынести `scripts/notepadtest.py`/`guitester.py` на общий каркас** (класс QEMU-окружения), чтобы новые тесты не копировали код запуска/мыши/снимпшотов.
+- [x] **P0 — `make test`.** Единая цель: собрать, прогнать весь регресс (ipctest/manytest/notepadtest/sleeptest/rngtest/blktest/virtiotest/netlooptest/rtctest/configtest/klogtest/stracetest/stracelive/shelltest/panictest/fstoolstest + Linux-тесты linhello/lincat/lindirtest/pipetest); fail-fast вывод, `make test-fast` для CI.
+- [x] **P0 — CI (`.github/workflows/build.yml`): запускать тесты, а не только сборку.** (готово: job `test` гоняет `make test-fast` — ipctest + musl Linux-тесты; полные GUI-тесты остаются локальными)
+- [x] **P0 — Вынести `scripts/notepadtest.py`/`guitester.py` на общий каркас** (готово: `scripts/qtest.py` — класс `QTest` с запуском QEMU, HMP, мышью и PPM-скриншотами; используется notepadtest/guitester/linhello/configtest и др.)
 - [ ] **P1 — `scripts/` документация по каждому тесту** (что проверяет, какие координаты, как обновлять при изменении лейаута WM).
 - [ ] **P1 — Автосборка `compile_commands.json` в `make`** (есть `gen_compile_commands.py` — привязать к целям, чтобы clangd не отставал).
-- [ ] **P1 — Замер размера ISO и ramdisk в `make`** (pre-commit проверка, что не превышен лимит 160 КБ SFS).
+- [ ] **P1 — Замер размера ISO и ramdisk в `make`** (pre-commit проверка, что не превышен лимит 2 МБ SFS2).
 - [ ] **P2 — Пакетный регресс: снапшоты экрана в золотые файлы** и сравнение с допуском (погрешность на шрифт/курсор).
 - [ ] **P2 — Документация разработчика в `docs/`**: как добавить syscall, новую программу, GUI-окно, тест.
 

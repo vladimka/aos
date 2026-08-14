@@ -309,6 +309,8 @@ git commit -m "syscall: add AOS_SPAWN_FDS with fd redirects and AOS_INHERIT_FD"
 
 **Files:**
 - Create: `programs/musl/sh.c`
+- Modify: `drivers/vga.c` (+ `drivers/vga.h` прототипы при необходимости)
+- Modify: `Makefile` (добавить `sh` в `PROGRAMS`, строка 24 — иначе `build/prog/sh.elf` не соберётся и `bin/sh` не вшивается в ramdisk)
 
 **Interfaces:**
 - Consumes: `aos_spawn_fds`, `AOS_INHERIT_FD` (Task 2); musl libc (`read/write/open/close/chdir/getcwd/access/pipe/sched_yield`).
@@ -319,6 +321,52 @@ git commit -m "syscall: add AOS_SPAWN_FDS with fd redirects and AOS_INHERIT_FD"
   - `static void execute(void);`
   - `static void handle_byte(unsigned char b);` (полный код — в Task 3; Task 5 дополнит Tab/историю)
   - `static void redraw(void);`
+
+- [ ] **Step 0: ANSI-поддержка в ядерном терминале**
+
+`bin/sh` (userland, ring 3) рисует строку через `write(1,...)` → `route_text` →
+`terminal_write` → `vga_putchar` → `fb_putchar`/`text_putchar`. Эти функции
+понимают только `\n` и `\b`, а `redraw()` sh.c использует `\r`,
+`\x1b[K` (EL — очистить до конца строки) и `\x1b[{n}D` (CUB — курсор влево).
+Без обработки этих кодов каждый ввод символа в sh, запущенного из ядерного
+шелла, рисует мусор на экране. (term.c в Task 6 — свой ANSI-парсер, он не
+зависит от этого.)
+
+Добавить в `drivers/vga.c`:
+
+1. В `fb_putchar` и `text_putchar` — ветку `\r`: `cursor_x = 0; return;` (не
+   трогать `cursor_y`, без скролла). В `fb_putchar` — с учётом
+   `scroll_offset > 0` как у `\b` (в scrollback режиме только обновлять
+   `screen_mirror`/двигать курсор, не рисовать на VRAM). В `text_putchar` —
+   `\r` просто `cursor_x = 0` (до `if (c < 0x20) return;`).
+2. Escape-состояние для последовательностей `ESC[ ... <final>`:
+   - статические `static int ansi_state;` и `static int ansi_n;`
+     (инициализация 0; сброс в `vga_clear()` рядом с `utf8_state = 0`).
+   - в `fb_putchar`/`text_putchar` до обработки UTF-8: если `ansi_state`,
+     разбирать байт из строки CSI:
+     - `0x1b` → `ansi_state = 1` (ожидаем `[`), `return`;
+     - `ansi_state == 1`: `[` → `ansi_state = 2; ansi_n = 0; return;`
+       (иначе сброс в 0 и вывести байт как обычно);
+     - `ansi_state == 2`: цифра `0..9` → `ansi_n = ansi_n * 10 + (d)`,
+       `return`; `;` → `return`; иначе — финальный символ:
+       - `K` (EL): очистить текущую строку от `cursor_x` до конца
+         (`max_x`/`TEXT_COLS-1`): залить `bg` (fb: `fb_draw_glyph(' ',...)`
+         через существующий механизм / `screen_mirror` = ' '; text: `blank`),
+         `return`;
+       - `D` (CUB): `cursor_x -= ansi_n` (не ниже 0), `return`;
+       - остальное: сброс состояния, байт не выводить.
+     - `ansi_state` в конце всегда сбрасывать в 0.
+   - UTF-8-декодер (`utf8_state`) не должен пересекаться с `ansi_state`
+     (проверка `ansi_state` первой).
+3. Общие помощники для очистки до конца строки, если удобно: в fb-режиме
+   можно переиспользовать `fb_draw_glyph(cursor_x*8, cursor_y*16,
+   fb_glyph_from_cp(' '), color_rgb[bg_color], color_rgb[bg_color])` по
+   ячейкам от `cursor_x` до `max_x`, обновляя `screen_mirror`; в text —
+   цикл по `TEXT_ADDR`/`screen_mirror` пробелами.
+
+Проверить вручную (см. Step 3) — после `bin/sh` строка редактируется без
+мусора: `\r` возвращает каретку, `\x1b[K` стирает хвост, `\x1b[{n}D` двигает
+курсор влево.
 
 - [ ] **Step 1: Написать полный `programs/musl/sh.c`**
 
@@ -685,9 +733,11 @@ Expected: prompt `AOS> ` от sh; `pwd`/`ls /bin` выводят; `echo $?` → 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add programs/musl/sh.c
-git commit -m "userland: add bin/sh interactive shell (line editor, builtins, PATH, $?)"
+git add programs/musl/sh.c drivers/vga.c drivers/vga.h Makefile scripts/shtest.py
+git commit -m "userland: add bin/sh interactive shell (line editor, builtins, PATH, \$?); kernel terminal: \r + CSI K/D"
 ```
+
+`kernel/progs.c`/`kernel/symtab.c` перегенерируются сборкой и не коммитятся. Commit identity не настроен → `git -c user.name="vladimka" -c user.email="32310898+vladimka@users.noreply.github.com" commit ...`.
 
 ---
 
@@ -761,9 +811,16 @@ static void run_stage(int i, int nstages, int argc, char **argv,
         }
     }
     if (argc == 0) { pids[i] = -1; return; }
-    if (nstages > 1 && run_builtin(argc, argv)) {
-        write(1, "sh: builtin not supported in pipeline\r\n", 39);
-        last_status = 1;
+    if (run_builtin(argc, argv)) {
+        // NOTE (plan fix): builtins MUST run for a single command too. The
+        // plan's `nstages > 1 &&` made exit/cd/pwd/export/setpath fall through
+        // to path_resolve and report "Unknown command" for nstages==1. A
+        // builtin inside a pipeline is still rejected.
+        if (nstages > 1) {
+            write(1, "sh: builtin not supported in pipeline\r\n", 39);
+            last_status = 1;
+        }
+        pids[i] = -1;
         return;
     }
     struct aos_redir redirs[2 + MAX_ARGS + 1];
@@ -858,6 +915,9 @@ static void execute(void) {
     buf[len] = 0;
     write(1, "\r\n", 2);
     if (len == 0) { redraw(); return; }
+    // NOTE (plan fix): clear the line after submit (Task 3 fix). Without it
+    // the next input appends to the stale line.
+    line[0] = 0; len = 0; cur = 0;
     char exp[LBUF];
     expand(exp, sizeof exp, buf);
 
@@ -909,20 +969,28 @@ static void execute(void) {
 - [ ] **Step 5: Сборка + serial smoke — пайпы и redirects**
 
 Run: `make`.
-Serial smoke через `make debug`: на `AOS>` → `bin/sh`, затем:
-- `echo hi > f` → `cat f` → `hi`
-- `ls /bin | bin/cat` → список bin (пайп AOS→AOS)
-- `bin/ls / | bin/cat | lin/cat` → список (3 стадии)
+
+Расширить `scripts/shtest.py` (за основу — базовая версия из Task 3) проверками
+пайпов/redirects. Команды вводятся в `bin/sh` через serial (Enter = `\r`), ждать
+между ними. Проверить:
+- `echo hi > f` → `cat f` → вывод `hi` (redirect, потом чтение)
+- `ls /bin | bin/cat` → список `bin` (пайп AOS→AOS; искать `sh (`)
+- `bin/ls / | bin/cat | lin/cat` → список (3 стадии, последняя Linux)
 - `ls /bin &` → `bg: pid N`
+- `echo $?` → `0` (после успешного пайпа)
 - `exit`
-Expected: корректный вывод, никакого `KERNEL PANIC`. Внимание: `echo`/`ls`/`cat` — внешние программы; вывод каждой идёт на console через INHERIT.
+Expected: корректный вывод, никакого `KERNEL PANIC`. Внимание: `echo`/`ls`/`cat` — внешние программы; вывод последней стадии идёт на console через INHERIT.
+
+После правок прогнать `python3 scripts/shtest.py` и `make test-fast` (3/3 должны остаться зелёными).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add programs/musl/sh.c
+git add programs/musl/sh.c scripts/shtest.py
 git commit -m "userland: bin/sh pipelines, redirects and background tasks"
 ```
+
+Commit identity не настроен → `git -c user.name="vladimka" -c user.email="32310898+vladimka@users.noreply.github.com" commit ...`.
 
 ---
 
@@ -1062,7 +1130,11 @@ static void tab_complete(void) {
         pl++;
     }
     if (pl > 0) {
-        tab_idx = 0;
+        tab_idx = 1;      // NOTE (plan fix): was 0. With 0, a repeated Tab
+                          // re-enters tab_collect() and keeps completing the
+                          // same common prefix forever — it never cycles the
+                          // matches (kernel terminal behavior: 2nd Tab = next
+                          // match). With 1 the next Tab replaces the word.
         char pre[64];
         int o = 0;
         for (int i = 0; i < pl && o < 63; i++) pre[o++] = m0[i];
@@ -1104,14 +1176,23 @@ static void tab_complete(void) {
 - [ ] **Step 4: Сборка + serial smoke — история и Tab**
 
 Run: `make`.
-Serial smoke через `make debug`: `bin/sh`, набрать `pwd`, Enter; стрелку Up (serial: послать `ESC [ A`) → строка `pwd` снова; `pw`+Tab → `pwd`; `ec`+Tab → `echo`; `exit`. Tab выводит список при неоднозначности (`l`+Tab → список `ls linrun ...`).
-Expected: история и дополнение работают, без паники.
+
+Расширить `scripts/shtest.py` (поверх Task 4 версии):
+- в `bin/sh` набрать `pwd`, Enter; затем послать стрелку Up (`b"\x1b[A"`, без `\r`), подождать — строка `pwd` снова (в serial появится redraw `AOS> pwd`);
+- `pw`+Tab (`b"pw\t"`) → дополнение до `pwd` (redraw `AOS> pwd`);
+- `ec`+Tab → дополнение до `echo`;
+- `l`+Tab дважды (`b"l\t\t"`) → цикл: после 2-го Tab слово заменено следующим матчем (redraw с `ls` или `linrun`); это ОК, главное не паника;
+- `exit`.
+
+Для посылки без Enter нужна отдельная функция (аналог `cmd`, но без `\r`). Assert по подстрокам (serial-лог с ANSI). Никакого `KERNEL PANIC`.
+
+Прогнать `python3 scripts/shtest.py` — PASS. Затем `make test-fast` — 3/3 зелёные.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add programs/musl/sh.c
-git commit -m "userland: bin/sh history and tab completion"
+git add programs/musl/sh.c scripts/shtest.py
+git -c user.name="vladimka" -c user.email="32310898+vladimka@users.noreply.github.com" commit -m "userland: bin/sh history and tab completion"
 ```
 
 ---
@@ -1398,16 +1479,23 @@ int main(void) {
 
 Run: `make` — должен пересобраться `build/prog/term.elf` без предупреждений.
 
-- [ ] **Step 3: GUI smoke через qemu-vnc**
+- [ ] **Step 3: GUI smoke через автоматический скрипт**
 
-Run: `make debug`, подключиться через qemu-vnc MCP (`vm_connect`, порт 5907, QMP `/tmp/aos-debug.qmp`, serial `/tmp/aos-debug.serial`), кликнуть иконку term в dock, в окне term набрать `pwd`, Enter, `echo hi`, Enter. Сделать скриншот.
-Expected: в окне term появляется `AOS> ` prompt, после `pwd` — путь `/`, после `echo hi` — `hi`; курсор мигает; WM жив; нет `KERNEL PANIC`.
+Создать `scripts/termtest.py` на базе `scripts/qtest.py` (boot ISO, QMP monitor socket, sendkey, screendump PPM):
+- boot + дождаться готовности;
+- `q.dock_spawn_term()` (клик по иконке term в dock, 472,724; ждёт окно);
+- подождать, пока в окне появится текст (промпт `AOS> ` от bin/sh);
+- `q.type_text("pwd\n")`, подождать; `q.type_text("echo hi\n")`, подождать;
+- скриншот; проверить через `q.count_text_pixels(path, 21, 39, 660, 455)` (текстовая зона term, `term_text_band()`), что ярких пикселей текста > порога (например > 50);
+- в serial-логе нет `KERNEL PANIC`.
+
+Expected: в окне term появляется `AOS> ` prompt, после `pwd` — путь `/`, после `echo hi` — `hi`; WM жив; нет `KERNEL PANIC`. Прогнать `python3 scripts/termtest.py` — PASS. Затем `make test-fast` — 3/3 зелёные.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add programs/musl/term.c
-git commit -m "term: rewrite as VT emulator spawning bin/sh over pipes"
+git add programs/musl/term.c scripts/termtest.py
+git -c user.name="vladimka" -c user.email="32310898+vladimka@users.noreply.github.com" commit -m "term: rewrite as VT emulator spawning bin/sh over pipes"
 ```
 
 ---
