@@ -71,6 +71,10 @@ def main():
     if b"roundtrip-data" not in out:
         q.stop()
         raise AssertionError("echo > rt.txt / cat roundtrip failed")
+    out = run(q, s, b"sync")
+    if not re.search(rb"sync: flushed [1-9][0-9]* blocks", out):
+        q.stop()
+        raise AssertionError("sync did not report flushed blocks")
     out = run(q, s, b"cp bin/cat big.txt")
     out = run(q, s, b"wc big.txt")
     nbytes = bytes_of_wc(out, b"big.txt")

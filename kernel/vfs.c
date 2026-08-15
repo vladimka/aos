@@ -828,8 +828,8 @@ void vfs_format(void) {
     load_embedded_data();
 }
 
-void vfs_sync(void) {
-    sfs2_flush(&vfs_sfs2);
+int vfs_sync(void) {
+    return sfs2_flush(&vfs_sfs2);
 }
 
 void vfs_init(void) {

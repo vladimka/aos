@@ -20,7 +20,7 @@ int block_init(void);
 unsigned char *block_pin(unsigned int lba);
 void block_unpin(unsigned int lba);
 void block_mark_dirty(unsigned int lba);
-void block_flush(void);
+int block_flush(void);
 int block_read_multi(unsigned int lba, unsigned int count, void *buf);
 int block_write_multi(unsigned int lba, unsigned int count, const void *buf);
 struct sdev *block_get_sdev(void);

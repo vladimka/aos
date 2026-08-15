@@ -16,7 +16,7 @@
 - **Ядро с нуля** — загрузчик, GDT/IDT, обработчики прерываний, планировщик задач (до 24, с блокирующими `sleep`/`waitpid` и зомби-процессами), системные вызовы через `int 0x80`
 - **Защита памяти** — paging, пользовательские процессы в ring 3 через TSS, buddy-аллокатор страниц + slab `kmalloc`, валидация всех указателей в системных вызовах
 - **33 syscall AOS-ABI + Linux ABI** — работа с ФС, клавиатурой, мышью, фреймбуфером, задачами и почтовыми ящиками; плюс исполнение статических musl i386-бинарников (`lin/*`) с собственным набором Linux-сисколлов
-- **Собственная ФС** — SFS2 в 2-МБ ramdisk, до 64 файлов, VFS-слой с `read_at`/`write_at`/`truncate`/`lseek`, пайпы и перенаправления
+- **Собственная ФС** — SFS2 в 2-МБ ramdisk и на блочных устройствах (ATA/PCI IDE, SATA AHCI, virtio-blk, RAM), до 256 файлов, VFS-слой с `read_at`/`write_at`/`truncate`/`lseek`, write-back кэш блоков с `sync`/`fsync`, пайпы и перенаправления
 - **Графика** — линейный фреймбуфер 1024×768×32, шрифт с кириллицей, UTF-8, программный скроллбек на 512 строк
 - **Ввод** — PS/2 клавиатура (US + ЙЦУКЕН), мышь с колесом, русская раскладка
 - **Оконный менеджер** — окна, dock с иконками запуска, перетаскивание, контекстное меню и создание файлов, z-order, общие буферы окон (slab)
@@ -30,7 +30,7 @@
 help  uptime  clear  echo  tick  info  reboot  panic  ls  cat  rm  sh
 format  shutdown  test  wm  term  clock  date  ipctest  notepad  many
 linrun  sleeptest  exitto  random  fstest  procinfo  bgspawn
-cp  mv  mkdir  rmdir  head  wc  setpath
+cp  mv  mkdir  rmdir  head  wc  setpath  sync
 ```
 
 Linux-бинарики (musl): `lin/hello`, `lin/ls`, `lin/cat`, `lin/piptest`.

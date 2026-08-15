@@ -82,6 +82,6 @@ int sfs2_rmdir(struct sfs2_fs *fs, unsigned int parent_ino, const char *name);
 int sfs2_unlink(struct sfs2_fs *fs, unsigned int dir_ino, const char *name);
 int sfs2_readdir(struct sfs2_fs *fs, unsigned int dir_ino, unsigned int idx,
                  char *name_out, unsigned int *ino_out);
-void sfs2_flush(struct sfs2_fs *fs);
+int sfs2_flush(struct sfs2_fs *fs);
 
 #endif

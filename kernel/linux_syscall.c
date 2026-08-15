@@ -233,6 +233,21 @@ void linux_syscall_handler(struct registers *r) {
         r->eax = 0;
         break;
 
+    case 36: {   // sync() — flush the write-back block cache to the device
+        r->eax = vfs_sync();
+        break;
+    }
+
+    case 118: {  // fsync(fd) — validate the fd, then flush dirty blocks
+        int fd = (int)r->ebx;
+        if (!lin_fd_valid(fd)) {
+            r->eax = -9;                 // -EBADF
+            break;
+        }
+        r->eax = vfs_sync();
+        break;
+    }
+
     case 88: {  // reboot(magic1, magic2, cmd, arg)
         unsigned int cmd = r->edx;
         if (cmd == 0x1234567) {          // LINUX_REBOOT_CMD_RESTART

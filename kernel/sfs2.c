@@ -461,9 +461,9 @@ int sfs2_unlink(struct sfs2_fs *fs, unsigned int dir_ino, const char *name) {
     return 0;
 }
 
-void sfs2_flush(struct sfs2_fs *fs) {
+int sfs2_flush(struct sfs2_fs *fs) {
     save_meta(fs);
-    block_flush();
+    return block_flush();
 }
 
 // ---- selftest (isolated RAM device, never touches the real backend) ----

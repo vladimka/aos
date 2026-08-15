@@ -87,7 +87,7 @@ struct open_file {
 
 void vfs_init(void);
 void vfs_format(void);
-void vfs_sync(void);
+int vfs_sync(void);
 
 struct vfs_inode *vfs_get_root(void);   // returns referenced
 struct vfs_inode *vfs_get_proc(void);   // returns referenced

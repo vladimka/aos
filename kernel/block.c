@@ -150,13 +150,17 @@ void block_mark_dirty(unsigned int lba) {
     if (slot >= 0) cache_dirty[slot] = 1;
 }
 
-void block_flush(void) {
-    if (!dev || !dev->write) return;
+int block_flush(void) {
+    if (!dev || !dev->write) return 0;
+    unsigned int n = 0;
     for (unsigned int i = 0; i < BLOCK_CACHE_SECTORS; i++) {
         if (!cache_valid[i] || !cache_dirty[i]) continue;
-        if (dev->write(cache_lba[i], cache[i]) == 0)
+        if (dev->write(cache_lba[i], cache[i]) == 0) {
             cache_dirty[i] = 0;
+            n++;
+        }
     }
+    return n;
 }
 
 int block_read_multi(unsigned int lba, unsigned int count, void *buf) {
