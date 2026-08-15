@@ -22,6 +22,10 @@ def main():
         log = q.serial_read()
         if "ata: found" not in log:
             raise AssertionError("ATA drive was not detected")
+        if "ata: selftest FAIL" in log:
+            raise AssertionError("ATA selftest reported FAIL")
+        if "ata: selftest OK" not in log:
+            raise AssertionError("ATA selftest did not report OK")
     print("PASS: ATA drive detected via IDENTIFY")
     return 0
 

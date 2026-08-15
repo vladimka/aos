@@ -79,6 +79,71 @@ unsigned int ata_capacity_bytes(void) {
     return gata.capacity_sectors * ATA_SECTOR_SIZE;
 }
 
+static int ata_wait_ready(unsigned int timeout_ms) {
+    unsigned int start = tick;
+    for (;;) {
+        unsigned char st = inb(gata.base + 7);
+        if (!(st & ATA_SR_BSY)) {
+            if (st & ATA_SR_ERR) return -2;
+            return 0;
+        }
+        if ((int)(tick - start) >= (int)timeout_ms) return -1;
+    }
+}
+
+static int ata_wait_drq(unsigned int timeout_ms) {
+    unsigned int start = tick;
+    while (!(inb(gata.base + 7) & ATA_SR_DRQ)) {
+        if ((int)(tick - start) >= (int)timeout_ms) return -1;
+    }
+    return 0;
+}
+
+// Load the 28-bit LBA parameters and issue a command (READ 0x20 / WRITE 0x30).
+static void ata_send_lba(unsigned int lba, unsigned char cmd) {
+    outb(gata.base + 2, 1);                  // sector count = 1
+    outb(gata.base + 3, (unsigned char)lba);
+    outb(gata.base + 4, (unsigned char)(lba >> 8));
+    outb(gata.base + 5, (unsigned char)(lba >> 16));
+    outb(gata.base + 6, 0xE0 | (gata.slave << 4) | ((lba >> 24) & 0x0F));
+    outb(gata.base + 7, cmd);
+}
+
+int ata_read(unsigned int lba, void *buf) {
+    if (!gata.present) return -1;
+    ata_send_lba(lba, 0x20);
+    int rc = ata_wait_drq(2000);
+    if (rc < 0) return rc;
+    unsigned short *w = (unsigned short *)buf;
+    for (int i = 0; i < 256; i++) w[i] = inw(gata.base);
+    return ata_wait_ready(2000);
+}
+
+int ata_write(unsigned int lba, const void *buf) {
+    if (!gata.present) return -1;
+    ata_send_lba(lba, 0x30);
+    int rc = ata_wait_drq(2000);
+    if (rc < 0) return rc;
+    const unsigned short *w = (const unsigned short *)buf;
+    for (int i = 0; i < 256; i++) outw(gata.base, w[i]);
+    return ata_wait_ready(2000);
+}
+
+static void ata_selftest(void) {
+    unsigned char w[ATA_SECTOR_SIZE], r[ATA_SECTOR_SIZE];
+    for (unsigned int i = 0; i < ATA_SECTOR_SIZE; i++)
+        w[i] = (unsigned char)(i * 7 + 3);
+    unsigned int last = gata.capacity_sectors - 1;
+    if (ata_write(last, w) == 0 && ata_read(last, r) == 0) {
+        int ok = 1;
+        for (unsigned int i = 0; i < ATA_SECTOR_SIZE; i++)
+            if (w[i] != r[i]) { ok = 0; break; }
+        serial_print(ok ? "ata: selftest OK\n" : "ata: selftest FAIL\n");
+    } else {
+        serial_print("ata: selftest FAIL\n");
+    }
+}
+
 void ata_init(void) {
     static const struct {
         unsigned int base, ctrl;
@@ -115,6 +180,8 @@ void ata_init(void) {
             }
         }
     }
+    if (gata.present)
+        ata_selftest();
     if (!gata.present)
         serial_print("ata: no disk found\n");
 }
