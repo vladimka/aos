@@ -4,9 +4,9 @@
 
 **Goal:** Устранить мерцание экрана при обновлении, переведя рендер WM на virtio-gpu с атомарным `SET_SCANOUT` (двойной буфер) и аппаратным курсором, сохранив полный VGA-fallback.
 
-**Architecture:** Ядро создаёт 2 framebuffer-ресурса virtio-gpu (1024×768×32, `B8G8R8X8_UNORM`, backing = обычные страницы RAM из user-accessible окна `0x04000000..0x04600000`). WM пишет в «back»-буфер (identity-адрес, который возвращает `AOS_FB_INFO` в GPU-режиме), затем `AOS_GPU_FLIP` атомарно переключает кадр; курсор уходит через `AOS_CURSOR` (cursor queue, QEMU рисует поверх). VGA остаётся для boot и как fallback (`vgu_active()==0`).
+**Architecture:** Ядро создаёт 2 framebuffer-ресурса virtio-gpu (1024×768×32, `B8G8R8X8_UNORM`, backing = обычные страницы RAM из user-accessible окна `0x04000000..0x04800000`). WM пишет в «back»-буфер (identity-адрес, который возвращает `AOS_FB_INFO` в GPU-режиме), затем `AOS_GPU_FLIP` атомарно переключает кадр; курсор уходит через `AOS_CURSOR` (cursor queue, QEMU рисует поверх). VGA остаётся для boot и как fallback (`vgu_active()==0`).
 
-**Tech Stack:** C (ядро, `-ffreestanding -m32`), legacy virtio-pci транспорт (`drivers/virtio.c`, `disable-modern=on`), virtio-gpu протокол, QEMU `-device virtio-vga,disable-modern=on`, Python QEMU-тесты (`scripts/qtest.py`).
+**Tech Stack:** C (ядро, `-ffreestanding -m32`), **modern virtio-pci транспорт** (`drivers/virtio_modern.c`, capability-based, memory BAR), virtio-gpu протокол, QEMU `-vga none -device virtio-vga,disable-modern=on`, Python QEMU-тесты (`scripts/qtest.py`).
 
 **Spec:** `docs/superpowers/specs/2026-08-15-virtio-gpu-design.md`
 
@@ -14,11 +14,11 @@
 
 - Язык: код/коммиты на английском, общение/доки на русском (AGENTS.md).
 - Фиксированное разрешение 1024×768×32 (`B8G8R8X8_UNORM`), один scanout, один дисплей.
-- virtio-gpu legacy PCI id `0x1040`; наш legacy транспорт (`I/O BAR`, без MSI-X).
-- Двойной буфер: 2 буфера по 3 МБ в окне `0x04000000..0x04600000` (PDE 16–17), identity-map + user bit; окно резервируется в `pmm.c`.
+- virtio-gpu — non-transitional устройство, PCI id `0x1050`; QEMU не даёт legacy I/O BAR → нужен modern транспорт (`drivers/virtio_modern.c`, `vm_*` API).
+- Двойной буфер: 2 буфера по 3 МБ в окне `0x04000000..0x04800000` (PDE 16–17), identity-map + user bit; окно резервируется в `pmm.c`.
 - Формат пикселя: наш рендер пишет u32 `0x00RRGGBB` (little-endian: байты BB GG RR 00) — совпадает с `VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM` (alpha игнорируется, в отличие от `B8G8R8A8` где alpha=0 дал бы прозрачные пиксели).
 - Валидация пользовательских указателей через `in_luser` (`kernel/aos_gui.c`), ошибка `-5`.
-- Без GPU (`vgu_active()==0`): полный fallback — WM работает как сейчас, пиксельные GUI-тесты без `-vga virtio` не гоняются.
+- Без GPU (`vgu_active()==0`): полный fallback — WM работает как сейчас, пиксельные GUI-тесты без `-vga none -device virtio-vga,...` не гоняются.
 - `AOS_EXT` syscall-слоты 521–523 свободны.
 
 ---
@@ -74,20 +74,238 @@ git commit -m "paging: reserve a user-accessible window for virtio-gpu buffers"
 
 ---
 
+### Task 2a: Modern virtio-pci транспорт (capability-based)
+
+**Files:**
+- Create: `drivers/virtio_modern.h`
+- Create: `drivers/virtio_modern.c`
+- Modify: `Makefile:12-23` (`KERNEL_OBJS` — добавить `drivers/virtio_modern.o`)
+- Test: `make` (интеграция с GPU-драйвером проверяется в Task 2)
+
+**Почему:** QEMU 10.2.1 не предоставляет virtio-gpu legacy I/O BAR (устройство non-transitional, PCI id `0x1050`); legacy-транспорт `drivers/virtio.c` (только I/O-порты) не может с ним общаться. Нужен modern virtio-pci транспорт через VNDR-capabilities и memory BAR'ы.
+
+**Interfaces:**
+- Consumes: `pci_find_all`/`pci_config_read` (`drivers/pci.h`), `paging_identity_map` (`kernel/paging.h`), `page_alloc_order` (`kernel/pmm.h`), `serial_print` (`drivers/serial.h`).
+- Produces: `struct virtio_modern` + API `vm_probe`/`vm_dev_init`/`vm_setup_queue`/`vm_ready`/`vm_alloc_desc`/`vm_desc_set`/`vm_submit`/`vm_free_chain`/`vm_used_pop` (сигнатуры ниже). Split-vring layout совпадает с legacy, поэтому логика `alloc_desc`/`desc_set`/`free_chain`/`used_pop` копируется из `drivers/virtio.c`.
+
+**Нормативный layout (источник: `/usr/include/linux/virtio_pci.h`, которому следует QEMU):**
+
+```c
+struct virtio_pci_cap {          // 16 байт
+    u8 cap_vndr;                 // 0x00 = PCI_CAP_ID_VNDR (0x09)
+    u8 cap_next;                 // 0x01 next ptr в PCI config space
+    u8 cap_len;                  // 0x02
+    u8 cfg_type;                 // 0x03
+    u8 bar;                      // 0x04
+    u8 id;                       // 0x05
+    u8 padding[2];               // 0x06
+    u32 offset;                  // 0x08 (LE)
+    u32 length;                  // 0x0C (LE)
+} __attribute__((packed));
+// cfg_type: 1=COMMON_CFG, 2=NOTIFY_CFG, 3=ISR_CFG, 4=DEVICE_CFG
+// для NOTIFY_CFG: u32 notify_off_multiplier на offset 0x10 (вслед за cap)
+
+struct virtio_pci_common_cfg {   // mmio-регистры (LE)
+    u32 device_feature_select;   // 0x00
+    u32 device_feature;          // 0x04 (ro)
+    u32 guest_feature_select;    // 0x08
+    u32 guest_feature;           // 0x0C
+    u16 msix_config;             // 0x10
+    u16 num_queues;              // 0x12 (ro)
+    u8  device_status;           // 0x14
+    u8  config_generation;       // 0x15 (ro)
+    u16 queue_select;            // 0x16
+    u16 queue_size;              // 0x18
+    u16 queue_msix_vector;       // 0x1A
+    u16 queue_enable;            // 0x1C
+    u16 queue_notify_off;        // 0x1E (ro)
+    u32 queue_desc_lo;           // 0x20
+    u32 queue_desc_hi;           // 0x24
+    u32 queue_avail_lo;          // 0x28
+    u32 queue_avail_hi;          // 0x2C
+    u32 queue_used_lo;           // 0x30
+    u32 queue_used_hi;           // 0x34
+};
+```
+
+- Статусы: `ACKNOWLEDGE 1`, `DRIVER 2`, `FEATURES_OK 8`, `DRIVER_OK 4`; запись `device_status=0` = reset.
+- `VIRTIO_F_VERSION_1 = (1ULL<<32)` — обязательный modern-флаг; negotiate через select/feature пары (select 0 → биты 0-31, select 1 → биты 32-63).
+- Notify: `addr = notify_base + queue_notify_off * notify_off_multiplier`; записать 16-битный qidx. `queue_notify_off` — индекс, не байтовый сдвиг.
+- ISR: 1 байт, bit 0 = queue, bit 1 = config; чтение сбрасывает (для polling не критично).
+- Queue setup (modern): `queue_select=qidx` → `queue_size=n` → записать три физ. адреса (`queue_desc`, `queue_avail`, `queue_used` — 32-bit lo/hi пары) → `queue_enable=1`. **Queue PFN (legacy) отсутствует.**
+- BAR'ы: читать из PCI config (BAR0=0x10, BAR1=0x14, BAR2=0x18, BAR3=0x1C, BAR4=0x20, BAR5=0x24). Для memory BAR: `addr = raw & ~0xF`; для 64-bit (raw & 0x6 == 0x4): `addr |= hi<<32`. Бар-адреса virtio-vga выше 256 МБ → `paging_identity_map(addr, length)` перед mmio-доступом.
+
+**Шаги:**
+
+- [ ] **Step 1: Написать `drivers/virtio_modern.h`**
+
+```c
+#ifndef VIRTIO_MODERN_H
+#define VIRTIO_MODERN_H
+
+#include "virtio.h"   // struct vring_desc/vring_avail/vring_used
+
+#define VIRTIO_PCI_CAP_COMMON_CFG 1
+#define VIRTIO_PCI_CAP_NOTIFY_CFG 2
+#define VIRTIO_PCI_CAP_ISR_CFG    3
+#define VIRTIO_PCI_CAP_DEVICE_CFG 4
+
+#define VM_STATUS_ACKNOWLEDGE 1
+#define VM_STATUS_DRIVER      2
+#define VM_STATUS_FEATURES_OK 8
+#define VM_STATUS_DRIVER_OK   4
+
+#define VM_F_VERSION_1 (1ULL << 32)
+
+struct vm_cap {
+    unsigned char cap_vndr, cap_next, cap_len, cfg_type;
+    unsigned char bar, id, padding[2];
+    unsigned int offset, length;
+} __attribute__((packed));
+
+struct virtio_modern {
+    unsigned char bus, dev, func;
+    volatile unsigned char *common;    // common cfg mmio base
+    volatile unsigned char *notify;    // notify base
+    unsigned int notify_multiplier;
+    volatile unsigned char *isr;
+    // vq 0..1 (control, cursor)
+    volatile struct vring_desc *desc;
+    volatile struct vring_avail *avail;
+    volatile struct vring_used *used;
+    unsigned short size, free_head, last_used;
+    unsigned short notify_off[2];
+};
+
+int vm_probe(struct virtio_modern *m, unsigned int device_id);
+int vm_dev_init(struct virtio_modern *m, unsigned long long supported);
+int vm_setup_queue(struct virtio_modern *m, unsigned int qidx, unsigned int n);
+void vm_ready(struct virtio_modern *m);
+unsigned int vm_alloc_desc(struct virtio_modern *m, unsigned int qidx);
+void vm_desc_set(struct virtio_modern *m, unsigned int qidx, unsigned int idx,
+                 unsigned int addr, unsigned int len, unsigned short flags);
+void vm_submit(struct virtio_modern *m, unsigned int qidx, unsigned int head);
+void vm_free_chain(struct virtio_modern *m, unsigned int qidx, unsigned int head);
+int vm_used_pop(struct virtio_modern *m, unsigned int qidx,
+                unsigned int *id, unsigned int *len);
+
+#endif
+```
+
+- [ ] **Step 2: Написать `drivers/virtio_modern.c`**
+
+Реализовать по спецификации выше. Ключевые фрагменты (полный код пишет имплементер по этим спецификациям):
+
+```c
+#include "virtio_modern.h"
+#include "pci.h"
+#include "paging.h"
+#include "pmm.h"
+#include "serial.h"
+#include "string.h"
+
+// mmio-доступ к common cfg
+static inline u32 vm_cfg32(struct virtio_modern *m, unsigned int off) {
+    return *(volatile unsigned int *)(m->common + off);
+}
+static inline void vm_cfg_w32(struct virtio_modern *m, unsigned int off, unsigned int v) {
+    *(volatile unsigned int *)(m->common + off) = v;
+}
+static inline void vm_cfg_w16(struct virtio_modern *m, unsigned int off, unsigned short v) {
+    *(volatile unsigned short *)(m->common + off) = v;
+}
+static inline unsigned short vm_cfg_r16(struct virtio_modern *m, unsigned int off) {
+    return *(volatile unsigned short *)(m->common + off);
+}
+static inline void vm_cfg_w8(struct virtio_modern *m, unsigned int off, unsigned char v) {
+    *(volatile unsigned char *)(m->common + off) = v;
+}
+static inline unsigned char vm_cfg_r8(struct virtio_modern *m, unsigned int off) {
+    return *(volatile unsigned char *)(m->common + off);
+}
+
+// vm_probe: найти устройство, просканировать VNDR-capabilities, identity-map BAR'ы,
+// заполнить common/notify/isr базы. Возвращает 0 при успехе, -1 нет устройства.
+int vm_probe(struct virtio_modern *m, unsigned int device_id) {
+    struct pci_dev list[8];
+    int n = pci_find_all(list, 8);
+    int idx = -1;
+    for (int i = 0; i < n; i++)
+        if (list[i].vendor == 0x1AF4 && list[i].device == device_id) { idx = i; break; }
+    if (idx < 0) return -1;
+    m->bus = list[idx].bus; m->dev = list[idx].dev; m->func = list[idx].func;
+    // capability list
+    unsigned int caps = pci_config_read(m->bus, m->dev, m->func, 0x34) & 0xFF;
+    unsigned int notify_off = 0, notify_len = 0, notify_bar = 0;
+    // пройти capability list: каждый cap - dword с reg=cap_ptr
+    unsigned int cp = caps;
+    while (cp) {
+        unsigned int w = pci_config_read(m->bus, m->dev, m->func, cp & 0xFC);
+        // байт0=cap_vndr, байт1=cap_next, байт3=cfg_type
+        unsigned char vndr = w & 0xFF;
+        unsigned char nxt = (w >> 8) & 0xFF;
+        if (vndr != 0x09) { cp = nxt; continue; }   // не VNDR
+        // читаем 16-байт struct (4 dword)
+        // ... заполнить struct vm_cap
+        // по cfg_type сохранить bar/offset/length
+        // notify: читать notify_off_multiplier на offset 0x10
+        cp = nxt;
+    }
+    // ... прочитать BAR регистры, identity-map каждый используемый BAR,
+    //     вычислить common/notify/isr базы (bar_base + offset)
+    return 0;
+}
+```
+
+Правила для `vm_probe`:
+- Capability struct читается по `cp` (уже dword-выровнен, т.к. `pci_config_read` требует reg & 0xFC); cap-следующий указатель — байт 1. Читать `struct vm_cap` из 4 чтений: `pci_config_read(bus,dev,func, cp)`, `+4`, `+8`, `+0xC`.
+- Игнорировать не-VNDR cap'ы, идти по `cap_next`.
+- Для cfg_type 1/2/3/4 сохранить `bar`, `offset`, `length`. Для notify (2) дополнительно прочитать `notify_off_multiplier` (u32) на `cap+0x10`.
+- После скан-а: для каждого используемого BAR прочитать config BAR регистр (`0x10 + 4*bar`), маска `& ~0xF`, если 64-bit (`raw & 0x6 == 0x4`) → прочитать `bar+1` регистр как hi. `paging_identity_map(addr, length)` (округлять length до страницы вверх). `bar_base = addr`.
+- `m->common = (volatile u8*)(bar_base + common.offset)`, аналогично notify/isr.
+- `m->notify_multiplier = notify_multiplier`.
+
+`vm_dev_init`: reset (device_status=0) → status=ACK|DRIVER → прочитать device features (select 0/1) → negotiated = features & supported → записать guest features (select 0/1) → status |= FEATURES_OK → проверить, что не FAILED (устройство сбросит FEATURES_OK и выставит FAILED=0x80 при неверной negotiate) → вернуть 0.
+
+`vm_setup_queue(m, qidx, n)`: как legacy `virtio_setup_queue` (page_alloc_order, размещение desc/avail/used, init free_head/last_used), но вместо QUEUE_PFN — `queue_select=qidx`, `queue_size=n`, записать физ. адреса в `queue_desc_lo/hi`, `queue_avail_lo/hi`, `queue_used_lo/hi`, затем `queue_enable=1`. Прочитать `queue_notify_off` и сохранить в `m->notify_off[qidx]`.
+
+`vm_ready`: `device_status |= DRIVER_OK`.
+
+`vm_submit(m, qidx, head)`: записать desc в avail ring, `avail->idx++`, затем `*(volatile u16*)(m->notify + m->notify_off[qidx]*m->notify_multiplier) = qidx`.
+
+`vm_alloc_desc`/`vm_desc_set`/`vm_free_chain`/`vm_used_pop`: скопировать логику из `drivers/virtio.c` (те же алгоритмы на `m->desc`/`m->avail`/`m->used`/`m->size`/`m->free_head`/`m->last_used`).
+
+- [ ] **Step 3: Подключить в build**
+- `Makefile` `KERNEL_OBJS`: добавить `drivers/virtio_modern.o`.
+
+- [ ] **Step 4: Собрать**
+- Run: `make`
+- Expected: сборка чистая (функции пока никто не вызывает — только компиляция).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add drivers/virtio_modern.c drivers/virtio_modern.h Makefile
+git commit -m "virtio: add modern virtio-pci transport for non-transitional devices"
+```
+
+> Примечание: корректность `vm_probe`/`vm_setup_queue` проверяется в Task 2, когда GPU-драйвер реально шлёт команды. Если что-то не работает — отладить по QEMU (serial-лог + `info pci`).
+
+---
+
 ### Task 2: Драйвер virtio-gpu (probe, init, ресурсы, flip) + selftest-лог
 
 **Files:**
 - Create: `drivers/virtio_gpu.h`
 - Create: `drivers/virtio_gpu.c`
-- Modify: `drivers/virtio.h:7` (добавить `VIRTIO_DEV_GPU 0x1040`)
-- Modify: `Makefile:13` (добавить `drivers/virtio_gpu.o` в `KERNEL_OBJS`)
+- Modify: `Makefile:12-23` (добавить `drivers/virtio_gpu.o` в `KERNEL_OBJS`)
 - Modify: `kernel/kernel.c:126` (вызвать `vgu_init()` после `virtio_init()`)
 - Create: `scripts/vguitest.py`
 - Modify: `Makefile` `TESTS` (добавить `vguitest`)
 - Test: `scripts/vguitest.py`
 
 **Interfaces:**
-- Consumes: `virtio_probe_pci`, `virtio_dev_init`, `virtio_setup_queue`, `virtio_alloc_desc`, `virtio_desc_set`, `virtio_submit`, `virtio_free_chain`, `virtio_used_pop` (из `drivers/virtio.h`); `GPU_BASE`/`GPU_STRIDE` (Task 1).
+- Consumes: `vm_probe`, `vm_dev_init`, `vm_setup_queue`, `vm_ready`, `vm_alloc_desc`, `vm_desc_set`, `vm_submit`, `vm_free_chain`, `vm_used_pop` (из `drivers/virtio_modern.h`, Task 2a); `GPU_BASE`/`GPU_STRIDE` (Task 1); `serial_print`, `memcpy`/`memset` (string.h).
 - Produces:
   - `int vgu_init(void);` — probe+init, возвращает 0 при успехе, -1 нет GPU.
   - `int vgu_active(void);` — 1 после успешного init, 0 иначе.
@@ -96,14 +314,14 @@ git commit -m "paging: reserve a user-accessible window for virtio-gpu buffers"
   - `void vgu_info(unsigned int *w, unsigned int *h, unsigned int *pitch);` — 1024/768/4096 при активном GPU, 0/0/0 иначе.
   - selftest-строки в serial: `vgu: active`, `vgu: flip ok` (на каждый `SET_SCANOUT` при selftest).
 
-**Детали протокола (legacy virtio-gpu):**
+**Детали протокола (modern virtio-gpu):**
 - Командный заголовок 24 байта: `{u32 type; u32 flags; u64 fence_id; u32 ctx_id; u32 padding;}` packed.
 - Команды (controlq, qidx 0): `RESOURCE_CREATE_2D` (0x0101, payload: resource_id, format, width, height), `RESOURCE_ATTACH_BACKING` (0x0105, payload: resource_id, nr_entries, entries[] каждый `{u64 addr; u32 length; u32 padding;}`), `RESOURCE_FLUSH` (0x0104, payload: resource_id, padding, rect{x,y,w,h}), `SET_SCANOUT` (0x0002, payload: rect{x,y,w,h}, scanout_id, resource_id).
 - Курсорные команды (cursorq, qidx 1, только в Task 3).
 - Ответ: заголовок с `type == VIRTIO_GPU_RESP_OK_NODATA (0x1100)`.
 - Формат `VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM = 2`.
 - Ресурсы: buf0=1, buf1=2.
-- Синхронные команды: отправить через `virtio_submit`, затем `virtio_used_pop` с таймаутом-поллингом (10000 итераций `sti;hlt;cli` или простой цикл), считать ответ по адресу командного буфера.
+- Синхронные команды: отправить через `vm_submit`, затем `vm_used_pop` с таймаутом-поллингом по `tick` (паттерн `vrng.c`: `extern volatile unsigned int tick; if ((int)(tick - start) >= 500) return -1`), считать ответ по адресу командного буфера.
 - Командный буфер и entries-массив: `static` в ядре (ниже 256 МБ, identity-mapped) — физический адрес = адрес переменной.
 
 - [ ] **Step 1: Написать драйвер-заголовок `drivers/virtio_gpu.h`**
@@ -138,7 +356,7 @@ void vgu_info(unsigned int *w, unsigned int *h, unsigned int *pitch);
 
 - [ ] **Step 2: Написать тест `scripts/vguitest.py` (RED)**
 
-Копия структуры `scripts/linhello.py` (serial-only, `serial_mode="file"`), бут с `-device virtio-vga,disable-modern=on`:
+Копия структуры `scripts/linhello.py` (serial-only, `serial_mode="file"`), бут с `-vga none -device virtio-vga,disable-modern=on`:
 
 ```python
 #!/usr/bin/env python3
@@ -151,8 +369,8 @@ ISO = os.path.join(ROOT, "aos.iso")
 
 def main():
     with QTest("vgu", serial_mode="file") as q:
-        q.start(extra_args=["-device", "virtio-vga,disable-modern=on"])
-        log = q.serial()
+        q.start(extra_args=["-vga", "none", "-device", "virtio-vga,disable-modern=on"])
+        log = q.serial_read()
     assert "vgu: active" in log, "virtio-gpu driver did not activate"
     assert "vgu: flip ok" in log, "vgu selftest flip did not run"
     print("VGU TEST OK")
@@ -161,17 +379,19 @@ if __name__ == "__main__":
     main()
 ```
 
-Проверить, что в `qtest.py` есть метод `serial()` (если нет — читать `self.ser` файл). Прогнать: `python3 scripts/vguitest.py` — Expected: FAIL, "virtio-gpu driver did not activate".
+В `qtest.py` метод называется `serial_read()` (не `serial()`). Прогнать: `python3 scripts/vguitest.py` — Expected: FAIL, "virtio-gpu driver did not activate".
 
 - [ ] **Step 3: Написать драйвер `drivers/virtio_gpu.c`**
 
-Ключевые части (полный код ниже — вставка по секциям):
+Ключевые части (полный код ниже — вставка по секциям). **Modern API: `virtio_*` → `vm_*`; драйвер не использует `virtio_register`/IRQ (команды синхронные через polling used ring).**
 
 ```c
 #include "virtio_gpu.h"
-#include "virtio.h"
+#include "virtio_modern.h"
 #include "serial.h"
 #include "string.h"
+
+extern volatile unsigned int tick;
 
 #define GPU_BASE   0x04000000
 #define GPU_STRIDE 0x300000        // 3 MiB per buffer
@@ -179,7 +399,7 @@ if __name__ == "__main__":
 #define FB_H       768
 #define FB_PITCH   (FB_W * 4)
 
-static struct virtio_dev vgpu;
+static struct virtio_modern vgpu;
 static int gpu_active;
 static int front;                  // 0 or 1: currently displayed buffer
 static unsigned char cmd_buf[16384] __attribute__((aligned(16)));
@@ -187,19 +407,20 @@ static unsigned int ncmd;
 
 // ---- low-level command submission (controlq, qidx 0) ----
 static int vgu_send(unsigned int qidx, unsigned int len) {
-    unsigned int head = virtio_alloc_desc(&vgpu, qidx);
+    unsigned int head = vm_alloc_desc(&vgpu, qidx);
     if (head == 0xFFFF) return -1;
-    virtio_desc_set(&vgpu, qidx, head, (unsigned int)cmd_buf, len, 0);
-    virtio_submit(&vgpu, qidx, head);
+    vm_desc_set(&vgpu, qidx, head, (unsigned int)cmd_buf, len, 0);
+    vm_submit(&vgpu, qidx, head);
     // poll used ring (device replies on the same queue)
-    for (unsigned int i = 0; i < 1000000; i++) {
+    unsigned int start = tick;
+    while ((int)(tick - start) < 500) {
         unsigned int id, rlen;
-        if (virtio_used_pop(&vgpu, qidx, &id, &rlen) == 0) {
-            virtio_free_chain(&vgpu, qidx, id);
+        if (vm_used_pop(&vgpu, qidx, &id, &rlen) == 0) {
+            vm_free_chain(&vgpu, qidx, id);
             return 0;
         }
     }
-    virtio_free_chain(&vgpu, qidx, head);
+    vm_free_chain(&vgpu, qidx, head);
     return -1;
 }
 
@@ -261,10 +482,10 @@ static void vgu_flush(unsigned int rid) {
 }
 
 int vgu_init(void) {
-    if (virtio_probe_pci(&vgpu, 0x1040) != 0) return -1;
-    if (virtio_dev_init(&vgpu, 0, 0) != 0) return -1;
-    if (virtio_setup_queue(&vgpu, 0, 256) != 0) return -1;
-    virtio_register(&vgpu);
+    if (vm_probe(&vgpu, 0x1050) != 0) return -1;
+    if (vm_dev_init(&vgpu, VM_F_VERSION_1) != 0) return -1;
+    if (vm_setup_queue(&vgpu, 0, 256) != 0) return -1;
+    vm_ready(&vgpu);
     if (vgu_create(1, FB_W, FB_H) != 0) return -1;
     if (vgu_create(2, FB_W, FB_H) != 0) return -1;
     if (vgu_attach(1, GPU_BASE, GPU_STRIDE) != 0) return -1;
@@ -307,9 +528,8 @@ void vgu_flip(void) {
 
 - [ ] **Step 4: Подключить в build и init**
 
-- `drivers/virtio.h`: после `#define VIRTIO_DEV_RNG 0x1005` добавить `#define VIRTIO_DEV_GPU 0x1040`.
 - `Makefile` `KERNEL_OBJS`: добавить `drivers/virtio_gpu.o`.
-- `kernel/kernel.c` `virtio_init()`-блок (после `block_init()` в `virtio_init` или в `kernel_main` после `virtio_init()`): вызвать `vgu_init();` и залогировать результат:
+- `kernel/kernel.c` `virtio_init()`-блок (после `virtio_init()` в `kernel_main` на строке 126): вызвать `vgu_init();` и залогировать результат:
 
 ```c
 if (vgu_init() == 0)
@@ -317,8 +537,6 @@ if (vgu_init() == 0)
 else
     serial_print("virtio-gpu: not present, using VGA\n");
 ```
-
-В `kernel_main` `virtio_init()` вызывается на строке 126 — `vgu_init()` поставить сразу после неё (или внутри `virtio_init` в `drivers/virtio.c:187` после `block_init()`).
 
 - [ ] **Step 5: Запустить тест (GREEN)**
 
@@ -333,8 +551,8 @@ Expected: зелёные (не-GUI тесты не зависят от `-vga`; `
 - [ ] **Step 7: Commit**
 
 ```bash
-git add drivers/virtio_gpu.c drivers/virtio_gpu.h drivers/virtio.h Makefile kernel/kernel.c scripts/vguitest.py
-git commit -m "virtio-gpu: add legacy virtio-gpu driver with double-buffer flip"
+git add drivers/virtio_gpu.c drivers/virtio_gpu.h Makefile kernel/kernel.c scripts/vguitest.py
+git commit -m "virtio-gpu: add modern virtio-gpu driver with double-buffer flip"
 ```
 
 ---
@@ -420,14 +638,14 @@ void vgu_cursor(int x, int y, int visible) {
 }
 ```
 
-> Курсорную команду отправляем в cursorq (qidx 1); `vgu_send` уже принимает `qidx` — но он вызывается для команд, которые читают ответ с used-ring. Cursor queue отвечает `VIRTIO_GPU_RESP_OK_NODATA` тоже через used ring, поэтому `vgu_send` подходит. Проверить, что cursorq настроена: добавить `virtio_setup_queue(&vgpu, 1, 64)` в `vgu_init()` (Step 3 ниже).
+> Курсорную команду отправляем в cursorq (qidx 1); `vgu_send` уже принимает `qidx` — но он вызывается для команд, которые читают ответ с used-ring. Cursor queue отвечает `VIRTIO_GPU_RESP_OK_NODATA` тоже через used ring, поэтому `vgu_send` подходит. Проверить, что cursorq настроена: добавить `vm_setup_queue(&vgpu, 1, 64)` в `vgu_init()` (Step 3 ниже).
 
 - [ ] **Step 3: Настроить cursorq в `vgu_init()`**
 
-В `drivers/virtio_gpu.c`, в `vgu_init()` после `virtio_setup_queue(&vgpu, 0, 256)` добавить:
+В `drivers/virtio_gpu.c`, в `vgu_init()` после `vm_setup_queue(&vgpu, 0, 256)` добавить:
 
 ```c
-if (virtio_setup_queue(&vgpu, 1, 64) != 0) return -1;
+if (vm_setup_queue(&vgpu, 1, 64) != 0) return -1;
 ```
 
 - [ ] **Step 4: Selftest курсора при init**
