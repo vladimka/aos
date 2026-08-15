@@ -27,6 +27,8 @@ def main():
             raise AssertionError("vblk selftest reported FAIL")
         if "blk: selftest OK" not in log:
             raise AssertionError("vblk selftest did not report OK")
+        if "blk: selftest multi OK" not in log:
+            raise AssertionError("vblk multi-sector selftest did not report OK")
     print("PASS: virtio-blk reads and writes sectors")
     return 0
 

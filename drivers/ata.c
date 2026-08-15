@@ -102,8 +102,9 @@ static int ata_wait_drq(unsigned int timeout_ms) {
 }
 
 // Load the 28-bit LBA parameters and issue a command (READ 0x20 / WRITE 0x30).
-static void ata_send_lba(unsigned int lba, unsigned char cmd) {
-    outb(gata.base + 2, 1);                  // sector count = 1
+static void ata_send_lba(unsigned int lba, unsigned int count,
+                         unsigned char cmd) {
+    outb(gata.base + 2, (unsigned char)count);   // sector count
     outb(gata.base + 3, (unsigned char)lba);
     outb(gata.base + 4, (unsigned char)(lba >> 8));
     outb(gata.base + 5, (unsigned char)(lba >> 16));
@@ -111,24 +112,40 @@ static void ata_send_lba(unsigned int lba, unsigned char cmd) {
     outb(gata.base + 7, cmd);
 }
 
-int ata_read(unsigned int lba, void *buf) {
+int ata_read_multi(unsigned int lba, unsigned int count, void *buf) {
     if (!gata.present) return -1;
-    ata_send_lba(lba, 0x20);
-    int rc = ata_wait_drq(2000);
-    if (rc < 0) return rc;
+    if (count == 0 || count > 255) return -1;        // 8-bit sector count
+    if (lba + count > 0x10000000u) return -1;         // stay inside 28-bit LBA
+    ata_send_lba(lba, count, 0x20);
     unsigned short *w = (unsigned short *)buf;
-    for (int i = 0; i < 256; i++) w[i] = inw(gata.base);
+    for (unsigned int s = 0; s < count; s++) {
+        int rc = ata_wait_drq(2000);
+        if (rc < 0) return rc;
+        for (int i = 0; i < 256; i++) w[s * 256 + i] = inw(gata.base);
+    }
     return ata_wait_ready(2000);
 }
 
-int ata_write(unsigned int lba, const void *buf) {
+int ata_write_multi(unsigned int lba, unsigned int count, const void *buf) {
     if (!gata.present) return -1;
-    ata_send_lba(lba, 0x30);
-    int rc = ata_wait_drq(2000);
-    if (rc < 0) return rc;
+    if (count == 0 || count > 255) return -1;
+    if (lba + count > 0x10000000u) return -1;
+    ata_send_lba(lba, count, 0x30);
     const unsigned short *w = (const unsigned short *)buf;
-    for (int i = 0; i < 256; i++) outw(gata.base, w[i]);
+    for (unsigned int s = 0; s < count; s++) {
+        int rc = ata_wait_drq(2000);
+        if (rc < 0) return rc;
+        for (int i = 0; i < 256; i++) outw(gata.base, w[s * 256 + i]);
+    }
     return ata_wait_ready(2000);
+}
+
+int ata_read(unsigned int lba, void *buf) {
+    return ata_read_multi(lba, 1, buf);
+}
+
+int ata_write(unsigned int lba, const void *buf) {
+    return ata_write_multi(lba, 1, buf);
 }
 
 static void ata_selftest(void) {
@@ -143,6 +160,21 @@ static void ata_selftest(void) {
         serial_print(ok ? "ata: selftest OK\n" : "ata: selftest FAIL\n");
     } else {
         serial_print("ata: selftest FAIL\n");
+    }
+
+    // Multi-sector round-trip: write 4 sectors through the multi path, read
+    // them back, compare byte-for-byte.
+    unsigned char wm[4 * ATA_SECTOR_SIZE], rm[4 * ATA_SECTOR_SIZE];
+    for (unsigned int i = 0; i < sizeof(wm); i++)
+        wm[i] = (unsigned char)(i * 13 + 5);
+    unsigned int base = gata.capacity_sectors - 8;
+    if (ata_write_multi(base, 4, wm) == 0 && ata_read_multi(base, 4, rm) == 0) {
+        int ok = 1;
+        for (unsigned int i = 0; i < (int)sizeof(rm); i++)
+            if (wm[i] != rm[i]) { ok = 0; break; }
+        serial_print(ok ? "ata: selftest multi OK\n" : "ata: selftest multi FAIL\n");
+    } else {
+        serial_print("ata: selftest multi FAIL\n");
     }
 }
 

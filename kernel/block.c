@@ -121,6 +121,25 @@ void block_flush(void) {
     }
 }
 
+int block_read_multi(unsigned int lba, unsigned int count, void *buf) {
+    if (!dev || !dev->read) return -1;
+    if (dev->read_multi && dev->read_multi(lba, count, buf) == 0)
+        return 0;
+    for (unsigned int i = 0; i < count; i++)
+        if (dev->read(lba + i, (char *)buf + i * BLOCK_SIZE) != 0) return -1;
+    return 0;
+}
+
+int block_write_multi(unsigned int lba, unsigned int count, const void *buf) {
+    if (!dev || !dev->write) return -1;
+    block_flush();
+    if (dev->write_multi && dev->write_multi(lba, count, buf) == 0)
+        return 0;
+    for (unsigned int i = 0; i < count; i++)
+        if (dev->write(lba + i, (const char *)buf + i * BLOCK_SIZE) != 0) return -1;
+    return 0;
+}
+
 struct sdev *block_get_sdev(void) {
     return dev;
 }

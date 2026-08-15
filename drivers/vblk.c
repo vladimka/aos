@@ -18,11 +18,11 @@ extern volatile unsigned int tick;
 
 static struct virtio_dev *gdev;
 static struct virtio_blk_req req;
-static unsigned char databuf[SECTOR_SIZE];
 static volatile unsigned char status_byte;
 static unsigned long long capacity_bytes;
 
-static int vblk_request(unsigned int type, unsigned int sector) {
+static int vblk_request(unsigned int type, unsigned int sector,
+                        void *buf, unsigned int len) {
     req.type = type;
     req.reserved = 0;
     req.sector = sector;
@@ -34,7 +34,7 @@ static int vblk_request(unsigned int type, unsigned int sector) {
     if (h == 0xFFFF || m == 0xFFFF || t == 0xFFFF) return -1;
 
     virtio_desc_set(gdev, 0, h, (unsigned int)&req, sizeof(req), 0);
-    virtio_desc_set(gdev, 0, m, (unsigned int)databuf, SECTOR_SIZE,
+    virtio_desc_set(gdev, 0, m, (unsigned int)buf, len,
                     type == VIRTIO_BLK_T_IN ? VRING_DESC_F_WRITE : 0);
     virtio_desc_set(gdev, 0, t, (unsigned int)&status_byte, 1, VRING_DESC_F_WRITE);
     virtio_desc_link(gdev, 0, h, m);
@@ -70,16 +70,21 @@ static int vblk_request(unsigned int type, unsigned int sector) {
     }
 }
 
+int vblk_read_multi(unsigned int lba, unsigned int count, void *buf) {
+    return vblk_request(VIRTIO_BLK_T_IN, lba, buf, count * SECTOR_SIZE);
+}
+
+int vblk_write_multi(unsigned int lba, unsigned int count, const void *buf) {
+    return vblk_request(VIRTIO_BLK_T_OUT, lba, (void *)buf,
+                        count * SECTOR_SIZE);
+}
+
 int vblk_read(unsigned int lba, void *buf) {
-    int rc = vblk_request(VIRTIO_BLK_T_IN, lba);
-    if (rc < 0) return rc;
-    memcpy(buf, databuf, SECTOR_SIZE);
-    return 0;
+    return vblk_read_multi(lba, 1, buf);
 }
 
 int vblk_write(unsigned int lba, const void *buf) {
-    memcpy(databuf, buf, SECTOR_SIZE);
-    return vblk_request(VIRTIO_BLK_T_OUT, lba);
+    return vblk_write_multi(lba, 1, buf);
 }
 
 int vblk_present(void) {
@@ -129,5 +134,19 @@ void vblk_init(void) {
         serial_print(ok ? "blk: selftest OK\n" : "blk: selftest FAIL\n");
     } else {
         serial_print("blk: selftest FAIL\n");
+    }
+
+    // Multi-sector round-trip through a single request.
+    unsigned char wm[4 * SECTOR_SIZE], rm[4 * SECTOR_SIZE];
+    for (unsigned int i = 0; i < sizeof(wm); i++)
+        wm[i] = (unsigned char)(i * 13 + 5);
+    unsigned int base = last - 8;
+    if (vblk_write_multi(base, 4, wm) == 0 && vblk_read_multi(base, 4, rm) == 0) {
+        int ok = 1;
+        for (unsigned int i = 0; i < (int)sizeof(rm); i++)
+            if (wm[i] != rm[i]) { ok = 0; break; }
+        serial_print(ok ? "blk: selftest multi OK\n" : "blk: selftest multi FAIL\n");
+    } else {
+        serial_print("blk: selftest multi FAIL\n");
     }
 }
