@@ -16,6 +16,7 @@
 #include "mouse.h"
 #include "uhci.h"
 #include "virtio.h"
+#include "ata.h"
 #include "vfs.h"
 #include "sfs2.h"
 #include "aosipc.h"
@@ -116,6 +117,8 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     mouse_init();
 
     usb_init();
+
+    ata_init();
 
     virtio_init();
 

@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+
+from qtest import QTest
+
+IMG = "/tmp/aos-atatest.img"
+
+
+def main():
+    try:
+        os.unlink(IMG)
+    except FileNotFoundError:
+        pass
+    subprocess.run(["truncate", "-s", "4M", IMG], check=True)
+    extra = [
+        "-drive", "file=" + IMG + ",format=raw,if=ide",
+    ]
+    with QTest("atatest", extra_args=extra) as q:
+        q.boot_and_ready()
+        log = q.serial_read()
+        if "ata: found" not in log:
+            raise AssertionError("ATA drive was not detected")
+    print("PASS: ATA drive detected via IDENTIFY")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
