@@ -93,10 +93,12 @@ static int ata_wait_ready(unsigned int timeout_ms) {
 
 static int ata_wait_drq(unsigned int timeout_ms) {
     unsigned int start = tick;
-    while (!(inb(gata.base + 7) & ATA_SR_DRQ)) {
+    for (;;) {
+        unsigned char st = inb(gata.base + 7);
+        if (st & ATA_SR_DRQ) return 0;
+        if (st & ATA_SR_ERR) return -2;
         if ((int)(tick - start) >= (int)timeout_ms) return -1;
     }
-    return 0;
 }
 
 // Load the 28-bit LBA parameters and issue a command (READ 0x20 / WRITE 0x30).
@@ -158,10 +160,11 @@ void ata_init(void) {
         unsigned int ctrl = channels[c].ctrl;
 
         // Software reset the channel, then wait for BSY to clear (or the
-        // channel to report empty: status 0x00). QEMU is instant.
-        outb(ctrl, 0x04);                    // SRST
+        // channel to report empty: status 0x00). QEMU is instant. nIEN is
+        // kept set throughout so the polling driver never sees IRQ14/15.
+        outb(ctrl, 0x06);                    // SRST + nIEN
         ata_pause(ctrl);
-        outb(ctrl, 0x00);
+        outb(ctrl, 0x02);                    // release SRST, nIEN stays set
         unsigned int start = tick;
         for (;;) {
             unsigned char st = inb(base + 7);
