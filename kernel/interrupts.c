@@ -12,7 +12,6 @@
 #define PIC2_CMD  0xA0
 
 static unsigned int spurious_count[16];
-static unsigned int spurious_log_suppressed[16];
 
 extern void isr0(void);
 extern void isr1(void);
@@ -176,15 +175,12 @@ void irq_handler(struct registers *r) {
     unsigned char cmd = (irq >= 8) ? PIC2_CMD : PIC1_CMD;
     unsigned char isr = pic_get_isr(cmd);
     if (!(isr & (1 << (irq & 7)))) {
+        // Spurious IRQ (e.g. the slave PIC's spurious vector IRQ15 after a
+        // PS/2 mouse byte is drained before the PIC latches it on real
+        // hardware). Benign — just EOI and drop it; printing here would
+        // clobber the framebuffer the window manager is drawing to.
         spurious_count[irq]++;
         irq_eoi(irq);
-        if (!spurious_log_suppressed[irq]) {
-            printf("spurious IRQ %d (total %u)\n", irq, spurious_count[irq]);
-            if (spurious_count[irq] >= 100) {
-                spurious_log_suppressed[irq] = 1;
-                printf("spurious IRQ %d: logging suppressed\n", irq);
-            }
-        }
         return;
     }
 

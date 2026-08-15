@@ -23,20 +23,63 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
 
 PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest sh exitto random fstest procinfo bgspawn cp mv mkdir rmdir head wc
 
-# All AOS programs are now built with the static musl i386 toolchain (Task 30).
-# If it is not installed, the program ELFs are skipped (fallback like lin/*):
-# the kernel still builds, only the ramdisk program payload is not embedded.
+# All AOS programs and the Linux ELF payload (lin/*) are built with the
+# static musl i386 toolchain. It is a hard build dependency: without it the
+# ramdisk would have no programs and the GUI tests would fail. Install it
+# with `make install`.
 MUSL_CC  = tools/musl-i686/bin/i686-linux-musl-gcc
-MUSL_OK  = $(wildcard $(MUSL_CC))
-PROG_ELFS = $(if $(MUSL_OK),$(addprefix build/prog/,$(addsuffix .elf,$(PROGRAMS))))
+PROG_ELFS = $(addprefix build/prog/,$(addsuffix .elf,$(PROGRAMS)))
 
-# The Linux ELF payload (lin/*) is built with the same static musl i386 toolchain.
 LINUX_CC  = $(MUSL_CC)
 LINUX_SRCS = $(wildcard tools/linux/*.c)
-LINUX_BINS = $(if $(wildcard $(LINUX_CC)),$(patsubst tools/linux/%.c,build/linux/%,$(LINUX_SRCS)))
-LINUX_EMBED = $(if $(LINUX_BINS),--data lin/hello=build/linux/hello --data lin/ls=build/linux/ls --data lin/cat=build/linux/cat --data lin/piptest=build/linux/piptest --data lin/test.txt=tools/linux/test.txt)
+LINUX_BINS = $(patsubst tools/linux/%.c,build/linux/%,$(LINUX_SRCS))
+LINUX_EMBED = --data lin/hello=build/linux/hello --data lin/ls=build/linux/ls \
+	--data lin/cat=build/linux/cat --data lin/piptest=build/linux/piptest \
+	--data lin/test.txt=tools/linux/test.txt
 
-all: aos.iso
+all: check-toolchain aos.iso
+
+# Fail fast with a clear message instead of silently building a program-less
+# kernel when the musl i386 cross toolchain is missing (it is gitignored).
+check-toolchain:
+	@if [ ! -x "$(MUSL_CC)" ]; then \
+		echo "ERROR: musl i386 toolchain not found at $(MUSL_CC)"; \
+		echo "Install it with: make install"; \
+		exit 1; \
+	fi
+
+# ---------------------------------------------------------------------------
+# Dependency installation (Ubuntu/Debian). `make install` installs everything
+# needed to build the ISO and run the test suite. Requires sudo for apt.
+# ---------------------------------------------------------------------------
+SUDO ?= sudo
+
+MUSL_URL = https://musl.cc/i686-linux-musl-cross.tgz
+MUSL_TGZ = /tmp/i686-linux-musl-cross.tgz
+
+BUILD_DEPS = build-essential gcc-multilib binutils make curl \
+	grub-pc-bin xorriso mtools
+TEST_DEPS = qemu-system-x86 python3
+
+install: install-deps install-toolchain
+
+install-deps:
+	$(SUDO) apt-get update
+	$(SUDO) apt-get install -y $(BUILD_DEPS) $(TEST_DEPS)
+
+install-toolchain:
+	@if [ -x "$(MUSL_CC)" ]; then \
+		echo "musl i386 toolchain already installed at $(MUSL_CC)"; \
+	else \
+		echo "Downloading musl i386 cross toolchain from $(MUSL_URL)"; \
+		curl -L -o $(MUSL_TGZ) $(MUSL_URL); \
+		mkdir -p tools; \
+		rm -rf tools/musl-i686; \
+		mkdir -p tools/musl-i686; \
+		tar -xzf $(MUSL_TGZ) --strip-components=1 -C tools/musl-i686; \
+		rm -f $(MUSL_TGZ); \
+		echo "musl i386 toolchain installed at tools/musl-i686"; \
+	fi
 
 boot/%.o: boot/%.S
 	$(AS) $(ASFLAGS) -o $@ $<
@@ -124,23 +167,20 @@ debug: aos.iso
 
 # Headless regression suite: each script boots aos.iso under QEMU, drives the
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
-# linhello/lincat need the musl Linux payload, so they are included only when
-# the musl toolchain is installed.
-LINUX_TESTS = $(if $(LINUX_BINS),linhello lincat lindirtest pipetest)
+LINUX_TESTS = linhello lincat lindirtest pipetest
 TESTS = ipctest manytest notepadtest sleeptest rngtest blktest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest $(LINUX_TESTS)
 
-# Fast subset for CI: quick boots, no extra virtio devices. The musl Linux
-# tests are included only when the musl toolchain is installed.
-FAST_TESTS = ipctest $(if $(LINUX_BINS),linhello lincat)
+# Fast subset for CI: quick boots, no extra virtio devices.
+FAST_TESTS = ipctest linhello lincat
 
-test: aos.iso
+test: check-toolchain aos.iso
 	@set -e; for t in $(TESTS); do \
 		echo "===== $$t ====="; \
 		$(PYTHON) scripts/$$t.py; \
 	done
 	@echo "ALL $(words $(TESTS)) TESTS PASSED"
 
-test-fast: aos.iso
+test-fast: check-toolchain aos.iso
 	@set -e; for t in $(FAST_TESTS); do \
 		echo "===== $$t ====="; \
 		$(PYTHON) scripts/$$t.py; \
@@ -151,9 +191,10 @@ clean:
 	rm -f $(KERNEL_OBJS) $(PROG_ELFS) *.elf *.bin *.iso disk.img kernel/progs.c
 	rm -f $(KERNEL_OBJS:.o=.d)
 	rm -rf iso build
+	rm -f $(MUSL_TGZ)
 
 -include $(KERNEL_OBJS:.o=.d)
 
 .SECONDARY: $(KERNEL_OBJS)
 
-.PHONY: all run test test-fast clean
+.PHONY: all run test test-fast clean install install-deps install-toolchain check-toolchain

@@ -39,14 +39,26 @@ Linux-бинарики (musl): `lin/hello`, `lin/ls`, `lin/cat`, `lin/piptest`.
 
 ### Требования
 
-- `gcc`, `ld` (binutils), `make`, `python3`
-- `grub-mkrescue` (GRUB 2.14) — для создания загрузочного ISO
-- `qemu-system-i386` — для запуска
-- (опционально) статический musl i386-toolchain (`tools/musl-i686/`) — для сборки Linux-бинарников `lin/*` и программ `bin/*`; без него собирается только часть AOS-программ
+`make install` устанавливает все зависимости сборки и тестов (apt-пакеты
+`gcc-multilib`, `binutils`, `grub-pc-bin`, `xorriso`, `mtools`,
+`qemu-system-x86`, `python3` и др.) и скачивает обязательный статический
+musl i386-toolchain (`tools/musl-i686/`) в каталог `tools/`.
+
+### Установка зависимостей
+
+```sh
+make install   # sudo apt-get + загрузка musl i386-toolchain с musl.cc
+```
+
+musl-тулчейн — **обязательное** требование: из него собираются все программы
+`bin/*` и Linux-бинарики `lin/*`. Без него `make` завершится с ошибкой и
+подскажет запустить `make install`. Тулчейн не хранится в git (gitignored),
+поэтому устанавливается автоматически.
 
 ### Цели make
 
 ```sh
+make install    # установить зависимости сборки и тестов (sudo apt + тулчейн)
 make            # собрать aos.iso (загрузочный GRUB2 ISO)
 make run        # запустить в QEMU (GTK-дисплей, virtio-blk/rng/net)
 make debug      # headless-запуск: VNC :5907 + QMP и serial Unix-сокеты
