@@ -28,6 +28,8 @@ def main():
             raise AssertionError("ATA selftest did not report OK")
         if "ata: selftest multi OK" not in log:
             raise AssertionError("ATA multi-sector selftest did not report OK")
+        if "ata: dma selftest OK" not in log:
+            raise AssertionError("ATA DMA selftest did not report OK")
         if "block: ata backend" not in log:
             raise AssertionError("block layer did not select ATA backend")
         if "block: ata backend, 10485760 sectors" not in log:

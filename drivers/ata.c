@@ -1,8 +1,11 @@
 #include "ata.h"
+#include "pci.h"
 #include "serial.h"
 #include "ports.h"
 
 #define ATA_CMD_IDENTIFY 0xEC
+#define ATA_CMD_READ_DMA 0xC8
+#define ATA_CMD_WRITE_DMA 0xCA
 #define ATA_SR_BSY 0x80
 #define ATA_SR_DRQ 0x08
 #define ATA_SR_ERR 0x01
@@ -10,6 +13,13 @@
 #define ATA_SECTOR_SIZE   512
 #define ATA_TIMEOUT_IDENTIFY 5000
 #define ATA_TIMEOUT_RESET 2000
+
+#define ATA_PRDT_MAX 8
+
+struct ata_prd {
+    unsigned int phys_addr;
+    unsigned int size;      // bits [15:0] = byte count, bit 31 = EOT
+} __attribute__((packed));
 
 extern volatile unsigned int tick;
 
@@ -19,9 +29,12 @@ struct ata_dev {
     int slave;
     unsigned int capacity_sectors;
     int present;
+    unsigned int bmba;
+    int dma;
 };
 
 static struct ata_dev gata;
+static struct ata_prd prd_table[ATA_PRDT_MAX] __attribute__((aligned(4)));
 
 // Space register I/O ~400ns per read (ATA register settle time); also used as
 // a short delay after resets. Reads the controller port so the bus is warmed.
@@ -112,10 +125,101 @@ static void ata_send_lba(unsigned int lba, unsigned int count,
     outb(gata.base + 7, cmd);
 }
 
+// Find the bus-master IDE controller and enable bus mastering. Returns 0 and
+// sets gata.bmba on success, -1 otherwise (no IDE-class PCI device).
+static int ata_dma_init(void) {
+    struct pci_dev list[16];
+    int n = pci_find_all(list, 16);
+    for (int i = 0; i < n; i++) {
+        if ((list[i].classcode >> 8) != 0x0101) continue;  // IDE controller
+        unsigned int bar4 = pci_config_read(list[i].bus, list[i].dev,
+                                            list[i].func, 0x20);
+        gata.bmba = bar4 & ~0x3u;
+        unsigned int cmd = pci_config_read(list[i].bus, list[i].dev,
+                                           list[i].func, 0x04);
+        pci_config_write(list[i].bus, list[i].dev, list[i].func, 0x04,
+                         cmd | 0x4);                        // bus master enable
+        gata.dma = 1;
+        serial_print("ata: dma bmba=");
+        serial_print_hex(gata.bmba);
+        serial_print("\n");
+        return 0;
+    }
+    return -1;
+}
+
+// Fill the PRD table for one physically contiguous buffer (kernel memory is
+// identity-mapped). Splits bytes into <= 0xFFFE chunks, EOT on the last entry.
+static unsigned int ata_prd_setup(void *buf, unsigned int bytes) {
+    unsigned int phys = (unsigned int)buf;
+    unsigned int n = 0;
+    while (bytes > 0) {
+        unsigned int chunk = bytes > 0xFFFE ? 0xFFFE : bytes;
+        prd_table[n].phys_addr = phys;
+        prd_table[n].size = chunk;
+        n++;
+        phys += chunk;
+        bytes -= chunk;
+    }
+    if (n > 0) prd_table[n - 1].size |= 0x80000000u;       // EOT
+    return n;
+}
+
+// Wait for the bus-master controller to drop D0 (active).
+static int ata_dma_wait_done(unsigned int timeout_ms) {
+    unsigned int start = tick;
+    for (;;) {
+        unsigned char st = inb(gata.bmba + 2);
+        if (!(st & 0x01)) return 0;                         // D0 clear
+        if ((int)(tick - start) >= (int)timeout_ms) return -1;
+    }
+}
+
+// One BM IDE transfer: buf must be a physically contiguous kernel buffer.
+// dir: 1 = read from device, 0 = write to device.
+static int ata_dma_xfer(unsigned int lba, unsigned int count, void *buf,
+                        int dir) {
+    if (!gata.present || !gata.dma) return -1;
+    if (count == 0 || count > 255) return -1;
+    if (lba + count > 0x10000000u) return -1;
+
+    outb(gata.bmba + 2, 0x06);                              // clear INT/ERR status
+    if (ata_prd_setup(buf, count * ATA_SECTOR_SIZE) == 0) return -1;
+    outl(gata.bmba + 4, (unsigned int)prd_table);           // PRD address
+    outb(gata.bmba + 0, dir ? 0x09 : 0x01);                 // start, dir bit3
+    ata_send_lba(lba, count, dir ? ATA_CMD_READ_DMA : ATA_CMD_WRITE_DMA);
+
+    if (ata_dma_wait_done(2000) != 0) {
+        outb(gata.bmba + 0, 0x00);                          // stop
+        return -1;
+    }
+    if (ata_wait_ready(2000) != 0) {
+        outb(gata.bmba + 0, 0x00);
+        return -1;
+    }
+    if (inb(gata.bmba + 2) & 0x04) {                        // BM error
+        outb(gata.bmba + 0, 0x00);
+        return -1;
+    }
+    outb(gata.bmba + 0, 0x00);                              // stop
+    return 0;
+}
+
+static int ata_dma_read_multi(unsigned int lba, unsigned int count, void *buf) {
+    return ata_dma_xfer(lba, count, buf, 1);
+}
+
+static int ata_dma_write_multi(unsigned int lba, unsigned int count,
+                               const void *buf) {
+    return ata_dma_xfer(lba, count, (void *)buf, 0);
+}
+
 int ata_read_multi(unsigned int lba, unsigned int count, void *buf) {
     if (!gata.present) return -1;
     if (count == 0 || count > 255) return -1;        // 8-bit sector count
     if (lba + count > 0x10000000u) return -1;         // stay inside 28-bit LBA
+    if (gata.dma && count >= 2)
+        return ata_dma_read_multi(lba, count, buf);
     ata_send_lba(lba, count, 0x20);
     unsigned short *w = (unsigned short *)buf;
     for (unsigned int s = 0; s < count; s++) {
@@ -130,6 +234,8 @@ int ata_write_multi(unsigned int lba, unsigned int count, const void *buf) {
     if (!gata.present) return -1;
     if (count == 0 || count > 255) return -1;
     if (lba + count > 0x10000000u) return -1;
+    if (gata.dma && count >= 2)
+        return ata_dma_write_multi(lba, count, buf);
     ata_send_lba(lba, count, 0x30);
     const unsigned short *w = (const unsigned short *)buf;
     for (unsigned int s = 0; s < count; s++) {
@@ -178,6 +284,22 @@ static void ata_selftest(void) {
     }
 }
 
+static void ata_dma_selftest(void) {
+    unsigned char wm[4 * ATA_SECTOR_SIZE], rm[4 * ATA_SECTOR_SIZE];
+    for (unsigned int i = 0; i < sizeof(wm); i++)
+        wm[i] = (unsigned char)(i * 17 + 9);
+    unsigned int base = gata.capacity_sectors - 16;
+    if (ata_dma_write_multi(base, 4, wm) == 0 &&
+        ata_dma_read_multi(base, 4, rm) == 0) {
+        int ok = 1;
+        for (unsigned int i = 0; i < (int)sizeof(rm); i++)
+            if (wm[i] != rm[i]) { ok = 0; break; }
+        serial_print(ok ? "ata: dma selftest OK\n" : "ata: dma selftest FAIL\n");
+    } else {
+        serial_print("ata: dma selftest FAIL\n");
+    }
+}
+
 void ata_init(void) {
     static const struct {
         unsigned int base, ctrl;
@@ -215,8 +337,12 @@ void ata_init(void) {
             }
         }
     }
-    if (gata.present)
+    if (gata.present) {
+        ata_dma_init();
         ata_selftest();
+        if (gata.dma)
+            ata_dma_selftest();
+    }
     if (!gata.present)
         serial_print("ata: no disk found\n");
 }
