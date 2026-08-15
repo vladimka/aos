@@ -26,6 +26,10 @@ def main():
             raise AssertionError("ATA selftest reported FAIL")
         if "ata: selftest OK" not in log:
             raise AssertionError("ATA selftest did not report OK")
+        if "block: ata backend" not in log:
+            raise AssertionError("block layer did not select ATA backend")
+        if "SFS2 mounted (disk)" not in log and "SFS2 formatting new disk" not in log:
+            raise AssertionError("SFS2 did not mount from ATA disk")
     print("PASS: ATA drive detected via IDENTIFY")
     return 0
 

@@ -1,5 +1,6 @@
 #include "block.h"
 #include "vblk.h"
+#include "ata.h"
 #include "printf.h"
 #include "string.h"
 
@@ -11,6 +12,16 @@ static struct sdev sdev_ram = {
 };
 
 static struct sdev sdev_vblk;
+
+static struct sdev sdev_ata;
+
+static int sdev_ata_read(unsigned int lba, void *buf) {
+    return ata_read(lba, buf);
+}
+
+static int sdev_ata_write(unsigned int lba, const void *buf) {
+    return ata_write(lba, buf);
+}
 
 static int sdev_ram_read(unsigned int lba, void *buf) {
     memcpy(buf, (void *)(RAMDISK_BASE + lba * BLOCK_SIZE), BLOCK_SIZE);
@@ -125,11 +136,19 @@ void block_reset(void) {
 }
 
 int block_disk_present(void) {
-    return dev == &sdev_vblk && sdev_vblk.present;
+    return (dev == &sdev_ata && sdev_ata.present) ||
+           (dev == &sdev_vblk && sdev_vblk.present);
 }
 
 int block_init(void) {
-    if (vblk_present()) {
+    if (ata_present()) {
+        sdev_ata.read = sdev_ata_read;
+        sdev_ata.write = sdev_ata_write;
+        sdev_ata.present = 1;
+        sdev_ata.capacity_sectors = ata_capacity_bytes() / BLOCK_SIZE;
+        dev = &sdev_ata;
+        printf("block: ata backend, %u sectors\n", sdev_ata.capacity_sectors);
+    } else if (vblk_present()) {
         sdev_vblk.read = sdev_vblk_read;
         sdev_vblk.write = sdev_vblk_write;
         sdev_vblk.present = 1;
