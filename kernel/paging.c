@@ -46,6 +46,14 @@ void paging_init(void) {
             page_tables[t][p] |= PTE_USER;
     }
 
+    // VirtIO-GPU double-buffer window: 0x04000000 .. 0x04600000, user-accessible
+    // (the window manager, a ring-3 task, composites into the back buffer).
+    for (int t = 16; t <= 17; t++) {
+        page_dir[t] |= PTE_USER;
+        for (int p = 0; p < 1024; p++)
+            page_tables[t][p] |= PTE_USER;
+    }
+
     // Task-0 Linux window: 0x08000000 .. 0x08800000 identity-mapped, user-accessible.
     for (int t = 32; t <= 33; t++) {
         page_dir[t] |= PTE_USER;
