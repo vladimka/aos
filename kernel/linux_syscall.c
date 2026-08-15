@@ -236,10 +236,12 @@ void linux_syscall_handler(struct registers *r) {
     case 88: {  // reboot(magic1, magic2, cmd, arg)
         unsigned int cmd = r->edx;
         if (cmd == 0x1234567) {          // LINUX_REBOOT_CMD_RESTART
+            vfs_sync();
             outb(0x64, 0xFE);
             for (;;);
         }
         if (cmd == 0x4321fedc) {         // LINUX_REBOOT_CMD_POWER_OFF
+            vfs_sync();
             outw(0x604, 0x2000);
             for (;;);
         }

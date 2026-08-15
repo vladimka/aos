@@ -374,6 +374,7 @@ void syscall_handler(struct registers *r) {
         vga_clear();
         break;
     case SYS_REBOOT:
+        vfs_sync();
         unsigned char good = 0x02;
         while (good & 0x02)
             good = inb(0x64);
@@ -383,6 +384,7 @@ void syscall_handler(struct registers *r) {
         __asm__ volatile("int $0x0");
         break;
     case SYS_SHUTDOWN:
+        vfs_sync();
         outw(0x604, 0x2000);
         for (;;);
     case SYS_GET_ARGS: {

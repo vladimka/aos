@@ -828,6 +828,10 @@ void vfs_format(void) {
     load_embedded_data();
 }
 
+void vfs_sync(void) {
+    sfs2_flush(&vfs_sfs2);
+}
+
 void vfs_init(void) {
     memset(cache, 0, sizeof(cache));
 
