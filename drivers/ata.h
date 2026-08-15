@@ -10,6 +10,6 @@ void ata_init(void);
 int ata_read(unsigned int lba, void *buf);
 int ata_write(unsigned int lba, const void *buf);
 int ata_present(void);
-unsigned int ata_capacity_bytes(void);
+unsigned int ata_capacity_sectors(void);
 
 #endif

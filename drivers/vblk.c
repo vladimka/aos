@@ -86,8 +86,8 @@ int vblk_present(void) {
     return gdev != 0;
 }
 
-unsigned int vblk_capacity_bytes(void) {
-    return (unsigned int)(capacity_bytes & 0xFFFFFFFFu);
+unsigned int vblk_capacity_sectors(void) {
+    return (unsigned int)(capacity_bytes / SECTOR_SIZE);
 }
 
 void vblk_init(void) {

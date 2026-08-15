@@ -75,8 +75,8 @@ int ata_present(void) {
     return gata.present;
 }
 
-unsigned int ata_capacity_bytes(void) {
-    return gata.capacity_sectors * ATA_SECTOR_SIZE;
+unsigned int ata_capacity_sectors(void) {
+    return gata.capacity_sectors;
 }
 
 static int ata_wait_ready(unsigned int timeout_ms) {

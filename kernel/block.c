@@ -145,14 +145,14 @@ int block_init(void) {
         sdev_ata.read = sdev_ata_read;
         sdev_ata.write = sdev_ata_write;
         sdev_ata.present = 1;
-        sdev_ata.capacity_sectors = ata_capacity_bytes() / BLOCK_SIZE;
+        sdev_ata.capacity_sectors = ata_capacity_sectors();
         dev = &sdev_ata;
         printf("block: ata backend, %u sectors\n", sdev_ata.capacity_sectors);
     } else if (vblk_present()) {
         sdev_vblk.read = sdev_vblk_read;
         sdev_vblk.write = sdev_vblk_write;
         sdev_vblk.present = 1;
-        sdev_vblk.capacity_sectors = vblk_capacity_bytes() / BLOCK_SIZE;
+        sdev_vblk.capacity_sectors = vblk_capacity_sectors();
         dev = &sdev_vblk;
         printf("block: disk backend, %u sectors\n", sdev_vblk.capacity_sectors);
     } else {

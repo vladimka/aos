@@ -13,7 +13,7 @@ def main():
         os.unlink(IMG)
     except FileNotFoundError:
         pass
-    subprocess.run(["truncate", "-s", "4M", IMG], check=True)
+    subprocess.run(["truncate", "-s", "5G", IMG], check=True)
     extra = [
         "-drive", "file=" + IMG + ",format=raw,if=ide",
     ]
@@ -28,6 +28,8 @@ def main():
             raise AssertionError("ATA selftest did not report OK")
         if "block: ata backend" not in log:
             raise AssertionError("block layer did not select ATA backend")
+        if "block: ata backend, 10485760 sectors" not in log:
+            raise AssertionError("ATA backend did not report full 5 GiB capacity")
         if "SFS2 mounted (disk)" not in log and "SFS2 formatting new disk" not in log:
             raise AssertionError("SFS2 did not mount from ATA disk")
     print("PASS: ATA drive detected via IDENTIFY")
