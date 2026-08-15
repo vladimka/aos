@@ -256,7 +256,7 @@ void pmm_init(unsigned int mb_info_addr) {
     reserve(RAMDISK_BASE, RAMDISK_BASE + (unsigned int)RAMDISK_SECTORS * BLOCK_SIZE); // ramdisk (kernel/block.c)
     reserve(0x01000000, 0x01C00000);                     // task-0 user area
     reserve(0x03000000, 0x04000000);                     // shared slab window
-    reserve(0x04000000, 0x04600000);                     // virtio-gpu double-buffer window
+    reserve(0x04000000, 0x04800000);                     // virtio-gpu window + user-bit-marked tail
     reserve(0x08000000, 0x08800000);                     // task-0 Linux window
     unsigned int fb_addr = 0, fb_size = 0;
     vga_get_fb_info(&fb_addr, &fb_size);
