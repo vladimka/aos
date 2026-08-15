@@ -57,20 +57,8 @@ void paging_init(void) {
     // The user bit lets the window manager (a ring-3 task) composite directly.
     unsigned int fb_addr = 0, fb_size = 0;
     vga_get_fb_info(&fb_addr, &fb_size);
-    if (fb_size) {
-        unsigned int end = fb_addr + fb_size;
-        for (unsigned int a = fb_addr; a < end; a += 4096) {
-            unsigned int pd = a >> 22;
-            if (pd >= 1024) break;
-            if (page_dir[pd] == 0) {
-                if (extra_count >= 8) break;
-                unsigned int *pt = extra_pt[extra_count++];
-                for (int p = 0; p < 1024; p++)
-                    pt[p] = (pd << 22) | (p << 12) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
-                page_dir[pd] = (unsigned int)pt | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
-            }
-        }
-    }
+    if (fb_size)
+        paging_identity_map(fb_addr, fb_size);
 
     serial_print("Paging enabled (identity map, ring3 user area).\n");
 
@@ -95,6 +83,25 @@ unsigned int paging_get_cr3(void) {
 
 void paging_set_cr3(unsigned int cr3) {
     __asm__ volatile("movl %0, %%cr3" :: "r"(cr3) : "memory");
+}
+
+// Identity-map a physical range that lives outside the pre-built 0..256 MB
+// map (framebuffer, AHCI ABAR, ...). Pages in the existing map are left
+// untouched. Safe to call before or after CR3 is loaded (callers reload CR3).
+int paging_identity_map(unsigned int phys, unsigned int bytes) {
+    unsigned int end = phys + bytes;
+    for (unsigned int a = phys; a < end; a += 4096) {
+        unsigned int pd = a >> 22;
+        if (pd >= 1024) return -1;
+        if (page_dir[pd] == 0) {
+            if (extra_count >= 8) return -1;
+            unsigned int *pt = extra_pt[extra_count++];
+            for (int p = 0; p < 1024; p++)
+                pt[p] = (pd << 22) | (p << 12) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+            page_dir[pd] = (unsigned int)pt | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+        }
+    }
+    return 0;
 }
 
 int paging_map_user_page(unsigned int vaddr) {

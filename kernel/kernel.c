@@ -17,6 +17,7 @@
 #include "uhci.h"
 #include "virtio.h"
 #include "ata.h"
+#include "ahci.h"
 #include "vfs.h"
 #include "sfs2.h"
 #include "aosipc.h"
@@ -119,6 +120,8 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     usb_init();
 
     ata_init();
+
+    ahci_init();
 
     virtio_init();
 

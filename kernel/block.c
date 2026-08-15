@@ -1,6 +1,7 @@
 #include "block.h"
 #include "vblk.h"
 #include "ata.h"
+#include "ahci.h"
 #include "printf.h"
 #include "string.h"
 
@@ -15,12 +16,23 @@ static struct sdev sdev_vblk;
 
 static struct sdev sdev_ata;
 
+static struct sdev sdev_ahci;
+
 static int sdev_ata_read(unsigned int lba, void *buf) {
     return ata_read(lba, buf);
 }
 
 static int sdev_ata_write(unsigned int lba, const void *buf) {
     return ata_write(lba, buf);
+}
+
+static int sdev_ata_read_multi(unsigned int lba, unsigned int count, void *buf) {
+    return ata_read_multi(lba, count, buf);
+}
+
+static int sdev_ata_write_multi(unsigned int lba, unsigned int count,
+                                const void *buf) {
+    return ata_write_multi(lba, count, buf);
 }
 
 static int sdev_ram_read(unsigned int lba, void *buf) {
@@ -39,6 +51,32 @@ static int sdev_vblk_read(unsigned int lba, void *buf) {
 
 static int sdev_vblk_write(unsigned int lba, const void *buf) {
     return vblk_write(lba, buf);
+}
+
+static int sdev_vblk_read_multi(unsigned int lba, unsigned int count, void *buf) {
+    return vblk_read_multi(lba, count, buf);
+}
+
+static int sdev_vblk_write_multi(unsigned int lba, unsigned int count,
+                                 const void *buf) {
+    return vblk_write_multi(lba, count, buf);
+}
+
+static int sdev_ahci_read(unsigned int lba, void *buf) {
+    return ahci_read(lba, buf);
+}
+
+static int sdev_ahci_write(unsigned int lba, const void *buf) {
+    return ahci_write(lba, buf);
+}
+
+static int sdev_ahci_read_multi(unsigned int lba, unsigned int count, void *buf) {
+    return ahci_read_multi(lba, count, buf);
+}
+
+static int sdev_ahci_write_multi(unsigned int lba, unsigned int count,
+                                 const void *buf) {
+    return ahci_write_multi(lba, count, buf);
 }
 
 static unsigned char cache[BLOCK_CACHE_SECTORS][BLOCK_SIZE];
@@ -155,14 +193,26 @@ void block_reset(void) {
 }
 
 int block_disk_present(void) {
-    return (dev == &sdev_ata && sdev_ata.present) ||
+    return (dev == &sdev_ahci && sdev_ahci.present) ||
+           (dev == &sdev_ata && sdev_ata.present) ||
            (dev == &sdev_vblk && sdev_vblk.present);
 }
 
 int block_init(void) {
-    if (ata_present()) {
+    if (ahci_present()) {
+        sdev_ahci.read = sdev_ahci_read;
+        sdev_ahci.write = sdev_ahci_write;
+        sdev_ahci.read_multi = sdev_ahci_read_multi;
+        sdev_ahci.write_multi = sdev_ahci_write_multi;
+        sdev_ahci.present = 1;
+        sdev_ahci.capacity_sectors = ahci_capacity_sectors();
+        dev = &sdev_ahci;
+        printf("block: ahci backend, %u sectors\n", sdev_ahci.capacity_sectors);
+    } else if (ata_present()) {
         sdev_ata.read = sdev_ata_read;
         sdev_ata.write = sdev_ata_write;
+        sdev_ata.read_multi = sdev_ata_read_multi;
+        sdev_ata.write_multi = sdev_ata_write_multi;
         sdev_ata.present = 1;
         sdev_ata.capacity_sectors = ata_capacity_sectors();
         dev = &sdev_ata;
@@ -170,6 +220,8 @@ int block_init(void) {
     } else if (vblk_present()) {
         sdev_vblk.read = sdev_vblk_read;
         sdev_vblk.write = sdev_vblk_write;
+        sdev_vblk.read_multi = sdev_vblk_read_multi;
+        sdev_vblk.write_multi = sdev_vblk_write_multi;
         sdev_vblk.present = 1;
         sdev_vblk.capacity_sectors = vblk_capacity_sectors();
         dev = &sdev_vblk;
