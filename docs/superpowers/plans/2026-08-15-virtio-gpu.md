@@ -316,13 +316,19 @@ git commit -m "virtio: add modern virtio-pci transport for non-transitional devi
 
 **Детали протокола (modern virtio-gpu):**
 - Командный заголовок 24 байта: `{u32 type; u32 flags; u64 fence_id; u32 ctx_id; u32 padding;}` packed.
-- Команды (controlq, qidx 0): `RESOURCE_CREATE_2D` (0x0101, payload: resource_id, format, width, height), `RESOURCE_ATTACH_BACKING` (0x0105, payload: resource_id, nr_entries, entries[] каждый `{u64 addr; u32 length; u32 padding;}`), `RESOURCE_FLUSH` (0x0104, payload: resource_id, padding, rect{x,y,w,h}), `SET_SCANOUT` (0x0002, payload: rect{x,y,w,h}, scanout_id, resource_id).
+- Команды (controlq, qidx 0). **Номера команд из `/usr/include/linux/virtio_gpu.h` (QEMU следует ему) — сверяться с ним, а не с вики/spec!**:
+  - `RESOURCE_CREATE_2D` = `0x0101` (payload: resource_id, format, width, height)
+  - `RESOURCE_ATTACH_BACKING` = `0x0106` (payload: resource_id, nr_entries, entries[] каждый `{u64 addr; u32 length; u32 padding;}`) — **НЕ 0x0105** (0x0105 = TRANSFER_TO_HOST_2D)
+  - `RESOURCE_FLUSH` = `0x0104` (payload: **rect{x,y,w,h}, resource_id, padding** — rect первым!)
+  - `SET_SCANOUT` = `0x0103` (payload: rect{x,y,w,h}, scanout_id, resource_id) — **НЕ 0x0002**
 - Курсорные команды (cursorq, qidx 1, только в Task 3).
 - Ответ: заголовок с `type == VIRTIO_GPU_RESP_OK_NODATA (0x1100)`.
 - Формат `VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM = 2`.
 - Ресурсы: buf0=1, buf1=2.
-- Синхронные команды: отправить через `vm_submit`, затем `vm_used_pop` с таймаутом-поллингом по `tick` (паттерн `vrng.c`: `extern volatile unsigned int tick; if ((int)(tick - start) >= 500) return -1`), считать ответ по адресу командного буфера.
-- Командный буфер и entries-массив: `static` в ядре (ниже 256 МБ, identity-mapped) — физический адрес = адрес переменной.
+- **Команда — цепочка из двух дескрипторов: `[cmd | resp]`** (первый — readable, второй `VRING_DESC_F_WRITE` с буфером под ответ). QEMU пишет ответ в writable descriptor; без него отвечает `INVALID_RESOURCE_ID` (0x1203).
+- Синхронные команды: отправить через `vm_submit`, затем `vm_used_pop` с таймаутом-поллингом по `tick` (500 ticks), считать ответ из `resp_buf`.
+- Командный буфер `cmd_buf` и ответный `resp_buf`: `static` в ядре (ниже 256 МБ, identity-mapped) — физический адрес = адрес переменной.
+- **IRQ**: virtio-vga INTx level-triggered; установить `irq_install_handler(11, vgu_irq)`, где `vgu_irq` читает ISR (сброс). Без этого линия держит IRQ11 активным и может заморить polling.
 
 - [ ] **Step 1: Написать драйвер-заголовок `drivers/virtio_gpu.h`**
 
@@ -332,9 +338,9 @@ git commit -m "virtio: add modern virtio-pci transport for non-transitional devi
 
 #define VGPU_FORMAT_B8G8R8X8 2
 #define VGPU_CMD_RESOURCE_CREATE_2D  0x0101
-#define VGPU_CMD_RESOURCE_ATTACH_BACKING 0x0105
+#define VGPU_CMD_RESOURCE_ATTACH_BACKING 0x0106
 #define VGPU_CMD_RESOURCE_FLUSH 0x0104
-#define VGPU_CMD_SET_SCANOUT 0x0002
+#define VGPU_CMD_SET_SCANOUT 0x0103
 #define VGPU_RESP_OK_NODATA 0x1100
 
 struct vgpu_hdr {
@@ -383,13 +389,14 @@ if __name__ == "__main__":
 
 - [ ] **Step 3: Написать драйвер `drivers/virtio_gpu.c`**
 
-Ключевые части (полный код ниже — вставка по секциям). **Modern API: `virtio_*` → `vm_*`; драйвер не использует `virtio_register`/IRQ (команды синхронные через polling used ring).**
+Ключевые части (полный код ниже — вставка по секциям). **Modern API: `virtio_*` → `vm_*`; команды синхронные через polling used ring, но ставится IRQ11 handler для сброса level-triggered INTx (см. «Детали протокола»).**
 
 ```c
 #include "virtio_gpu.h"
 #include "virtio_modern.h"
 #include "serial.h"
 #include "string.h"
+#include "interrupts.h"
 
 extern volatile unsigned int tick;
 
@@ -403,13 +410,31 @@ static struct virtio_modern vgpu;
 static int gpu_active;
 static int front;                  // 0 or 1: currently displayed buffer
 static unsigned char cmd_buf[16384] __attribute__((aligned(16)));
-static unsigned int ncmd;
+static unsigned char resp_buf[64] __attribute__((aligned(16)));
+
+// Ack the device interrupt (reading the modern ISR status register clears it
+// and deasserts INTx). Installed as the IRQ handler so a level-triggered line
+// that raises mid-submit does not starve the driver's used-ring polling.
+static void vgu_irq(void) {
+    if (vgpu.isr) *(volatile unsigned char *)vgpu.isr;
+}
 
 // ---- low-level command submission (controlq, qidx 0) ----
+// A command is a two-descriptor chain: [cmd | resp]. The device reads the
+// request from the first (readable) descriptor and writes the response into
+// the second (writable) one; the used entry carries the head id.
 static int vgu_send(unsigned int qidx, unsigned int len) {
     unsigned int head = vm_alloc_desc(&vgpu, qidx);
     if (head == 0xFFFF) return -1;
-    vm_desc_set(&vgpu, qidx, head, (unsigned int)cmd_buf, len, 0);
+    unsigned int rhead = vm_alloc_desc(&vgpu, qidx);
+    if (rhead == 0xFFFF) { vm_free_chain(&vgpu, qidx, head); return -1; }
+    vgpu.desc[head].addr = (unsigned int)cmd_buf;
+    vgpu.desc[head].len = len;
+    vgpu.desc[head].flags = VRING_DESC_F_NEXT;
+    vgpu.desc[head].next = rhead;
+    vgpu.desc[rhead].addr = (unsigned int)resp_buf;
+    vgpu.desc[rhead].len = sizeof(struct vgpu_hdr);
+    vgpu.desc[rhead].flags = VRING_DESC_F_WRITE;
     vm_submit(&vgpu, qidx, head);
     // poll used ring (device replies on the same queue)
     unsigned int start = tick;
@@ -428,11 +453,12 @@ static int vgu_cmd(unsigned int type, const void *payload, unsigned int plen) {
     struct vgpu_hdr *h = (struct vgpu_hdr *)cmd_buf;
     h->type = type; h->flags = 0; h->fence_id = 0;
     h->ctx_id = 0; h->padding = 0;
-    ncmd = sizeof(struct vgpu_hdr) + plen;
-    if (ncmd > sizeof(cmd_buf)) return -1;
+    unsigned int n = sizeof(struct vgpu_hdr) + plen;
+    if (n > sizeof(cmd_buf)) return -1;
     if (plen) memcpy(cmd_buf + sizeof(struct vgpu_hdr), payload, plen);
-    if (vgu_send(0, ncmd) != 0) return -1;
-    return h->type == VGPU_RESP_OK_NODATA ? 0 : -1;
+    if (vgu_send(0, n) != 0) return -1;
+    struct vgpu_hdr *rh = (struct vgpu_hdr *)resp_buf;
+    return rh->type == VGPU_RESP_OK_NODATA ? 0 : -1;
 }
 
 // ---- resource create + attach backing ----
@@ -465,7 +491,8 @@ static int vgu_attach(unsigned int rid, unsigned int base, unsigned int bytes) {
     memcpy(cmd_buf + off, &p, sizeof(p)); off += sizeof(p);
     memcpy(cmd_buf + off, ents, npages * 16); off += npages * 16;
     if (vgu_send(0, off) != 0) return -1;
-    return h->type == VGPU_RESP_OK_NODATA ? 0 : -1;
+    struct vgpu_hdr *rh = (struct vgpu_hdr *)resp_buf;
+    return rh->type == VGPU_RESP_OK_NODATA ? 0 : -1;
 }
 
 static int vgu_scanout(unsigned int rid) {
@@ -476,13 +503,15 @@ static int vgu_scanout(unsigned int rid) {
 }
 
 static void vgu_flush(unsigned int rid) {
-    struct { unsigned int rid, pad; unsigned int x, y, w, h; } p;
-    p.rid = rid; p.pad = 0; p.x = 0; p.y = 0; p.w = FB_W; p.h = FB_H;
+    struct { unsigned int x, y, w, h; unsigned int resource, pad; } p;
+    p.x = 0; p.y = 0; p.w = FB_W; p.h = FB_H;
+    p.resource = rid; p.pad = 0;
     vgu_cmd(VGPU_CMD_RESOURCE_FLUSH, &p, sizeof(p));
 }
 
 int vgu_init(void) {
     if (vm_probe(&vgpu, 0x1050) != 0) return -1;
+    irq_install_handler(11, vgu_irq);
     if (vm_dev_init(&vgpu, VM_F_VERSION_1) != 0) return -1;
     if (vm_setup_queue(&vgpu, 0, 256) != 0) return -1;
     vm_ready(&vgpu);
@@ -603,7 +632,7 @@ static void vgu_cursor_init(void) {
     memcpy(cmd_buf + sizeof(struct vgpu_hdr), rid_nr, 8);
     memcpy(cmd_buf + sizeof(struct vgpu_hdr) + 8, ents, 4 * 16);
     if (vgu_send(0, sizeof(struct vgpu_hdr) + 8 + 4 * 16) == 0 &&
-        h->type == VGPU_RESP_OK_NODATA) {
+        ((struct vgpu_hdr *)resp_buf)->type == VGPU_RESP_OK_NODATA) {
         // fill cursor pixels (white body + accent border, transparent elsewhere)
         memset(cursor_pix, 0, sizeof(cursor_pix));
         for (int yy = 0; yy < VGPU_CURSOR_SIZE; yy++)
@@ -626,10 +655,11 @@ void vgu_cursor(int x, int y, int visible) {
     if (!cursor_initialized) vgu_cursor_init();
     if (!cursor_initialized) return;
     // cursor commands go on cursorq (qidx 1)
-    struct { unsigned int x, y; unsigned int resource; unsigned int hot_x, hot_y; } c;
-    c.x = (unsigned int)x; c.y = (unsigned int)y;
+    // payload: {hdr, pos{scanout_id, x, y, padding}, resource_id, hot_x, hot_y, padding}
+    struct { unsigned int scanout, x, y, pad; unsigned int resource, hot_x, hot_y, pad2; } c;
+    c.scanout = 0; c.x = (unsigned int)x; c.y = (unsigned int)y; c.pad = 0;
     c.resource = visible ? 3 : 0;
-    c.hot_x = 0; c.hot_y = 0;
+    c.hot_x = 0; c.hot_y = 0; c.pad2 = 0;
     struct vgpu_hdr *h = (struct vgpu_hdr *)cmd_buf;
     h->type = VGPU_CMD_UPDATE_CURSOR; h->flags = 0;
     h->fence_id = 0; h->ctx_id = 0; h->padding = 0;
