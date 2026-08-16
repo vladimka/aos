@@ -13,7 +13,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
               drivers/serial.o drivers/mouse.o drivers/pci.o drivers/uhci.o drivers/virtio.o \
               drivers/virtio_modern.o \
               drivers/vrng.o drivers/vblk.o drivers/vnet.o drivers/rtc.o drivers/ata.o \
-              drivers/ahci.o \
+              drivers/ahci.o drivers/virtio_gpu.o \
               kernel/terminal.o kernel/commands.o \
               kernel/vfs.o kernel/vfscompat.o kernel/procfs.o kernel/string.o arch/i386/gdt.o arch/i386/idt.o \
                kernel/interrupts.o kernel/bt.o kernel/elf.o kernel/syscall.o kernel/aos_gui.o \
@@ -170,7 +170,7 @@ debug: aos.iso
 # Headless regression suite: each script boots aos.iso under QEMU, drives the
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
 LINUX_TESTS = linhello lincat lindirtest pipetest
-TESTS = ipctest manytest notepadtest sleeptest rngtest blktest atatest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest $(LINUX_TESTS)
+TESTS = ipctest manytest notepadtest sleeptest rngtest blktest atatest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest $(LINUX_TESTS) vguitest
 
 # Fast subset for CI: quick boots, no extra virtio devices.
 FAST_TESTS = ipctest linhello lincat

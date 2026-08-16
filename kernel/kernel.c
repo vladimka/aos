@@ -16,6 +16,7 @@
 #include "mouse.h"
 #include "uhci.h"
 #include "virtio.h"
+#include "virtio_gpu.h"
 #include "ata.h"
 #include "ahci.h"
 #include "vfs.h"
@@ -124,6 +125,11 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     ahci_init();
 
     virtio_init();
+
+    if (vgu_init() == 0)
+        serial_print("virtio-gpu: framebuffer flip enabled\n");
+    else
+        serial_print("virtio-gpu: not present, using VGA\n");
 
     vfs_init();
     printf("Filesystem ready.\n");
