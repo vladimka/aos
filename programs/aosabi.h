@@ -30,6 +30,9 @@
 #define AOS_GET_TICK      518
 #define AOS_PANIC         519
 #define AOS_SPAWN_FDS     520
+#define AOS_GPU_INFO      521
+#define AOS_GPU_FLIP      522
+#define AOS_CURSOR        523
 #define AOS_INHERIT_FD    0xFFFFFFFE
 
 #ifndef FIONBIO
@@ -156,6 +159,16 @@ static __attribute__((unused)) int aos_spawn_fds(const char *path,
         const struct aos_redir *redirs) {
     return aos_syscall(AOS_SPAWN_FDS, (int)path, (int)args, (int)sink,
                        (int)redirs, 0);
+}
+static __attribute__((unused)) int aos_gpu_info(unsigned int *addr, unsigned int *w,
+                       unsigned int *h, unsigned int *pitch, unsigned int *active) {
+    return aos_syscall(AOS_GPU_INFO, (int)addr, (int)w, (int)h, (int)pitch, (int)active);
+}
+static __attribute__((unused)) void aos_gpu_flip(void) {
+    aos_syscall(AOS_GPU_FLIP, 0, 0, 0, 0, 0);
+}
+static __attribute__((unused)) void aos_cursor(int x, int y, int visible) {
+    aos_syscall(AOS_CURSOR, x, y, visible, 0, 0);
 }
 static __attribute__((unused)) int aos_waitpid(unsigned int pid) { return aos_syscall(AOS_WAITPID, (int)pid, 0, 0, 0, 0); }
 static __attribute__((unused)) int aos_get_children(unsigned int *pids, unsigned int max) {

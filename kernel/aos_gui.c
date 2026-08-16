@@ -2,6 +2,7 @@
 #include "syscall.h"
 #include "terminal.h"
 #include "vga.h"
+#include "virtio_gpu.h"
 #include "mouse.h"
 #include "vfs.h"
 #include "task.h"
@@ -14,7 +15,7 @@
 #include "linux_syscall.h"   // struct linux_ctx (task.h only forward-declares)
 #include "trace.h"
 
-// AOS GUI / extension syscalls (int 0x80, numbers 500-519). These are routed
+// AOS GUI / extension syscalls (int 0x80, numbers 500-523). These are routed
 // from syscall_handler when n >= AOS_EXT. Every AOS task is ABI_LINUX, so the
 // target user-window for pointer checks is the file's linux_ctx (win_lo..hi),
 // not the old fixed 0x01000000 user area.
@@ -32,8 +33,8 @@ static struct linux_ctx *lcx(void) {
 static int in_luser(const void *p, unsigned int n) {
     unsigned int a = (unsigned int)p;
     struct linux_ctx *lc = lcx();
-    if (a >= lc->win_lo && n <= lc->win_hi - a) return 1;
-    if (a >= SLAB_LO && n <= SLAB_HI - a) return 1;
+    if (a >= lc->win_lo && a < lc->win_hi && n <= lc->win_hi - a) return 1;
+    if (a >= SLAB_LO && a < SLAB_HI && n <= SLAB_HI - a) return 1;
     return 0;
 }
 
@@ -67,7 +68,11 @@ void aos_gui_handler(struct registers *r) {
             (hdst == 0 || in_luser(hdst, 4)) && (pdst == 0 || in_luser(pdst, 4)) &&
             (bdst == 0 || in_luser(bdst, 4))) {
             unsigned int a, wv, hv, pv, bv;
-            vga_get_fb_dimensions(&a, &wv, &hv, &pv, &bv);
+            if (vgu_active()) {
+                a = vgu_back(); wv = 1024; hv = 768; pv = 4096; bv = 32;
+            } else {
+                vga_get_fb_dimensions(&a, &wv, &hv, &pv, &bv);
+            }
             if (addr) *addr = a;
             if (wdst) *wdst = wv;
             if (hdst) *hdst = hv;
@@ -79,6 +84,37 @@ void aos_gui_handler(struct registers *r) {
         }
         break;
     }
+    case AOS_GPU_INFO: {
+        unsigned int *addr = (unsigned int *)r->ebx;
+        unsigned int *wdst = (unsigned int *)r->ecx;
+        unsigned int *hdst = (unsigned int *)r->edx;
+        unsigned int *pdst = (unsigned int *)r->esi;
+        unsigned int *adst = (unsigned int *)r->edi;
+        if ((addr == 0 || in_luser(addr, 4)) && (wdst == 0 || in_luser(wdst, 4)) &&
+            (hdst == 0 || in_luser(hdst, 4)) && (pdst == 0 || in_luser(pdst, 4)) &&
+            (adst == 0 || in_luser(adst, 4))) {
+            unsigned int a, wv, hv, pv;
+            vgu_info(&wv, &hv, &pv);
+            a = vgu_back();
+            if (addr) *addr = a;
+            if (wdst) *wdst = wv;
+            if (hdst) *hdst = hv;
+            if (pdst) *pdst = pv;
+            if (adst) *adst = vgu_active();
+            r->eax = 0;
+        } else {
+            r->eax = -5;
+        }
+        break;
+    }
+    case AOS_GPU_FLIP:
+        vgu_flip();
+        r->eax = 0;
+        break;
+    case AOS_CURSOR:
+        vgu_cursor((int)r->ebx, (int)r->ecx, (int)r->edx);
+        r->eax = 0;
+        break;
     case AOS_TEXT: {
         struct aos_render_req *req = (struct aos_render_req *)r->ebx;
         if (in_luser(req, sizeof(struct aos_render_req)) &&
