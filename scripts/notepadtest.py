@@ -21,6 +21,10 @@ from qtest import QTest, count_bright
 MOUSE_STATE = "/tmp/aos-notepad.state"
 PPM = "/tmp/aos-notepad.ppm"
 
+# GPU scanout path: replace the default std VGA with virtio-vga so the WM
+# renders through the double-buffered virtio-gpu flip (see Task 6).
+GPU_ARGS = ["-vga", "none", "-device", "virtio-vga,disable-modern=on"]
+
 DESKTOP = (26, 32, 48)            # COL_DESKTOP 0x1A2030
 MENU_BG = (32, 40, 58)            # COL_MENU_BG  0x20283A
 CONTENT_BG = (16, 16, 16)         # COL_BG      0x101010
@@ -35,7 +39,8 @@ def assert_pixel(q, path, x, y, want, what):
 
 
 def main():
-    with QTest("notepad", mouse_state=MOUSE_STATE, ppm=PPM, boot_wait=6) as q:
+    with QTest("notepad", mouse_state=MOUSE_STATE, ppm=PPM, boot_wait=6,
+               extra_args=GPU_ARGS) as q:
         # 1. demo.ico green disc on the desktop (icon 0 at grid (16,24)).
         q.screenshot("/tmp/notepad-0-ico.ppm")
         assert_pixel(q, "/tmp/notepad-0-ico.ppm", 31, 39, GREEN,
@@ -98,9 +103,13 @@ def main():
         q.screenshot("/tmp/notepad-6-term.ppm")
         before = count_bright("/tmp/notepad-6-term.ppm", 21, 39, 660, 70)
         q.type_text("cat note.txt\n")
-        time.sleep(1)
-        q.screenshot("/tmp/notepad-7-cat.ppm")
-        after = count_bright("/tmp/notepad-7-cat.ppm", 21, 39, 660, 70)
+        after = before
+        for _ in range(40):
+            time.sleep(0.25)
+            q.screenshot("/tmp/notepad-7-cat.ppm")
+            after = count_bright("/tmp/notepad-7-cat.ppm", 21, 39, 660, 70)
+            if after - before >= 200:
+                break
         if after - before < 200:
             raise AssertionError(
                 "term did not print cat note.txt (band bright %d -> %d)"

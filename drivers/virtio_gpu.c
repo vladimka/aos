@@ -23,6 +23,7 @@ static unsigned char resp_buf[64] __attribute__((aligned(16)));
 // that raises mid-submit does not starve the driver's used-ring polling.
 static void vgu_irq(void) {
     if (vgpu.isr) *(volatile unsigned char *)vgpu.isr;
+    virtio_irq_dispatch();
 }
 
 // ---- low-level command submission (controlq, qidx 0) ----

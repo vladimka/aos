@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Minimal GUI tester for AOS WM tests (QEMU monitor + screendump).
 
+Drives an already-running QEMU (start it with the GPU path, e.g.):
+  qemu-system-i386 -m 256 -cdrom aos.iso -display none \
+    -serial file:/tmp/aos-gui.log -monitor unix:/tmp/aos-gui.sock,server,nowait \
+    -vga none -device virtio-vga,disable-modern=on
+
 Usage:
   guitester.py click <x> <y>          move cursor to (x,y) and left-click
   guitester.py rclick <x> <y>         move cursor to (x,y) and right-click

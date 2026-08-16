@@ -76,6 +76,7 @@ int virtio_dev_init(struct virtio_dev *d, unsigned int supported,
 void virtio_ready(struct virtio_dev *d);
 int virtio_setup_queue(struct virtio_dev *d, unsigned int qidx, unsigned int n);
 void virtio_register(struct virtio_dev *d);
+void virtio_irq_dispatch(void);
 int virtio_probe_pci(struct virtio_dev *d, unsigned int device_id);
 unsigned int virtio_alloc_desc(struct virtio_dev *d, unsigned int qidx);
 void virtio_desc_set(struct virtio_dev *d, unsigned int qidx, unsigned int idx,

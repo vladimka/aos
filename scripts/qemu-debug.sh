@@ -20,6 +20,7 @@ echo "Serial: $SERIAL"
 echo "Ctrl+C stops QEMU."
 
 exec qemu-system-i386 -m 256 -rtc base=localtime -cdrom "$ISO" \
+  -vga none -device virtio-vga,disable-modern=on \
   -display none -vnc ":$DISPLAY_NO" \
   -monitor none \
   -qmp "unix:$QMP,server,nowait" \

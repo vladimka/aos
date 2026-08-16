@@ -131,7 +131,9 @@ int virtio_used_pop(struct virtio_dev *d, unsigned int qidx,
 
 // One dispatch handles every virtio IRQ: it reads each device's ISR register.
 // An idle device reads ISR == 0, so checking the whole list per IRQ is safe.
-static void virtio_irq_dispatch(void) {
+// Non-static: virtio-gpu's IRQ handler (also on IRQ 11) chains into it so the
+// vblk/vrng/vnet devices sharing the line keep getting serviced.
+void virtio_irq_dispatch(void) {
     for (struct virtio_dev *d = dev_list; d; d = d->next) {
         unsigned char isr = inb(d->bar + VIRTIO_PCI_ISR);
         if (isr & 1) {

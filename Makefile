@@ -155,6 +155,7 @@ disk.img:
 
 run: aos.iso disk.img
 	qemu-system-i386 -m 256 -rtc base=localtime -display gtk,grab-on-hover=on -cdrom $< \
+	  -vga none -device virtio-vga,disable-modern=on \
 	  -drive file=disk.img,format=raw,if=none,id=d0 \
 	  -device virtio-blk-pci,disable-modern=on,drive=d0 \
 	  -device virtio-rng-pci,disable-modern=on \

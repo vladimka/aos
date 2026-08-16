@@ -115,8 +115,11 @@ def build_sfs(entries, block_count=8192):
     return out
 
 
+GPU_ARGS = ["-vga", "none", "-device", "virtio-vga,disable-modern=on"]
+
+
 def disk_extra():
-    return [
+    return GPU_ARGS + [
         "-drive", "file=" + IMG + ",format=raw,if=none,id=d0",
         "-device", "virtio-blk-pci,disable-modern=on,drive=d0",
     ]
@@ -124,7 +127,7 @@ def disk_extra():
 
 def main():
     # ---- Boot A: default ramdisk ----
-    with QTest("config", boot_wait=6) as q:
+    with QTest("config", extra_args=GPU_ARGS, boot_wait=6) as q:
         q.boot_and_ready()
         log = q.serial_read()
         if LOGO_LINE not in log:
@@ -144,9 +147,16 @@ def main():
         before = q.screenshot("/tmp/aos-config-before.ppm")
         before_txt = count_bright(before, TXT_X0, TXT_Y0, TXT_X1, TXT_Y1)
         q.type_text("cat sys/config.cfg\n")
-        time.sleep(1)
-        ppm = q.screenshot("/tmp/aos-config.ppm")
-        after_txt = count_bright(ppm, TXT_X0, TXT_Y0, TXT_X1, TXT_Y1)
+        # TCG is slow under the virtio-gpu scanout path; poll until the term
+        # text band grows past the threshold instead of a fixed sleep.
+        ppm = None
+        after_txt = before_txt
+        for _ in range(40):
+            time.sleep(0.25)
+            ppm = q.screenshot("/tmp/aos-config.ppm")
+            after_txt = count_bright(ppm, TXT_X0, TXT_Y0, TXT_X1, TXT_Y1)
+            if after_txt - before_txt > TXT_THRESHOLD:
+                break
         if after_txt - before_txt <= TXT_THRESHOLD:
             raise AssertionError(
                 "cat sys/config.cfg did not render (band grew %d)"
