@@ -280,6 +280,7 @@ static unsigned int *scratch;   // slab 0: scratch for title-bar text rendering
 static int next_slab = 1;
 static unsigned int focus_pid;
 static int redraw = 1;
+static int gpu_mode;
 static int has_cur, cur_x, cur_y;
 static unsigned int snap[2 * CUR_R][2 * CUR_R];
 static int clip_x0, clip_y0, clip_x1, clip_y1;
@@ -885,6 +886,12 @@ static void draw_cursor(int x, int y) {
 }
 
 static void update_cursor(int mx, int my) {
+    if (gpu_mode) {
+        int vis = (mx >= 0 && mx < (int)fb_w && my >= 0 && my < (int)fb_h);
+        aos_cursor(mx, my, vis);
+        has_cur = 0;
+        return;
+    }
     if (has_cur)
         restore_snap(cur_x, cur_y);
     has_cur = 0;
@@ -896,6 +903,17 @@ static void update_cursor(int mx, int my) {
         cur_y = my;
         has_cur = 1;
     }
+}
+
+// Present the back buffer to the display. After the flip front/back swap, so
+// re-fetch the new back address before the next frame is drawn.
+static void gpu_present(void) {
+    if (!gpu_mode) return;
+    aos_gpu_flip();
+    unsigned int a, w, h, p, act;
+    aos_fb_info(&a, &w, &h, &p, &act);
+    fb_addr = a;
+    fb_pitch = p;
 }
 
 static int cursor_overlaps(int x, int y, int w, int h) {
@@ -991,6 +1009,18 @@ int main(void) {
     clip_y1 = (int)fb_h;
     printf("wm: fb=%x w=%u h=%u pitch=%u bpp=%u\n",
            fb_addr, fb_w, fb_h, fb_pitch, bpp);
+    unsigned int gpu_w = 0, gpu_h = 0, gpu_pitch = 0, gpu_active = 0;
+    unsigned int gpu_back = 0;
+    aos_gpu_info(&gpu_back, &gpu_w, &gpu_h, &gpu_pitch, &gpu_active);
+    if (gpu_active) {
+        fb_addr = gpu_back;
+        fb_w = gpu_w; fb_h = gpu_h; fb_pitch = gpu_pitch;
+        gpu_mode = 1;
+        printf("wm: gpu mode, back=%x\n", fb_addr);
+    } else {
+        printf("wm: vga mode\n");
+    }
+    fflush(stdout);
     if (bpp != 32) {
         printf("wm: framebuffer is not 32bpp\n");
         return 1;
@@ -1012,6 +1042,7 @@ int main(void) {
 
     for (;;) {
         int mx, my, mb, wheel;
+        int drew = 0;           // any composite happened this iteration
         aos_mouse(&mx, &my, &mb, &wheel);
         g_mx = mx;
         g_my = my;
@@ -1074,6 +1105,7 @@ int main(void) {
                     composite_rect(wn->x, wn->y,
                                    wn->x + wn->cw + 2 * BORDER,
                                    wn->y + wn->ch + TITLE_H + 2 * BORDER);
+                    drew = 1;
                     if (cursor_overlaps(wn->x, wn->y,
                                         wn->cw + 2 * BORDER,
                                         wn->ch + TITLE_H + 2 * BORDER)) {
@@ -1164,6 +1196,7 @@ int main(void) {
                 int x1 = (ox > nx ? ox : nx) + ow;
                 int y1 = (oy > ny ? oy : ny) + oh;
                 composite_rect(x0, y0, x1, y1);
+                drew = 1;
                 if (cursor_overlaps(x0, y0, x1 - x0, y1 - y0)) {
                     has_cur = 0;
                     update_cursor(mx, my);
@@ -1175,6 +1208,7 @@ int main(void) {
         if (!has_cur) need_cursor = 1;
         if (redraw) {
             composite();
+            drew = 1;
             has_cur = 0;
             redraw = 0;
             need_cursor = 1;
@@ -1182,6 +1216,7 @@ int main(void) {
         if (need_cursor) {
             update_cursor(mx, my);
         }
+        if (drew) gpu_present();
         last_mx = mx;
         last_my = my;
         last_mb = mb;

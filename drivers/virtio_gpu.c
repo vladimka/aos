@@ -118,6 +118,22 @@ static void vgu_flush(unsigned int rid) {
     vgu_cmd(VGPU_CMD_RESOURCE_FLUSH, &p, sizeof(p));
 }
 
+// QEMU's 2D path keeps the framebuffer in a host-side pixman image; the guest
+// backing memory is only copied into it by a TRANSFER_TO_HOST_2D command, and
+// set_scanout/flush then render from that host image. Without the transfer the
+// scanout surface stays all-zero (black screen) even though guest RAM holds
+// the rendered frame.
+static int vgu_transfer(unsigned int rid) {
+    struct {
+        unsigned int x, y, w, h;
+        unsigned long long offset;
+        unsigned int resource, pad;
+    } __attribute__((packed)) p;
+    p.x = 0; p.y = 0; p.w = FB_W; p.h = FB_H;
+    p.offset = 0; p.resource = rid; p.pad = 0;
+    return vgu_cmd(VGPU_CMD_TRANSFER_TO_HOST_2D, &p, sizeof(p));
+}
+
 // ---- hardware cursor (cursorq, qidx 1) ----
 #define VGPU_CMD_UPDATE_CURSOR 0x0300
 #define VGPU_CMD_MOVE_CURSOR   0x0301
@@ -158,7 +174,16 @@ static void vgu_cursor_init(void) {
                     cursor_pix[off + 3] = 0xFF;   // X
                 }
             }
-        cursor_initialized = 1;
+        // host keeps a separate pixman image; copy our cursor pixels into it
+        struct {
+            unsigned int x, y, w, h;
+            unsigned long long offset;
+            unsigned int resource, pad;
+        } __attribute__((packed)) p;
+        p.x = 0; p.y = 0; p.w = VGPU_CURSOR_SIZE; p.h = VGPU_CURSOR_SIZE;
+        p.offset = 0; p.resource = 3; p.pad = 0;
+        if (vgu_cmd(VGPU_CMD_TRANSFER_TO_HOST_2D, &p, sizeof(p)) == 0)
+            cursor_initialized = 1;
     }
 }
 
@@ -190,6 +215,7 @@ int vgu_init(void) {
     if (vgu_create(2, FB_W, FB_H) != 0) return -1;
     if (vgu_attach(1, GPU_BASE, GPU_STRIDE) != 0) return -1;
     if (vgu_attach(2, GPU_BASE + GPU_STRIDE, GPU_STRIDE) != 0) return -1;
+    if (vgu_transfer(1) != 0) return -1;
     if (vgu_scanout(1) != 0) return -1;
     vgu_flush(1);
     front = 0;                          // displayed = buffer 0 (rid 1)
@@ -221,7 +247,7 @@ void vgu_info(unsigned int *w, unsigned int *h, unsigned int *pitch) {
 void vgu_flip(void) {
     if (!gpu_active) return;
     unsigned int rid = (front == 0) ? 2 : 1;
-    if (vgu_scanout(rid) == 0) {
+    if (vgu_transfer(rid) == 0 && vgu_scanout(rid) == 0) {
         front ^= 1;
         vgu_flush(rid);
         serial_print("vgu: flip ok\n");
