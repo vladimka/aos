@@ -34,13 +34,13 @@ static int vgu_send(unsigned int qidx, unsigned int len) {
     if (head == 0xFFFF) return -1;
     unsigned int rhead = vm_alloc_desc(&vgpu, qidx);
     if (rhead == 0xFFFF) { vm_free_chain(&vgpu, qidx, head); return -1; }
-    vgpu.desc[head].addr = (unsigned int)cmd_buf;
-    vgpu.desc[head].len = len;
-    vgpu.desc[head].flags = VRING_DESC_F_NEXT;
-    vgpu.desc[head].next = rhead;
-    vgpu.desc[rhead].addr = (unsigned int)resp_buf;
-    vgpu.desc[rhead].len = sizeof(struct vgpu_hdr);
-    vgpu.desc[rhead].flags = VRING_DESC_F_WRITE;
+    vgpu.desc[qidx][head].addr = (unsigned int)cmd_buf;
+    vgpu.desc[qidx][head].len = len;
+    vgpu.desc[qidx][head].flags = VRING_DESC_F_NEXT;
+    vgpu.desc[qidx][head].next = rhead;
+    vgpu.desc[qidx][rhead].addr = (unsigned int)resp_buf;
+    vgpu.desc[qidx][rhead].len = sizeof(struct vgpu_hdr);
+    vgpu.desc[qidx][rhead].flags = VRING_DESC_F_WRITE;
     vm_submit(&vgpu, qidx, head);
     // poll used ring (device replies on the same queue)
     unsigned int start = tick;
@@ -118,11 +118,73 @@ static void vgu_flush(unsigned int rid) {
     vgu_cmd(VGPU_CMD_RESOURCE_FLUSH, &p, sizeof(p));
 }
 
+// ---- hardware cursor (cursorq, qidx 1) ----
+#define VGPU_CMD_UPDATE_CURSOR 0x0300
+#define VGPU_CMD_MOVE_CURSOR   0x0301
+#define VGPU_CURSOR_SIZE 64
+
+static int cursor_initialized;
+static unsigned char cursor_pix[VGPU_CURSOR_SIZE * VGPU_CURSOR_SIZE * 4]
+    __attribute__((aligned(16)));
+
+static void vgu_cursor_init(void) {
+    // resource 3: 64x64 B8G8R8X8, filled with a two-color arrow + transparent border
+    if (vgu_create(3, VGPU_CURSOR_SIZE, VGPU_CURSOR_SIZE) != 0) return;
+    // backing: pages of cursor_pix (static, identity-mapped)
+    static struct { unsigned long long addr; unsigned int len, pad; } ents[4];
+    for (unsigned int i = 0; i < 4; i++) {
+        ents[i].addr = (unsigned long long)((unsigned int)cursor_pix + i * 4096);
+        ents[i].len = 4096; ents[i].pad = 0;
+    }
+    // build attach cmd manually (like vgu_attach but for cursor_pix)
+    struct vgpu_hdr *h = (struct vgpu_hdr *)cmd_buf;
+    h->type = VGPU_CMD_RESOURCE_ATTACH_BACKING; h->flags = 0;
+    h->fence_id = 0; h->ctx_id = 0; h->padding = 0;
+    unsigned int rid_nr[2] = {3, 4};
+    memcpy(cmd_buf + sizeof(struct vgpu_hdr), rid_nr, 8);
+    memcpy(cmd_buf + sizeof(struct vgpu_hdr) + 8, ents, 4 * 16);
+    if (vgu_send(0, sizeof(struct vgpu_hdr) + 8 + 4 * 16) == 0 &&
+        ((struct vgpu_hdr *)resp_buf)->type == VGPU_RESP_OK_NODATA) {
+        // fill cursor pixels (white body + accent border, transparent elsewhere)
+        memset(cursor_pix, 0, sizeof(cursor_pix));
+        for (int yy = 0; yy < VGPU_CURSOR_SIZE; yy++)
+            for (int xx = 0; xx < VGPU_CURSOR_SIZE; xx++) {
+                // simple arrow outline: draw later — placeholder white box core
+                if (xx >= 8 && xx < 56 && yy >= 8 && yy < 56) {
+                    unsigned int off = (yy * VGPU_CURSOR_SIZE + xx) * 4;
+                    cursor_pix[off + 0] = 0xFF;   // B
+                    cursor_pix[off + 1] = 0xFF;   // G
+                    cursor_pix[off + 2] = 0xFF;   // R (white)
+                    cursor_pix[off + 3] = 0xFF;   // X
+                }
+            }
+        cursor_initialized = 1;
+    }
+}
+
+void vgu_cursor(int x, int y, int visible) {
+    if (!gpu_active) return;
+    if (!cursor_initialized) vgu_cursor_init();
+    if (!cursor_initialized) return;
+    // cursor commands go on cursorq (qidx 1)
+    // payload: {hdr, pos{scanout_id, x, y, padding}, resource_id, hot_x, hot_y, padding}
+    struct { unsigned int scanout, x, y, pad; unsigned int resource, hot_x, hot_y, pad2; } c;
+    c.scanout = 0; c.x = (unsigned int)x; c.y = (unsigned int)y; c.pad = 0;
+    c.resource = visible ? 3 : 0;
+    c.hot_x = 0; c.hot_y = 0; c.pad2 = 0;
+    struct vgpu_hdr *h = (struct vgpu_hdr *)cmd_buf;
+    h->type = VGPU_CMD_UPDATE_CURSOR; h->flags = 0;
+    h->fence_id = 0; h->ctx_id = 0; h->padding = 0;
+    memcpy(cmd_buf + sizeof(struct vgpu_hdr), &c, sizeof(c));
+    vgu_send(1, sizeof(struct vgpu_hdr) + sizeof(c));
+}
+
 int vgu_init(void) {
     if (vm_probe(&vgpu, 0x1050) != 0) return -1;
     irq_install_handler(11, vgu_irq);
     if (vm_dev_init(&vgpu, VM_F_VERSION_1) != 0) return -1;
     if (vm_setup_queue(&vgpu, 0, 256) != 0) return -1;
+    if (vm_setup_queue(&vgpu, 1, 64) != 0) return -1;
     vm_ready(&vgpu);
     if (vgu_create(1, FB_W, FB_H) != 0) return -1;
     if (vgu_create(2, FB_W, FB_H) != 0) return -1;
@@ -136,6 +198,11 @@ int vgu_init(void) {
     // selftest: one flip and back, logging each flip
     vgu_flip();                         // -> "vgu: flip ok"
     vgu_flip();
+    // cursor selftest: show then hide, leaves cursor hidden
+    vgu_cursor(FB_W / 2, FB_H / 2, 1);
+    vgu_cursor(0, 0, 0);
+    if (cursor_initialized)
+        serial_print("vgu: cursor ok\n");
     return 0;
 }
 

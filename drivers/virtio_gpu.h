@@ -21,5 +21,6 @@ int vgu_active(void);
 void vgu_flip(void);
 unsigned int vgu_back(void);
 void vgu_info(unsigned int *w, unsigned int *h, unsigned int *pitch);
+void vgu_cursor(int x, int y, int visible);
 
 #endif

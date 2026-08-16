@@ -12,6 +12,7 @@ def main():
         log = q.serial_read()
     assert "vgu: active" in log, "virtio-gpu driver did not activate"
     assert "vgu: flip ok" in log, "vgu selftest flip did not run"
+    assert "vgu: cursor ok" in log, "vgu cursor selftest did not run"
     print("VGU TEST OK")
 
 if __name__ == "__main__":

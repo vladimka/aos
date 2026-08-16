@@ -150,21 +150,21 @@ int vm_setup_queue(struct virtio_modern *m, unsigned int qidx, unsigned int n) {
     while ((4096u << order) < need) order++;
     unsigned int base = (unsigned int)page_alloc_order(order);
     if (!base) return -2;
-    m->desc = (volatile struct vring_desc *)base;
-    m->avail = (volatile struct vring_avail *)(base + avail_off);
-    m->used = (volatile struct vring_used *)(base + used_off);
-    m->size = qnum;
+    m->desc[qidx] = (volatile struct vring_desc *)base;
+    m->avail[qidx] = (volatile struct vring_avail *)(base + avail_off);
+    m->used[qidx] = (volatile struct vring_used *)(base + used_off);
+    m->size[qidx] = qnum;
     for (unsigned int i = 0; i < qnum; i++) {
-        m->desc[i].addr = 0;
-        m->desc[i].len = 0;
-        m->desc[i].flags = 0;
-        m->desc[i].next = (i + 1 < qnum) ? i + 1 : 0xFFFF;
+        m->desc[qidx][i].addr = 0;
+        m->desc[qidx][i].len = 0;
+        m->desc[qidx][i].flags = 0;
+        m->desc[qidx][i].next = (i + 1 < qnum) ? i + 1 : 0xFFFF;
     }
-    m->free_head = 0;
-    m->last_used = 0;
-    m->avail->flags = 0;
-    m->avail->idx = 0;
-    m->used->idx = 0;
+    m->free_head[qidx] = 0;
+    m->last_used[qidx] = 0;
+    m->avail[qidx]->flags = 0;
+    m->avail[qidx]->idx = 0;
+    m->used[qidx]->idx = 0;
 
     vm_cfg_w32(m, 0x20, base);                          // queue_desc lo
     vm_cfg_w32(m, 0x24, 0);                             // queue_desc hi
@@ -183,36 +183,36 @@ void vm_ready(struct virtio_modern *m) {
 }
 
 unsigned int vm_alloc_desc(struct virtio_modern *m, unsigned int qidx) {
-    (void)qidx;
-    unsigned int i = m->free_head;
+    if (qidx >= 2) return 0xFFFF;
+    unsigned int i = m->free_head[qidx];
     if (i == 0xFFFF) return 0xFFFF;
-    m->free_head = m->desc[i].next;
+    m->free_head[qidx] = m->desc[qidx][i].next;
     return i;
 }
 
 void vm_desc_set(struct virtio_modern *m, unsigned int qidx, unsigned int idx,
                  unsigned int addr, unsigned int len, unsigned short flags) {
-    (void)qidx;
-    m->desc[idx].addr = addr;
-    m->desc[idx].len = len;
-    m->desc[idx].flags = flags & ~VRING_DESC_F_NEXT;
+    if (qidx >= 2) return;
+    m->desc[qidx][idx].addr = addr;
+    m->desc[qidx][idx].len = len;
+    m->desc[qidx][idx].flags = flags & ~VRING_DESC_F_NEXT;
 }
 
 void vm_submit(struct virtio_modern *m, unsigned int qidx, unsigned int head) {
     if (qidx >= 2) return;
-    m->avail->ring[m->avail->idx % m->size] = head;
-    m->avail->idx++;
+    m->avail[qidx]->ring[m->avail[qidx]->idx % m->size[qidx]] = head;
+    m->avail[qidx]->idx++;
     *(volatile unsigned short *)(m->notify + m->notify_off[qidx] * m->notify_multiplier) = qidx;
 }
 
 void vm_free_chain(struct virtio_modern *m, unsigned int qidx, unsigned int head) {
-    (void)qidx;
+    if (qidx >= 2) return;
     unsigned int i = head;
     while (i != 0xFFFF) {
-        unsigned int next = m->desc[i].next;
-        unsigned short flags = m->desc[i].flags;
-        m->desc[i].next = m->free_head;
-        m->free_head = i;
+        unsigned int next = m->desc[qidx][i].next;
+        unsigned short flags = m->desc[qidx][i].flags;
+        m->desc[qidx][i].next = m->free_head[qidx];
+        m->free_head[qidx] = i;
         if (!(flags & VRING_DESC_F_NEXT)) break;
         i = next;
     }
@@ -220,11 +220,11 @@ void vm_free_chain(struct virtio_modern *m, unsigned int qidx, unsigned int head
 
 int vm_used_pop(struct virtio_modern *m, unsigned int qidx,
                 unsigned int *id, unsigned int *len) {
-    (void)qidx;
-    if (m->used->idx == m->last_used) return -1;
-    unsigned int i = m->last_used % m->size;
-    if (id) *id = m->used->ring[i].id;
-    if (len) *len = m->used->ring[i].len;
-    m->last_used++;
+    if (qidx >= 2) return -1;
+    if (m->used[qidx]->idx == m->last_used[qidx]) return -1;
+    unsigned int i = m->last_used[qidx] % m->size[qidx];
+    if (id) *id = m->used[qidx]->ring[i].id;
+    if (len) *len = m->used[qidx]->ring[i].len;
+    m->last_used[qidx]++;
     return 0;
 }

@@ -28,11 +28,11 @@ struct virtio_modern {
     volatile unsigned char *notify;    // notify base
     unsigned int notify_multiplier;
     volatile unsigned char *isr;
-    // vq 0..1 (control, cursor)
-    volatile struct vring_desc *desc;
-    volatile struct vring_avail *avail;
-    volatile struct vring_used *used;
-    unsigned short size, free_head, last_used;
+    // per-vq ring state (vq 0..1: control, cursor)
+    volatile struct vring_desc *desc[2];
+    volatile struct vring_avail *avail[2];
+    volatile struct vring_used *used[2];
+    unsigned short size[2], free_head[2], last_used[2];
     unsigned short notify_off[2];
 };
 
