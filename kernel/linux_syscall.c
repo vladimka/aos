@@ -22,7 +22,7 @@ static struct linux_ctx *cur_lctx(void) {
 static int in_luser(const void *p, unsigned int n) {
     unsigned int a = (unsigned int)p;
     struct linux_ctx *lc = cur_lctx();
-    return a >= lc->win_lo && n <= lc->win_hi - a;
+    return a >= lc->win_lo && a < lc->win_hi && n <= lc->win_hi - a;
 }
 
 // Copy a Linux-window user string into a fresh kmalloc'd buffer (no 1024 cap).

@@ -35,13 +35,13 @@ struct vfs_inode *current_task_cwd(void) {
 
 static int in_user(const void *p, unsigned int n) {
     unsigned int a = (unsigned int)p;
-    return a >= USER_LO && n <= USER_HI - a;
+    return a >= USER_LO && a < USER_HI && n <= USER_HI - a;
 }
 
 static int in_user_area(const void *p, unsigned int n) {
     unsigned int a = (unsigned int)p;
-    if (a >= USER_LO && n <= USER_HI - a) return 1;
-    if (a >= SLAB_LO && n <= SLAB_HI - a) return 1;
+    if (a >= USER_LO && a < USER_HI && n <= USER_HI - a) return 1;
+    if (a >= SLAB_LO && a < SLAB_HI && n <= SLAB_HI - a) return 1;
     return 0;
 }
 
