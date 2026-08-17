@@ -160,7 +160,8 @@ run: aos.iso disk.img
 	  -device virtio-blk-pci,disable-modern=on,drive=d0 \
 	  -device virtio-rng-pci,disable-modern=on \
 	  -netdev socket,id=n0,listen=127.0.0.1:9400 \
-	  -device virtio-net-pci,disable-modern=on,mac=52:54:00:12:34:56,netdev=n0
+	  -device virtio-net-pci,disable-modern=on,mac=52:54:00:12:34:56,netdev=n0 \
+	  -device piix3-usb-uhci -device usb-tablet
 
 # Headless debug launch: VNC + QMP + serial Unix sockets for the qemu-vnc MCP
 # tools (vm_connect vnc_port=5907, qmp_socket=/tmp/aos-debug.qmp,
@@ -171,7 +172,7 @@ debug: aos.iso
 # Headless regression suite: each script boots aos.iso under QEMU, drives the
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
 LINUX_TESTS = linhello lincat lindirtest pipetest
-TESTS = ipctest manytest notepadtest sleeptest rngtest blktest atatest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest $(LINUX_TESTS) vguitest powertest
+TESTS = ipctest manytest notepadtest sleeptest rngtest blktest atatest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest $(LINUX_TESTS) vguitest powertest tablettest
 
 # Fast subset for CI: quick boots, no extra virtio devices.
 FAST_TESTS = ipctest linhello lincat

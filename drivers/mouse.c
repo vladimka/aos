@@ -19,6 +19,7 @@ static int mouse_buttons = 0;
 static int mouse_wheel = 0;
 static int mouse_xmax = 0;
 static int mouse_ymax = 0;
+static int tablet_active = 0;
 
 static int ps2_wait_write(void) {
     int timeout = 100000;
@@ -121,6 +122,7 @@ static void irq_restore(unsigned int flags) {
 }
 
 void mouse_process_byte(unsigned char data) {
+    if (tablet_active) return;
     if (has_wheel) {
         if (pcount == 0) {
             if (!(data & 0x08)) return;
@@ -194,5 +196,32 @@ void mouse_get_state(int *x, int *y, int *buttons, int *wheel) {
     if (buttons) *buttons = mouse_buttons;
     if (wheel) *wheel = mouse_wheel;
     mouse_wheel = 0;
+    irq_restore(flags);
+}
+
+// Absolute tablet input from the USB HID driver (X/Y in 0..32767, wheel byte
+// +1 = wheel up). Scales to the framebuffer, inverts the wheel sign to the
+// PS/2 convention (mouse_wheel += means wheel down), and flips the tablet
+// source on the first report so PS/2 stays authoritative until then.
+void mouse_tablet_set(int x, int y, int buttons, int wheel) {
+    unsigned int flags;
+    irq_save(&flags);
+    if (!tablet_active) {
+        tablet_active = 1;
+        serial_print("USB tablet mouse active.\n");
+    }
+    if (!mouse_xmax) mouse_xmax = 1023;
+    if (!mouse_ymax) mouse_ymax = 767;
+    mouse_x = (x * (mouse_xmax + 1)) / 32768;
+    mouse_y = (y * (mouse_ymax + 1)) / 32768;
+    if (mouse_x < 0) mouse_x = 0;
+    if (mouse_x > mouse_xmax) mouse_x = mouse_xmax;
+    if (mouse_y < 0) mouse_y = 0;
+    if (mouse_y > mouse_ymax) mouse_y = mouse_ymax;
+    mouse_buttons = buttons & 0x07;
+    if (wheel) {
+        mouse_wheel += -wheel;
+        wheel_acc += (wheel > 0) ? 3 : -3;
+    }
     irq_restore(flags);
 }

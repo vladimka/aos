@@ -27,6 +27,7 @@ Typical serial test::
         s.sendall(b"cat /proc/klog\\n")
         out = q.serial_drain(socket=s, needle=b"klog: ready")
 """
+import json
 import os
 import socket
 import subprocess
@@ -96,7 +97,8 @@ class QTest:
 
     def __init__(self, name, *, monitor_socket=None, serial_log=None,
                  mouse_state=None, ppm=None, iso=None, mouse_boot=MOUSE_BOOT,
-                 boot_wait=5, serial_mode="file", extra_args=None):
+                 boot_wait=5, serial_mode="file", extra_args=None,
+                 qmp_socket=None):
         self.name = name
         self.mon = monitor_socket or f"/tmp/aos-{name}.sock"
         self.serial_mode = serial_mode
@@ -110,6 +112,7 @@ class QTest:
         self.mouse_boot = mouse_boot
         self.boot_wait = boot_wait
         self.extra_args = extra_args or []
+        self.qmp_sock = qmp_socket
         self.qemu = None
         self._last_ppm = None
         self._serial_sock = None
@@ -131,6 +134,11 @@ class QTest:
                 os.unlink(p)
             except FileNotFoundError:
                 pass
+        if self.qmp_sock:
+            try:
+                os.unlink(self.qmp_sock)
+            except FileNotFoundError:
+                pass
         self._write_state(*self.mouse_boot)
         cmd = [
             "qemu-system-i386", "-m", "256", "-cdrom", self.iso,
@@ -141,6 +149,8 @@ class QTest:
         else:
             cmd += ["-serial", "file:" + self.ser]
         cmd += ["-monitor", "unix:" + self.mon + ",server,nowait"]
+        if self.qmp_sock:
+            cmd += ["-qmp", "unix:" + self.qmp_sock + ",server,nowait"]
         if extra_args:
             cmd += extra_args
         if self.extra_args:
@@ -201,6 +211,43 @@ class QTest:
                     break
                 data += chunk
             return data.decode(errors="replace")
+
+    def qmp(self, obj):
+        """Send a QMP command object and return its response dict.
+
+        Requires ``qmp_socket`` (an extra ``-qmp unix:...`` monitor) passed to
+        the constructor. Each call opens a fresh connection: reads the QMP
+        greeting, runs ``qmp_capabilities``, sends *obj*, and returns the
+        first ``{"return": ...}`` / ``{"error": ...}`` response.
+        """
+        if self.qmp_sock is None:
+            raise RuntimeError("qmp() requires qmp_socket=")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(5)
+            s.connect(self.qmp_sock)
+            data = b""
+            while b'"QMP"' not in data:
+                data += s.recv(4096)
+            s.sendall(b'{"execute": "qmp_capabilities"}\n')
+            while b"\n" not in data:
+                data += s.recv(4096)
+            s.sendall(json.dumps(obj).encode() + b"\n")
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                for line in data.split(b"\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        o = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if "return" in o or "error" in o:
+                        return o
+            raise RuntimeError("QMP command timed out: " + json.dumps(obj))
 
     # -----------------------------------------------------------------
     # Mouse (absolute, stateful)

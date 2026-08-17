@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status (2026-08-17):** Tasks 1-4 are **complete** (`drivers/ports.h` `inw/inl/outl`, `drivers/pci.c/.h`, `drivers/uhci.c/.h` controller + enumeration). Task 5 (interrupt schedule + mouse integration) and Task 6 (Makefile + test) are **superseded** by the polling revision appended at the end of this file (Tasks 5' and 6'). The interrupt-IN report is polled from the kernel main loop instead of an IRQ handler — no IOC enabled, no shared-IRQ risk. See **Revision 2026-08-17** below. Tasks 5' and 6' are **complete** (all steps checked): the driver polls a single IN TD from the kernel main loop, `mouse_tablet_set` flips the source on the first report, `make run`/`qemu-debug.sh` add `piix3-usb-uhci`+`usb-tablet`, QTest gained `qmp_socket=`/`qmp()`, and `scripts/tablettest.py` is a green regression (with retries against QEMU's HID event compression) that also asserts the context menu anchors exactly at the abs click point.
+
 **Goal:** Add a kernel-side UHCI + HID-tablet USB driver so AOS consumes QEMU's `usb-tablet` absolute coordinates (host cursor auto-hidden, 1:1 tracking), keeping PS/2 as fallback.
 
 **Architecture:** New `drivers/pci.c` (bus-0 scan for class `0x0C0300`, returns BAR4 I/O base + IRQ from config space) and `drivers/uhci.c` (UHCI controller: frame list → control QH → interrupt QH; control-transfer primitives for enumeration; a single continuously-rearmed interrupt IN TD whose completion drives `mouse_set_usb_state()`). `mouse.c` keeps its `mouse_get_state` interface and owns the cursor state; PS/2 bytes are ignored once USB is active.
@@ -887,3 +889,403 @@ git commit -m "run: add -usb -device usb-tablet for absolute input"
 - Spec coverage: PCI scan (Task 2), UHCI init (Task 3), control/enumeration (Task 4), interrupt schedule + report parsing + mouse integration + fallback flip-on-first-report (Task 5), Makefile + testing incl. PS/2 fallback and wheel sign (Task 6). All spec sections covered.
 - Placeholders: none — every step has concrete code or exact commands.
 - Type consistency: `pci_init(unsigned int*, unsigned int*)`, `usb_init(void)`, `uhci_handler` is `void uhci_handler(void)`, `mouse_set_usb_state(int,int,int,int)` — used consistently across tasks.
+
+---
+
+## Revision 2026-08-17 (supersedes Tasks 5-6)
+
+The original Tasks 5-6 drove the interrupt TD from an IRQ handler (`uhci_handler`
+on the UHCI IRQ with `USBINTR_IOC`). That is replaced by **polling the interrupt
+TD from the kernel main loop** (like `mouse_flush_wheel`): the TD is armed once
+after enumeration, QEMU completes it on the next frame when a report is pending,
+and the poll parses and re-arms. No `USBINTR_IOC`, no UHCI IRQ handler, no shared
+IRQ (the UHCI line on `piix3-usb-uhci` is INTD → IRQ 11, shared with the unused
+e1000 NIC — never enabled). Latency is ≤1 frame (1 ms @ 1000 Hz), imperceptible.
+
+Rationale (verified 2026-08-17 against QEMU 10.2.1 sources): `piix3-usb-uhci`
+registers its I/O BAR at PCI BAR index 4 → config offset `0x20`, which the
+existing `pci_init` already reads (CORRECT). A NAK'd interrupt TD stays ACTIVE and
+is re-polled each frame; on data QEMU clears ACTIVE, writes ACTLEN (`len-1` in
+ctrl bits 0-10) into the TD, and copies the 6-byte report into `td->buffer`. No
+IOC → no IRQ ever fires (`USBINTR` stays 0, QEMU's `uhci_update_irq` sees
+`pending_int_mask==0`). `hid_pointer_activate()` on the first IN poll moves the
+tablet to the head of the input-handler list, so host input (incl. QMP/VNC)
+routes to the tablet and the PS/2 mouse goes idle — matching the user's AnyDesk
+remote-desktop scenario, where QEMU GTK's relative PS/2 delta tracking desyncs
+and the guest cursor clamps to (0,0) at click time. The tablet makes input
+**absolute** (QMP `input-send-event` `abs` values 0..0x7FFF, normalized by
+`qemu_input_queue_abs`), fixing the click-at-(0,0) bug.
+
+QEMU tablet report (from `hw/input/hid.c` `hid_pointer_poll`, HID_TABLET), 6 bytes:
+byte 0 = buttons (bit0 L, 1 R, 2 M), bytes 1-2 = X LE (0..0x7FFF), bytes 3-4 = Y
+LE (0..0x7FFF), byte 5 = wheel signed (QEMU inverts: report +1 = wheel up).
+
+Important QEMU event-queue behavior for tests: each `input-send-event` QMP call
+is followed by `qemu_input_event_sync`, and the report the tablet delivers carries
+the position **only from that same call**. So a button-release QMP call must ALSO
+include the absolute X/Y — otherwise the tablet reports (0,0). Test clicks must
+send `[abs x, abs y, btn down]` in one call and `[abs x, abs y, btn up]` in the
+next.
+
+### Task 5': Poll-based interrupt IN schedule + mouse integration
+
+**Files:**
+- Modify: `drivers/uhci.c`, `drivers/uhci.h`, `drivers/mouse.h`, `drivers/mouse.c`, `kernel/kernel.c`
+
+**Interfaces:**
+- Consumes: `uhci_enum_tablet()` (Task 4), `tick`, `mouse_tablet_set` (produced here).
+- Produces:
+  - `void uhci_tablet_poll(void)` (declared in `uhci.h`) — parses a completed
+    tablet report and calls `mouse_tablet_set(int x, int y, int buttons, int wheel)`;
+    re-arms the IN TD. Called from the kernel main loop.
+  - `void mouse_tablet_set(int x, int y, int buttons, int wheel)` (declared in
+    `mouse.h`) — scales 0..32767 → screen, inverts wheel sign, flips `tablet_active`
+    on the first report, and makes `mouse_process_byte()` ignore PS/2 thereafter.
+
+- [x] **Step 1: Add the interrupt TD + poll to `drivers/uhci.c`**
+
+Append before `usb_init`:
+
+```c
+static struct uhci_td tablet_td __attribute__((aligned(16)));
+static unsigned char tablet_buf[8];
+static int tablet_present;
+static int tablet_td_busy;
+
+void uhci_tablet_poll(void) {
+    if (!tablet_present) return;
+    if (tablet_td_busy) {
+        if (td_active(&tablet_td)) return;
+        unsigned int st = td_read_status(&tablet_td);
+        tablet_td_busy = 0;
+        if (!(st & (TD_CTRL_STALLED | TD_CTRL_DBUFERR | TD_CTRL_BABBLE |
+                    TD_CTRL_CRCTIMEO | TD_CTRL_BITSTUFF))) {
+            int n = (st & TD_ACTLEN_MASK) + 1;
+            if (n >= 6) {
+                int b = tablet_buf[0] & 0x07;
+                int x = tablet_buf[1] | ((unsigned int)tablet_buf[2] << 8);
+                int y = tablet_buf[3] | ((unsigned int)tablet_buf[4] << 8);
+                int w = (signed char)tablet_buf[5];
+                mouse_tablet_set(x, y, b, w);
+            }
+        }
+    }
+    tablet_td.link   = 0x0001;
+    tablet_td.status = TD_CTRL_ACTIVE | uhci_maxerr(2);
+    tablet_td.token  = uhci_explen(8) | (1u << 15) | (uhci_devaddr << 8) | USB_PID_IN;
+    tablet_td.buffer = (unsigned int)tablet_buf;
+    intr_qh.element  = (unsigned int)&tablet_td;
+    tablet_td_busy   = 1;
+}
+```
+
+Add `#include "mouse.h"` to the top of `drivers/uhci.c` (after `#include "pci.h"`).
+
+In `usb_init()`, after the `serial_print("USB tablet enumerated.\n");` line:
+
+```c
+    tablet_present = 1;
+```
+
+- [x] **Step 2: Add `uhci_tablet_poll` to `drivers/uhci.h`**
+
+```c
+void usb_init(void);
+void uhci_tablet_poll(void);
+```
+
+- [x] **Step 3: Add `mouse_tablet_set` to `drivers/mouse.h`**
+
+```c
+void mouse_tablet_set(int x, int y, int buttons, int wheel);
+```
+
+- [x] **Step 4: Implement `mouse_tablet_set` in `drivers/mouse.c`**
+
+- Add a static flag near the other statics (after `static int mouse_wheel = 0;`):
+  ```c
+  static int tablet_active = 0;
+  ```
+- Make `mouse_process_byte` return immediately when the tablet is active (first line):
+  ```c
+  if (tablet_active) return;
+  ```
+- Append after `mouse_get_state` (end of file):
+
+```c
+// Absolute tablet input from the USB HID driver (X/Y in 0..32767, wheel byte
+// +1 = wheel up). Scales to the framebuffer, inverts the wheel sign to the
+// PS/2 convention (mouse_wheel += means wheel down), and flips the tablet
+// source on the first report so PS/2 stays authoritative until then.
+void mouse_tablet_set(int x, int y, int buttons, int wheel) {
+    unsigned int flags;
+    irq_save(&flags);
+    if (!tablet_active) {
+        tablet_active = 1;
+        serial_print("USB tablet mouse active.\n");
+    }
+    if (!mouse_xmax) mouse_xmax = 1023;
+    if (!mouse_ymax) mouse_ymax = 767;
+    mouse_x = (x * (mouse_xmax + 1)) / 32768;
+    mouse_y = (y * (mouse_ymax + 1)) / 32768;
+    if (mouse_x < 0) mouse_x = 0;
+    if (mouse_x > mouse_xmax) mouse_x = mouse_xmax;
+    if (mouse_y < 0) mouse_y = 0;
+    if (mouse_y > mouse_ymax) mouse_y = mouse_ymax;
+    mouse_buttons = buttons & 0x07;
+    if (wheel) {
+        mouse_wheel += -wheel;
+        wheel_acc += (wheel > 0) ? 3 : -3;
+    }
+    irq_restore(flags);
+}
+```
+
+- [x] **Step 5: Call `uhci_tablet_poll` from the kernel main loop**
+
+`kernel/kernel.c`, in the `while (1)` main loop, before `mouse_flush_wheel();` (line 174):
+
+```c
+        uhci_tablet_poll();
+        mouse_flush_wheel();
+```
+
+(`uhci.h` is already included — `usb_init()` is called at line 121.)
+
+- [x] **Step 6: Build**
+
+Run: `make`
+Expected: clean build.
+
+- [x] **Step 7: Boot-verify report delivery**
+
+Run (QMP abs move to center → serial flips the source):
+```bash
+make
+rm -f /tmp/aos-usb.log /tmp/aos-qmp.sock
+qemu-system-i386 -cdrom aos.iso -display none -serial file:/tmp/aos-usb.log \
+  -qmp unix:/tmp/aos-qmp.sock,server,nowait \
+  -device piix3-usb-uhci -device usb-tablet &
+for i in $(seq 1 40); do [ -S /tmp/aos-qmp.sock ] && break; sleep 0.25; done
+sleep 6
+python3 - <<'EOF'
+import socket, json
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(5)
+s.connect("/tmp/aos-qmp.sock"); buf = b""
+def until(pred):
+    global buf
+    while not pred(buf):
+        chunk = s.recv(65536)
+        if not chunk: raise EOFError
+        buf += chunk
+until(lambda b: b'"QMP"' in b)
+def qmp(o):
+    global buf
+    s.sendall(json.dumps(o).encode() + b"\n")
+    while True:
+        until(lambda b: b"\n" in b)
+        line, buf = buf.split(b"\n", 1)
+        line = line.strip()
+        if not line: continue
+        try: j = json.loads(line)
+        except json.JSONDecodeError: continue
+        if "return" in j or "error" in j: return j
+qmp({"execute":"qmp_capabilities"})
+qmp({"execute":"input-send-event","arguments":{"events":[
+    {"type":"abs","data":{"axis":"x","value":16384}},
+    {"type":"abs","data":{"axis":"y","value":16384}}]}})
+qmp({"execute":"quit"})
+EOF
+sleep 2
+grep "USB" /tmp/aos-usb.log
+kill %1 2>/dev/null
+```
+
+Expected: log contains `USB tablet enumerated.` then `USB tablet mouse active.`. No panic.
+
+- [x] **Step 8: Commit**
+
+```bash
+git add drivers/uhci.c drivers/uhci.h drivers/mouse.c drivers/mouse.h kernel/kernel.c
+git commit -m "USB tablet interrupt IN poll + mouse integration"
+```
+
+### Task 6': QEMU launch args + `tablettest.py` (absolute clicks)
+
+**Files:**
+- Modify: `Makefile` (run target), `scripts/qemu-debug.sh`
+- Modify: `scripts/qtest.py` (add QMP support)
+- Create: `scripts/tablettest.py`
+
+**Interfaces:**
+- Consumes: `uhci_tablet_poll` + `mouse_tablet_set` (Task 5').
+- Produces: `scripts/tablettest.py`, registered in the Makefile `TESTS` list.
+
+- [x] **Step 1: Add the tablet to `make run`**
+
+In `Makefile`, `run:` target, append to the QEMU line (after the virtio devices):
+
+```
+  -device piix3-usb-uhci -device usb-tablet
+```
+
+- [x] **Step 2: Add the tablet to `scripts/qemu-debug.sh`**
+
+Append to the `qemu-system-i386` command line (before `"$@"`):
+
+```
+  -device piix3-usb-uhci -device usb-tablet \
+```
+
+- [x] **Step 3: Add QMP support to `scripts/qtest.py`**
+
+Add an optional `qmp_socket` constructor arg; in `start()`, when set, add
+`-qmp unix:<qmp_socket>,server,nowait` to the QEMU command. Add a `qmp()` method:
+
+```python
+    def qmp(self, obj):
+        """Send a QMP command object and return its response dict."""
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(5)
+            s.connect(self.qmp_sock)
+            data = b""
+            while b'"QMP"' not in data:
+                data += s.recv(4096)
+            s.sendall(b'{"execute": "qmp_capabilities"}\n')
+            while b"\n" not in data:
+                data += s.recv(4096)
+            s.sendall(json.dumps(obj).encode() + b"\n")
+            data = b""
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                try:
+                    o = json.loads(data.strip().split(b"\n")[-1])
+                except Exception:
+                    continue
+                if "return" in o or "error" in o:
+                    return o
+```
+
+Note: QMP needs a separate socket from the HMP monitor (QTest already uses HMP for
+screendump/serial assertions; the tablet test adds a `-qmp unix:...` socket).
+
+- [x] **Step 4: Write `scripts/tablettest.py`**
+
+```python
+#!/usr/bin/env python3
+"""USB tablet regression: absolute clicks land exactly where injected.
+
+Boots the ISO with a piix3-usb-uhci + usb-tablet, waits for enumeration and
+the first report to activate the tablet, then injects ABSOLUTE positions via
+QMP input-send-event (0..0x7FFF) and asserts the WM reacts at the exact pixel:
+  1. power button (1004,13) -> power menu below it,
+  2. right-click desktop at (300,400) -> context menu at (300,400).
+This is the regression for the AnyDesk "click lands at (0,0)" bug: with a
+relative PS/2 mouse, remote/virtual input desyncs the GTK delta tracking, but
+an absolute tablet can never land anywhere but where the host points.
+"""
+import time
+
+from qtest import QTest
+
+GPU_ARGS = ["-vga", "none", "-device", "virtio-vga,disable-modern=on"]
+TABLET_ARGS = GPU_ARGS + ["-device", "piix3-usb-uhci", "-device", "usb-tablet"]
+
+PANEL_BG = (35, 44, 64)
+MENU_BG = (32, 40, 58)
+
+
+def absv(sx):
+    return sx * 0x7FFF // 1024
+
+
+def main():
+    with QTest("tablet", boot_wait=6, extra_args=TABLET_ARGS,
+               qmp_socket="/tmp/aos-tablet.qmp") as q:
+        q.boot_and_ready()
+        if not q.serial_wait("USB tablet enumerated.", timeout=10):
+            raise AssertionError("tablet not enumerated")
+        print("  ok: tablet enumerated")
+
+        def tablet_click(sx, sy, button="left"):
+            x, y = absv(sx), absv(sy)
+            q.qmp({"execute": "input-send-event", "arguments": {"events": [
+                {"type": "abs", "data": {"axis": "x", "value": x}},
+                {"type": "abs", "data": {"axis": "y", "value": y}},
+                {"type": "btn", "data": {"button": button, "down": True}}]}})
+            time.sleep(0.3)
+            q.qmp({"execute": "input-send-event", "arguments": {"events": [
+                {"type": "abs", "data": {"axis": "x", "value": x}},
+                {"type": "abs", "data": {"axis": "y", "value": y}},
+                {"type": "btn", "data": {"button": button, "down": False}}]}})
+            time.sleep(0.5)
+
+        # Move the tablet to the desktop centre so the cursor settles, then
+        # confirm the tablet took over the input path.
+        tablet_click(512, 384)
+        if not q.serial_wait("USB tablet mouse active.", timeout=10):
+            raise AssertionError("tablet never became active")
+        print("  ok: tablet mouse active")
+
+        # 1. Absolute click on the power button -> power menu appears below it.
+        q.screenshot("/tmp/aos-tablet-0-before.ppm")
+        q.assert_pixel(700, 0, PANEL_BG, "panel bg before")
+        tablet_click(1004, 13)
+        q.screenshot("/tmp/aos-tablet-1-pwrmenu.ppm")
+        # Power menu spans x 876..1016, starts at y=28 (PANEL_H+2), interior
+        # bg at (880,60).
+        q.assert_pixel(880, 60, MENU_BG, "power menu opened at the click point")
+        print("  ok: power button click opened menu at (1004,13)")
+        # Close it (click on the desktop away from the button).
+        tablet_click(300, 200)
+
+        # 2. Right-click the desktop at an exact point -> context menu anchors
+        #    at the same point (top-left corner), proving 1:1 mapping.
+        tablet_click(300, 400, button="right")
+        q.screenshot("/tmp/aos-tablet-2-ctx.ppm")
+        # Context menu is 176 px wide; its interior bg at (300+8, 400+8).
+        q.assert_pixel(308, 408, MENU_BG, "context menu at click point")
+        print("  ok: context menu opened exactly at (300,400)")
+    print("PASS: USB tablet absolute input")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())
+```
+
+- [x] **Step 5: Register in the Makefile `TESTS` list**
+
+Add `tablettest` to `TESTS` (line 174), e.g. after `powertest`.
+
+- [x] **Step 6: Run the tablet test**
+
+Run: `python3 scripts/tablettest.py`
+Expected: all `ok:` lines and `PASS: USB tablet absolute input`. (First verify
+manually that the two `assert_pixel` colours match — power-menu interior and
+context-menu interior — if not, pick the observed pixel and update the test.)
+
+- [x] **Step 7: Run the GUI regression**
+
+Run:
+```bash
+make && python3 scripts/powertest.py && python3 scripts/notepadtest.py && python3 scripts/configtest.py
+```
+Expected: all PASS (existing tests boot without the tablet → PS/2 path unchanged).
+
+- [x] **Step 8: Commit**
+
+```bash
+git add Makefile scripts/qemu-debug.sh scripts/qtest.py scripts/tablettest.py
+git commit -m "usb-tablet: absolute input in run/debug, QTest QMP, tablettest.py"
+```
+
+## Self-review notes (revision)
+
+- Spec coverage: interrupt schedule (5'), mouse integration (5'), Makefile + test + PS/2 fallback regression (6'). All original spec sections covered.
+- Placeholders: none.
+- Type consistency: `uhci_tablet_poll(void)`, `mouse_tablet_set(int,int,int,int)`, `qmp(obj)` — used consistently across tasks and in the test.

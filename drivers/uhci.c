@@ -2,6 +2,7 @@
 #include "pci.h"
 #include "serial.h"
 #include "ports.h"
+#include "mouse.h"
 
 extern volatile unsigned int tick;
 
@@ -225,6 +226,37 @@ static int uhci_enum_tablet(void) {
     return 0;
 }
 
+static struct uhci_td tablet_td __attribute__((aligned(16)));
+static unsigned char tablet_buf[8];
+static int tablet_present;
+static int tablet_td_busy;
+
+void uhci_tablet_poll(void) {
+    if (!tablet_present) return;
+    if (tablet_td_busy) {
+        if (td_active(&tablet_td)) return;
+        unsigned int st = td_read_status(&tablet_td);
+        tablet_td_busy = 0;
+        if (!(st & (TD_CTRL_STALLED | TD_CTRL_DBUFERR | TD_CTRL_BABBLE |
+                    TD_CTRL_CRCTIMEO | TD_CTRL_BITSTUFF))) {
+            int n = (st & TD_ACTLEN_MASK) + 1;
+            if (n >= 6) {
+                int b = tablet_buf[0] & 0x07;
+                int x = tablet_buf[1] | ((unsigned int)tablet_buf[2] << 8);
+                int y = tablet_buf[3] | ((unsigned int)tablet_buf[4] << 8);
+                int w = (signed char)tablet_buf[5];
+                mouse_tablet_set(x, y, b, w);
+            }
+        }
+    }
+    tablet_td.link   = 0x0001;
+    tablet_td.status = TD_CTRL_ACTIVE | uhci_maxerr(2);
+    tablet_td.token  = uhci_explen(8) | (1u << 15) | (uhci_devaddr << 8) | USB_PID_IN;
+    tablet_td.buffer = (unsigned int)tablet_buf;
+    intr_qh.element  = (unsigned int)&tablet_td;
+    tablet_td_busy   = 1;
+}
+
 void usb_init(void) {
     unsigned int io_base, irq;
     if (pci_init(&io_base, &irq) != 0) {
@@ -242,4 +274,5 @@ void usb_init(void) {
         return;
     }
     serial_print("USB tablet enumerated.\n");
+    tablet_present = 1;
 }

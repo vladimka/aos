@@ -25,4 +25,5 @@ exec qemu-system-i386 -m 256 -rtc base=localtime -cdrom "$ISO" \
   -monitor none \
   -qmp "unix:$QMP,server,nowait" \
   -serial "unix:$SERIAL,server,nowait" \
+  -device piix3-usb-uhci -device usb-tablet \
   "$@"

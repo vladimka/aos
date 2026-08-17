@@ -171,6 +171,7 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
         // draining during the scroll, so bursts never lose packets; the
         // accumulated delta is applied in one call and any new wheel bytes
         // are picked up on the next iteration.
+        uhci_tablet_poll();
         mouse_flush_wheel();
         __asm__ volatile("hlt");
     }
