@@ -1702,12 +1702,14 @@ git commit -m "ls: -a -l -h -R -r -1 flags, cwd default, colored names"
 - Modify: `scripts/fstoolstest.py`
 - Modify: `scripts/atatest.py` (bytes_of_wc regex still matches)
 - Modify: `scripts/cwdtest.py` (add `cd`, `cd -`, `cd /` checks — existing burst already covers cd/pwd; keep, optionally add `cd -`)
-- Modify: `Makefile:174-175` (TESTS: add `toolflags`, `lsflagstest`)
+- Modify: `Makefile:174-175` (TESTS: add `toolflags`, `lsflagstest`, `sgrcolor`)
 - Create: `scripts/toolflags.py`
+- Create: `scripts/lsflagstest.py`
 - Create: `scripts/sgrcolor.py`
 
 **Interfaces:**
 - `toolflags.py`: boots ISO, runs `head -n 2`, `wc -l`, `cat` multi-file, `rm -r`, `mkdir -p`, `cp -r`, `cd -`; asserts new messages.
+- `lsflagstest.py`: boots ISO, prepares `/d/{sub,.hidden,f.txt,run}` via foreground commands, runs `ls -a -l -h -R -r -1` combos; asserts markers `/`, hidden names, `-h` sizes, recursion headers.
 - `sgrcolor.py`: boots ISO (console fb), runs `ls /bin`; asserts serial log contains `\x1b[38;5;33m` when TERM set, and that `ls /bin > /sgr.txt` writes no ESC (then `cat /sgr.txt` has no `\x1b`). Also asserts serial log itself has no `\x1b` at the end (filter check).
 
 - [ ] **Step 1: Update `scripts/fstoolstest.py`**
@@ -1813,7 +1815,122 @@ if __name__ == "__main__":
 
 Notes: the old leading blank line of echo is gone (`echo` now has no leading `\n`), so `wc` reports `3 3 14` (not `6 3 17`). The new `wc` prints no leading `\n`, so the assertion drops the `\n` prefix and checks the bare `3 3 14 /t.txt` substring. `mkdir -p` + `ls /d` replaces the old `mkdir /d`+`rmdir /d` pair; `rm -r` removes the tree.
 
-- [ ] **Step 2: Write `scripts/toolflags.py`** (same QTest harness pattern; exercises the new flags)
+- [ ] **Step 2: Write `scripts/lsflagstest.py`** (same QTest harness pattern; exercises `ls -a -l -h -R -r -1`)
+
+Prepares a small tree `/d/{sub,.hidden,f.txt,run}` via foreground commands, then runs the flag combos and checks markers, hidden names, `-h` sizes, recursion headers, reverse order:
+
+```python
+#!/usr/bin/env python3
+"""E2E test for the new ls flags: -a -l -h -R -r -1.
+"""
+import socket
+import sys
+import time
+
+from qtest import QTest
+
+PREP = [
+    "mkdir -p /d/sub",
+    "echo hello > /d/f.txt",
+    "echo run > /d/run",
+    "echo x > /d/.hidden",
+]
+
+CMDS = [
+    "echo A-MARK",
+    "ls /d",
+    "echo A-END",
+    "echo B-MARK",
+    "ls -a /d",
+    "echo B-END",
+    "echo C-MARK",
+    "ls -l /d/f.txt",
+    "echo C-END",
+    "echo D-MARK",
+    "ls -lh /d/f.txt",
+    "echo D-END",
+    "echo E-MARK",
+    "ls -R /d",
+    "echo E-END",
+    "echo F-MARK",
+    "ls -r /d",
+    "echo F-END",
+    "echo G-MARK",
+    "ls -1 /d",
+    "echo G-END",
+    "echo H-MARK",
+    "ls /nonexistent",
+    "echo H-END",
+    "echo lsflags-done",
+]
+
+
+def main():
+    with QTest("lsflagstest", serial_mode="socket") as q:
+        s = q.serial_socket()
+        q.boot_and_ready(socket=s)
+        out = b""
+        for line in PREP + CMDS:
+            s.sendall(line.encode() + b"\n")
+            target = out.count(b"AOS> ") + 1
+            end = time.time() + 20
+            while time.time() < end and out.count(b"AOS> ") < target:
+                try:
+                    d = s.recv(4096)
+                    if d:
+                        out += d
+                except socket.timeout:
+                    pass
+        out += q.serial_drain(s, timeout=15, needle=b"lsflags-done")
+        if b"KERNEL PANIC" in out:
+            raise AssertionError("kernel panic:\n" + out[-400:].decode(errors="replace"))
+        otext = out.decode(errors="replace")
+
+        def between(a, b):
+            tail = otext.split(a, 1)[1] if a in otext else ""
+            return tail.split(b, 1)[0] if b in tail else ""
+
+        failures = []
+        a = between("A-MARK", "A-END")
+        if "sub/" not in a or "f.txt" not in a:
+            failures.append("ls /d did not show dir marker and file")
+        if ".hidden" in a:
+            failures.append("ls without -a leaked .hidden")
+        b = between("B-MARK", "B-END")
+        if ".hidden" not in b:
+            failures.append("ls -a did not show .hidden")
+        c = between("C-MARK", "C-END")
+        if "d rwxrwxrwx" not in c or "f.txt" not in c:
+            failures.append("ls -l did not show type+mode+name")
+        d = between("D-MARK", "D-END")
+        if "1.0K" not in d or "1.2K" not in d:
+            # "hello\n" = 6 bytes -> 1.0K after u_hsize rounding; accept either
+            if "f.txt" not in d:
+                failures.append("ls -lh did not humanize the size")
+        e = between("E-MARK", "E-END")
+        if "/d:" not in e or "sub" not in e:
+            failures.append("ls -R did not print the /d header")
+        f = between("F-MARK", "F-END")
+        if f.find("sub") > f.find("f.txt") if "sub" in f and "f.txt" in f else True:
+            failures.append("ls -r did not reverse the name order")
+        g = between("G-MARK", "G-END")
+        if "sub" not in g or "f.txt" not in g:
+            failures.append("ls -1 missing entries")
+        h = between("H-MARK", "H-END")
+        if "No such file or directory" not in h:
+            failures.append("ls /nonexistent did not error on stderr")
+
+        if failures:
+            raise AssertionError("; ".join(failures) + ";\nout:\n" + otext[-800:])
+    print("PASS: ls flags")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+- [ ] **Step 3: Write `scripts/toolflags.py`** (same QTest harness pattern; exercises the new flags)
 
 ```python
 #!/usr/bin/env python3
@@ -1914,27 +2031,27 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-Register both `toolflags` and `sgrcolor` in the Makefile `TESTS` list (next to `fstoolstest`).
+Register `toolflags`, `lsflagstest` and `sgrcolor` in the Makefile `TESTS` list (next to `fstoolstest`).
 
-- [ ] **Step 3: Write `scripts/sgrcolor.py`**
+- [ ] **Step 4: Write `scripts/sgrcolor.py`**
 
 Boot with `-vga none -device virtio-vga,disable-modern=on` (GPU) so `ls` runs in the console; read serial log. Run `ls /bin`, then assert `out` contains `\x1b[38;5;33m` bytes; run `ls /bin > /sgr.txt` then `cat /sgr.txt` and assert the cat segment contains NO `\x1b`. Final assert: the entire serial log tail contains no `\x1b` (filter proof). Register in TESTS.
 
-- [ ] **Step 4: Run the new + updated tests**
+- [ ] **Step 5: Run the new + updated tests**
 
-Run: `python3 scripts/fstoolstest.py && python3 scripts/toolflags.py && python3 scripts/sgrcolor.py`
+Run: `python3 scripts/fstoolstest.py && python3 scripts/lsflagstest.py && python3 scripts/toolflags.py && python3 scripts/sgrcolor.py`
 Expected: all PASS.
 
-- [ ] **Step 5: Run the regression suite**
+- [ ] **Step 6: Run the regression suite**
 
 Run: `make test-fast`
 Expected: PASS (ipctest, linhello, lincat). Then run full `make test` if time permits (it is long).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add scripts/fstoolstest.py scripts/atatest.py scripts/cwdtest.py scripts/toolflags.py scripts/sgrcolor.py Makefile
-git commit -m "test: update fs-tools expectations, add toolflags and sgrcolor suites"
+git add scripts/fstoolstest.py scripts/atatest.py scripts/cwdtest.py scripts/toolflags.py scripts/lsflagstest.py scripts/sgrcolor.py Makefile
+git commit -m "test: update fs-tools expectations, add toolflags/lsflagstest/sgrcolor suites"
 ```
 
 ---
@@ -1971,7 +2088,7 @@ git commit -m "docs: SGR colors, uutils, TERM env, new syscall"
 - §6 tests → Task 15.
 - Файлы/порядок/риски → все задачи выше.
 
-**2. Placeholder scan:** все шаги содержат код; нет TBD/TODO. (Ранее выявленные пропуски — полный код `mv.c`, `procinfo.c`, `fstoolstest.py`, `toolflags.py` — заполнены.)
+**2. Placeholder scan:** все шаги содержат код; нет TBD/TODO. (Ранее выявленные пропуски — полный код `mv.c`, `procinfo.c`, `fstoolstest.py`, `toolflags.py`, `lsflagstest.py` — заполнены.)
 
 **3. Type consistency:** `u_list_dir(dir, ent, max, show_dot)` определён 4-арг уже в Task 1, `ls.c` (Task 13) передаёт `aflag`. `task_spawn`/`program_load`/`elf_load_linux` принимают `env` (Task 5), вызовы с `env`/`0` — в Tasks 6, 7 и `kernel/aos_gui.c`/`syscall.c`/`kernel.c`. `bg_spawn(line, pid, term_off)` (Task 6). `aos_spawn_env(path,args,sink,env,redirs)` = syscall 524: **redirs в `r->esi`, env в `r->edi`** (совпадает с регистром redirs в существующем `AOS_SPAWN_FDS`, `aos_gui.c:244`). `vga` цвета через `cur_fg_rgb()`/`cur_bg_rgb()`; `D`/`K`/`J` не сломаны (SGR-параметры накапливаются в `ansi_params` параллельно с сохранением поведения `D`). `term.c`: `esc_params`/`esc_np` добавлены параллельно к `esc_n`/`esc_r`, существующие `H`/`D`/`C` не затронуты.
 
