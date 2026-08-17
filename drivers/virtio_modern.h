@@ -24,6 +24,7 @@ struct vm_cap {
 
 struct virtio_modern {
     unsigned char bus, dev, func;
+    unsigned char irq;                 // PCI interrupt line (from config)
     volatile unsigned char *common;    // common cfg mmio base
     volatile unsigned char *notify;    // notify base
     unsigned int notify_multiplier;

@@ -154,7 +154,7 @@ disk.img:
 	truncate -s 4M $@
 
 run: aos.iso disk.img
-	qemu-system-i386 -m 256 -rtc base=localtime -display gtk,grab-on-hover=on -cdrom $< \
+	qemu-system-i386 -m 256 -rtc base=localtime -display gtk,grab-on-hover=on,show-cursor=on -cdrom $< \
 	  -vga none -device virtio-vga,disable-modern=on \
 	  -drive file=disk.img,format=raw,if=none,id=d0 \
 	  -device virtio-blk-pci,disable-modern=on,drive=d0 \
@@ -171,7 +171,7 @@ debug: aos.iso
 # Headless regression suite: each script boots aos.iso under QEMU, drives the
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
 LINUX_TESTS = linhello lincat lindirtest pipetest
-TESTS = ipctest manytest notepadtest sleeptest rngtest blktest atatest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest $(LINUX_TESTS) vguitest
+TESTS = ipctest manytest notepadtest sleeptest rngtest blktest atatest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest $(LINUX_TESTS) vguitest powertest
 
 # Fast subset for CI: quick boots, no extra virtio devices.
 FAST_TESTS = ipctest linhello lincat

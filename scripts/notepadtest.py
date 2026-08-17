@@ -30,7 +30,10 @@ MENU_BG = (32, 40, 58)            # COL_MENU_BG  0x20283A
 CONTENT_BG = (16, 16, 16)         # COL_BG      0x101010
 GREEN = (0, 255, 0)
 
-NOTEPAD_X, NOTEPAD_Y = 20, 20     # first window slot
+# The WM top panel (PANEL_H=26) shifts the desktop icon grid and the first
+# window slot down by (PANEL_H + 8 - 24) = 10 px.
+GRID_Y = 34                        # GRID_Y0 = PANEL_H + 8
+NOTEPAD_X, NOTEPAD_Y = 20, GRID_Y  # first window slot (below the panel)
 STATUS_Y = NOTEPAD_Y + 1 + 18 + 25 * 16   # status bar row (25) screen y
 
 
@@ -41,9 +44,9 @@ def assert_pixel(q, path, x, y, want, what):
 def main():
     with QTest("notepad", mouse_state=MOUSE_STATE, ppm=PPM, boot_wait=6,
                extra_args=GPU_ARGS) as q:
-        # 1. demo.ico green disc on the desktop (icon 0 at grid (16,24)).
+        # 1. demo.ico green disc on the desktop (icon 0 at grid (16,34)).
         q.screenshot("/tmp/notepad-0-ico.ppm")
-        assert_pixel(q, "/tmp/notepad-0-ico.ppm", 31, 39, GREEN,
+        assert_pixel(q, "/tmp/notepad-0-ico.ppm", 31, 49, GREEN,
                      "demo.ico green disc")
 
         # 2. Right-click desktop opens the context menu. The cursor sits at
@@ -65,14 +68,14 @@ def main():
         q.key("ret")
         time.sleep(1)
         q.screenshot("/tmp/notepad-3-icon.ppm")
-        if count_bright("/tmp/notepad-2-dialog.ppm", 68, 24, 99, 55) != 0:
+        if count_bright("/tmp/notepad-2-dialog.ppm", 68, 34, 99, 65) != 0:
             raise AssertionError("note.txt icon area was bright before creation")
-        if count_bright("/tmp/notepad-3-icon.ppm", 68, 24, 99, 55) == 0:
+        if count_bright("/tmp/notepad-3-icon.ppm", 68, 34, 99, 65) == 0:
             raise AssertionError("note.txt icon did not appear on the desktop")
         print("  ok: note.txt icon appeared")
 
         # 4. Open it in notepad, type text, save with Ctrl+S.
-        q.mouse_click(84, 40)
+        q.mouse_click(84, 50)
         time.sleep(1)
         q.screenshot("/tmp/notepad-4-window.ppm")
         assert_pixel(q, "/tmp/notepad-4-window.ppm", 300, 100, CONTENT_BG,
@@ -97,17 +100,17 @@ def main():
         print("  ok: notepad status bar updated after Ctrl+S")
 
         # 5. Close notepad, open term, cat the file back.
-        q.mouse_click(650, 30)                       # close button of notepad
+        q.mouse_click(650, 44)                       # close button of notepad
         time.sleep(0.5)
         q.dock_spawn_term()
         q.screenshot("/tmp/notepad-6-term.ppm")
-        before = count_bright("/tmp/notepad-6-term.ppm", 21, 39, 660, 70)
+        before = count_bright("/tmp/notepad-6-term.ppm", 21, 53, 660, 84)
         q.type_text("cat note.txt\n")
         after = before
         for _ in range(40):
             time.sleep(0.25)
             q.screenshot("/tmp/notepad-7-cat.ppm")
-            after = count_bright("/tmp/notepad-7-cat.ppm", 21, 39, 660, 70)
+            after = count_bright("/tmp/notepad-7-cat.ppm", 21, 53, 660, 84)
             if after - before >= 200:
                 break
         if after - before < 200:

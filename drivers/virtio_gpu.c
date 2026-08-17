@@ -144,6 +144,36 @@ static int cursor_initialized;
 static unsigned char cursor_pix[VGPU_CURSOR_SIZE * VGPU_CURSOR_SIZE * 4]
     __attribute__((aligned(16)));
 
+// X11 left_ptr arrow, 24x24, tip at (0,0), MSB-first bit rows.
+#define CUR_ARROW_W 24
+#define CUR_ARROW_H 24
+static const unsigned char cur_arrow_bits[CUR_ARROW_H * 3] = {
+    0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0xc0, 0x00, 0x00, 0xe0, 0x00, 0x00,
+    0xf0, 0x00, 0x00, 0xf8, 0x00, 0x00, 0xfc, 0x00, 0x00, 0xfe, 0x00, 0x00,
+    0xff, 0x00, 0x00, 0xff, 0x80, 0x00, 0xff, 0xc0, 0x00, 0xff, 0xe0, 0x00,
+    0xff, 0xf0, 0x00, 0xff, 0xf8, 0x00, 0xff, 0xfc, 0x00, 0xff, 0xfe, 0x00,
+    0xff, 0xff, 0x00, 0xff, 0xff, 0x80, 0xff, 0xff, 0xc0, 0x7f, 0xff, 0xe0,
+    0x3f, 0xff, 0xe0, 0x1f, 0xff, 0xe0, 0x0f, 0xfe, 0x00, 0x07, 0xf8, 0x00,
+};
+
+static int cur_arrow_px(int x, int y) {
+    if (x < 0 || y < 0 || x >= CUR_ARROW_W || y >= CUR_ARROW_H) return 0;
+    return (cur_arrow_bits[y * 3 + x / 8] >> (7 - (x & 7))) & 1;
+}
+
+static int cur_in_arrow(int x, int y) {
+    return cur_arrow_px(x, y);
+}
+
+static int cur_arrow_edge(int x, int y) {
+    if (cur_arrow_px(x, y)) return 0;
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++)
+            if ((dx || dy) && cur_arrow_px(x + dx, y + dy))
+                return 1;
+    return 0;
+}
+
 static void vgu_cursor_init(void) {
     // resource 3: 64x64 B8G8R8X8, filled with a two-color arrow + transparent border
     if (vgu_create(3, VGPU_CURSOR_SIZE, VGPU_CURSOR_SIZE) != 0) return;
@@ -162,16 +192,21 @@ static void vgu_cursor_init(void) {
     memcpy(cmd_buf + sizeof(struct vgpu_hdr) + 8, ents, 4 * 16);
     if (vgu_send(0, sizeof(struct vgpu_hdr) + 8 + 4 * 16) == 0 &&
         ((struct vgpu_hdr *)resp_buf)->type == VGPU_RESP_OK_NODATA) {
-        // fill cursor pixels (white body + accent border, transparent elsewhere)
+        // fill cursor pixels (white body + black outline, transparent elsewhere)
         memset(cursor_pix, 0, sizeof(cursor_pix));
         for (int yy = 0; yy < VGPU_CURSOR_SIZE; yy++)
             for (int xx = 0; xx < VGPU_CURSOR_SIZE; xx++) {
-                // simple arrow outline: draw later — placeholder white box core
-                if (xx >= 8 && xx < 56 && yy >= 8 && yy < 56) {
+                if (cur_in_arrow(xx, yy)) {
                     unsigned int off = (yy * VGPU_CURSOR_SIZE + xx) * 4;
                     cursor_pix[off + 0] = 0xFF;   // B
                     cursor_pix[off + 1] = 0xFF;   // G
                     cursor_pix[off + 2] = 0xFF;   // R (white)
+                    cursor_pix[off + 3] = 0xFF;   // X
+                } else if (cur_arrow_edge(xx, yy)) {
+                    unsigned int off = (yy * VGPU_CURSOR_SIZE + xx) * 4;
+                    cursor_pix[off + 0] = 0x00;   // B
+                    cursor_pix[off + 1] = 0x00;   // G
+                    cursor_pix[off + 2] = 0x00;   // R (black)
                     cursor_pix[off + 3] = 0xFF;   // X
                 }
             }
@@ -207,7 +242,7 @@ void vgu_cursor(int x, int y, int visible) {
 
 int vgu_init(void) {
     if (vm_probe(&vgpu, 0x1050) != 0) return -1;
-    irq_install_handler(11, vgu_irq);
+    irq_install_handler(vgpu.irq, vgu_irq);
     if (vm_dev_init(&vgpu, VM_F_VERSION_1) != 0) return -1;
     if (vm_setup_queue(&vgpu, 0, 256) != 0) return -1;
     if (vm_setup_queue(&vgpu, 1, 64) != 0) return -1;

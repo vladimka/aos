@@ -3,7 +3,8 @@
 
 Boot A (no disk, default ramdisk):
   1. serial log has the ASCII AOS logo and `config: created sys/config.cfg`,
-  2. desktop gradient top pixel (700,0) is still (26,32,48) = 0x1A2030,
+  2. the WM top panel (0x232C40) covers (700,0) and the desktop gradient one
+     row below it is still the default wp_top 0x1A2030,
   3. no `sys/` icon is shown on the desktop (grid slot 1 is empty),
   4. a term spawned from the dock renders `cat sys/config.cfg`.
 
@@ -19,7 +20,11 @@ import time
 from qtest import QTest, count_bright
 
 IMG = "/tmp/aos-config-disk.img"
-DESKTOP = (26, 32, 48)
+# The WM draws a top panel (PANEL_H=26, col_dock_bg 0x232C40) over the
+# gradient's top rows, so the wallpaper assertions move one row below it.
+PANEL_BG = (35, 44, 64)                 # 0x232C40
+DESKTOP_TOP = (25, 31, 47)              # gradient at y=26, default wp_top
+WALL_TOP = (15, 31, 47)                 # gradient at y=26, wp_top=0x102030
 LOGO_LINE = "AAA    OOO    SSS"
 CFG_CREATED = "config: created sys/config.cfg"
 CFG_LOADED = "config: loaded sys/config.cfg"
@@ -30,7 +35,6 @@ TXT_Y0, TXT_Y1 = 39, 39 + 26 * 16
 TXT_THRESHOLD = 300
 
 ACCENT = (255, 0, 255)
-WALL = (16, 32, 48)
 
 
 def build_sfs(entries, block_count=8192):
@@ -138,10 +142,11 @@ def main():
         print("  ok: boot logo + config: created")
 
         q.screenshot("/tmp/aos-config-before.ppm")
-        if count_bright("/tmp/aos-config-before.ppm", 68, 24, 99, 55) != 0:
+        if count_bright("/tmp/aos-config-before.ppm", 68, 34, 99, 65) != 0:
             raise AssertionError("sys/config.cfg shown as a desktop icon")
-        q.assert_pixel(700, 0, DESKTOP, "gradient top == 0x1A2030")
-        print("  ok: no sys/ icon; gradient top color")
+        q.assert_pixel(700, 0, PANEL_BG, "top panel == 0x232C40")
+        q.assert_pixel(700, 26, DESKTOP_TOP, "gradient below panel == wp_top")
+        print("  ok: no sys/ icon; top panel + gradient below")
 
         q.dock_spawn_term()
         before = q.screenshot("/tmp/aos-config-before.ppm")
@@ -182,7 +187,8 @@ def main():
         print("  ok: disk-seeded timezone +180 applied")
         time.sleep(2)
         bb = q.screenshot("/tmp/aos-config-bootb.ppm")
-        q.assert_pixel(700, 0, WALL, "wallpaper_top from disk config", path=bb)
+        q.assert_pixel(700, 0, PANEL_BG, "panel unaffected by wallpaper_top", path=bb)
+        q.assert_pixel(700, 26, WALL_TOP, "gradient below panel == disk wp_top", path=bb)
         q.assert_pixel(480, 708, ACCENT, "dock accent line == theme_accent", path=bb)
         print("  ok: disk-seeded wallpaper_top + accent applied")
 

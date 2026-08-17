@@ -32,6 +32,7 @@ int vm_probe(struct virtio_modern *m, unsigned int device_id) {
         if (list[i].vendor == 0x1AF4 && list[i].device == device_id) { idx = i; break; }
     if (idx < 0) return -1;
     m->bus = list[idx].bus; m->dev = list[idx].dev; m->func = list[idx].func;
+    m->irq = list[idx].irq;
 
     struct vm_cap cap;
     unsigned int common_bar = 0xFF, notify_bar = 0xFF, isr_bar = 0xFF;

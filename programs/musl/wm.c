@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/reboot.h>
 #include <unistd.h>
 #include "aosabi.h"
 #include "ico.h"
@@ -35,6 +36,12 @@ static unsigned int col_accent = 0x5B93D8;
 #define DOCK_PAD_Y   10
 #define DOCK_ICON    32
 #define DOCK_STRIDE  40
+
+// ---- top panel -----------------------------------------------------------
+
+#define PANEL_H      26
+#define PANEL_BTN    24
+#define PMENU_W      140
 
 static unsigned int col_icon_fg = 0xFFFFFF;
 
@@ -276,6 +283,8 @@ static int nz;
 
 static struct win wins[MAX_WINDOWS];
 static unsigned int fb_addr, fb_w, fb_h, fb_pitch;
+static unsigned int fb_front;   // buffer currently being scanned out
+static int back_dirty;          // partial composites started on this back buffer
 static unsigned int *scratch;   // slab 0: scratch for title-bar text rendering
 static int next_slab = 1;
 static unsigned int focus_pid;
@@ -285,23 +294,42 @@ static int has_cur, cur_x, cur_y;
 static unsigned int snap[2 * CUR_R][2 * CUR_R];
 static int clip_x0, clip_y0, clip_x1, clip_y1;
 
-// ---- desktop context menu + create dialog state (used by composite_rect) ----
+// ---- popup menus + create dialog state (used by composite_rect) -----------
+
 #define MENU_W      176
 #define MENU_ITEM_H 22
-#define MENU_N       2
-#define MENU_BORDER  1
+#define MENU_BORDER 1
 
 static unsigned int col_menu_bg = 0x20283A;
 static unsigned int col_menu_fg = 0xFFFFFF;
 
-static int menu_open, menu_x, menu_y;
-static int menu_draw_x, menu_draw_y;
+struct popmenu {
+    int open;
+    int x, y;           // requested position
+    int draw_x, draw_y; // clamped position
+    int n;
+    int w;
+    const char *const *items;
+    int last_hover;
+};
+
 static int g_mx, g_my;              // last mouse position (for hover)
-static int last_hover = -1;         // last hovered menu item (-1 = none)
-static int dlg_open, dlg_mode;         // mode 0 = file, 1 = folder
+static int dlg_open, dlg_mode;      // mode 0 = file, 1 = folder
 static char dlg_name[40];
 static int dlg_len;
 static int dlg_draw_x, dlg_draw_y;
+
+static const char *const ctx_items[2] = {
+    "\xd0\x9d\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb9 \xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb",   // Новый файл
+    "\xd0\x9d\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x8f \xd0\xbf\xd0\xb0\xd0\xbf\xd0\xba\xd0\xb0", // Новая папка
+};
+static const char *const pwr_items[2] = {
+    "\xd0\x92\xd1\x8b\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb8\xd1\x82\xd1\x8c",   // Выключить
+    "\xd0\x9f\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7\xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xb7\xd0\xb8\xd1\x82\xd1\x8c", // Перезагрузить
+};
+
+static struct popmenu ctx_menu = {0, 0, 0, 0, 0, 2, MENU_W, ctx_items, -1};
+static struct popmenu pwr_menu = {0, 0, 0, 0, 0, 2, PMENU_W, pwr_items, -1};
 
 // ---- small helpers -------------------------------------------------------
 
@@ -311,6 +339,15 @@ static void mcpy(unsigned int *d, const unsigned int *s, unsigned int n) {
         d += 4; s += 4; n -= 4;
     }
     while (n--) *d++ = *s++;
+}
+
+// Full-buffer copy for the GPU front->back restore before partial redraws.
+// rep movsl: QEMU TCG runs it several times faster than a scalar loop.
+static void fb_copy_full(unsigned int src, unsigned int dst) {
+    unsigned int n = fb_h * (fb_pitch >> 2);
+    __asm__ __volatile__("cld; rep movsl"
+                         : "+S"(src), "+D"(dst), "+c"(n)
+                         : : "memory");
 }
 
 static void int2str(char *buf, int v) {
@@ -416,9 +453,11 @@ static int dock_width(void);
 static int app_type_of(unsigned int pid);
 static void raise_pid(unsigned int pid);
 static void draw_desktop_icons(void);
-static int menu_item_at(int mx, int my);
-static void draw_menu(int mx, int my);
+static int menu_item_at(struct popmenu *m, int mx, int my);
+static void draw_menu(struct popmenu *m, int mx, int my);
 static void draw_dialog(void);
+static void draw_panel(void);
+static int pwr_btn_at(int mx, int my);
 
 static void draw_title(const struct win *wn) {
     unsigned int tcol = (wn->pid == focus_pid) ? col_title_focus : col_title;
@@ -484,6 +523,15 @@ static void composite_rect(int x0, int y0, int x1, int y1) {
     if (x1 > (int)fb_w) x1 = (int)fb_w;
     if (y1 > (int)fb_h) y1 = (int)fb_h;
     if (x0 >= x1 || y0 >= y1) return;
+    // GPU mode: the back buffer is a stale frame from two flips ago, so a
+    // partial redraw leaves ghosts of a moved window's previous position.
+    // Restore the back from the visible front first (once per fresh back,
+    // unless this redraw already covers the whole screen).
+    if (gpu_mode && fb_front && !back_dirty &&
+        !(x0 == 0 && y0 == 0 && x1 == (int)fb_w && y1 == (int)fb_h)) {
+        fb_copy_full(fb_front, fb_addr);
+        back_dirty = 1;
+    }
     clip_x0 = x0; clip_y0 = y0; clip_x1 = x1; clip_y1 = y1;
     draw_desktop_gradient(x0, y0, x1, y1);
     draw_desktop_icons();
@@ -503,13 +551,21 @@ static void composite_rect(int x0, int y0, int x1, int y1) {
     clip_x0 = 0; clip_y0 = 0;
     clip_x1 = (int)fb_w; clip_y1 = (int)fb_h;
     draw_dock();
-    draw_menu(g_mx, g_my);
+    draw_panel();
+    draw_menu(&ctx_menu, g_mx, g_my);
+    draw_menu(&pwr_menu, g_mx, g_my);
     draw_dialog();
     if (cursor_overlaps(dock_x0(), dock_y0(), dock_width(), DOCK_H))
         has_cur = 0;
-    if (menu_open &&
-        cursor_overlaps(menu_draw_x, menu_draw_y, MENU_W,
-                        MENU_N * MENU_ITEM_H + 2 * MENU_BORDER))
+    if (cursor_overlaps(0, 0, (int)fb_w, PANEL_H))
+        has_cur = 0;
+    if (ctx_menu.open &&
+        cursor_overlaps(ctx_menu.draw_x, ctx_menu.draw_y, ctx_menu.w,
+                        ctx_menu.n * MENU_ITEM_H + 2 * MENU_BORDER))
+        has_cur = 0;
+    if (pwr_menu.open &&
+        cursor_overlaps(pwr_menu.draw_x, pwr_menu.draw_y, pwr_menu.w,
+                        pwr_menu.n * MENU_ITEM_H + 2 * MENU_BORDER))
         has_cur = 0;
     if (dlg_open && cursor_overlaps(dlg_draw_x, dlg_draw_y, 360, 88))
         has_cur = 0;
@@ -615,7 +671,7 @@ static int dock_hit(int mx, int my) {
 #define ICON_W    32
 #define ICON_H    32
 #define GRID_X0   16
-#define GRID_Y0   24
+#define GRID_Y0   (PANEL_H + 8)
 #define GRID_CELL 52
 #define LABEL_H   16
 
@@ -781,27 +837,83 @@ static void open_file(int i) {
     aos_spawn("bin/notepad", files[i].name, (unsigned int)getpid());
 }
 
-// ---- desktop context menu + create dialog ---------------------------------
+// ---- top panel (clock + power button) -------------------------------------
 
-static const char menu_items[MENU_N][24] = {
-    "\xd0\x9d\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb9 \xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb",   // Новый файл
-    "\xd0\x9d\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x8f \xd0\xbf\xd0\xb0\xd0\xbf\xd0\xba\xd0\xb0", // Новая папка
+// 16x16 power symbol: 'X' = white ring, 'O' = accent stroke/line.
+static const char icon_power[16][17] = {
+    "................",
+    ".......OO.......",
+    ".......OO.......",
+    ".......OO.......",
+    "......OOOO......",
+    ".....X....X.....",
+    "....XX....XX....",
+    "...XX......XX...",
+    "...XX......XX...",
+    "..XX........XX..",
+    "..XX........XX..",
+    "..XX........XX..",
+    "..XX........XX..",
+    "...XX......XX...",
+    "....XX....XX....",
+    ".....XXXXXX.....",
 };
 
-static void draw_menu(int mx, int my) {
-    if (!menu_open) return;
-    int x = menu_x, y = menu_y;
-    int mw = MENU_W;
-    int mh = MENU_N * MENU_ITEM_H + 2 * MENU_BORDER;
+static char p_date[16];
+static char p_time[16];
+static int pwr_hover;
+static unsigned int p_last_sec = 0xFFFFFFFFu;
+
+static int pwr_btn_x0(void) { return (int)fb_w - 8 - PANEL_BTN; }
+static int pwr_btn_y0(void) { return (PANEL_H - PANEL_BTN) / 2; }
+
+static int pwr_btn_at(int mx, int my) {
+    int bx = pwr_btn_x0(), by = pwr_btn_y0();
+    return mx >= bx && mx < bx + PANEL_BTN && my >= by && my < by + PANEL_BTN;
+}
+
+static void draw_power_icon(int x, int y) {
+    for (int r = 0; r < 16; r++)
+        for (int c = 0; c < 16; c++) {
+            char ch = icon_power[r][c];
+            if (ch == 'X') fb_put(x + c, y + r, col_icon_fg);
+            else if (ch == 'O') fb_put(x + c, y + r, col_accent);
+        }
+}
+
+static void draw_panel(void) {
+    fb_fill(0, 0, (int)fb_w, PANEL_H, col_dock_bg);
+    fb_hline(0, PANEL_H - 1, (int)fb_w, col_accent);
+    fb_hline(0, PANEL_H - 2, (int)fb_w, lighten(col_dock_bg, 2));
+    int date_w = 10 * 8, time_w = 8 * 8, gap = 8;
+    int x0 = ((int)fb_w - (date_w + gap + time_w)) / 2;
+    int y = (PANEL_H - 16) / 2;
+    fb_text(x0, y, p_date, lighten(col_dock_bg, 8), col_dock_bg);
+    fb_text(x0 + date_w + gap, y, p_time, col_icon_fg, col_dock_bg);
+    int bx = pwr_btn_x0(), by = pwr_btn_y0();
+    unsigned int bcol = pwr_hover ? lighten(col_dock_bg, 6) : col_dock_bg;
+    fb_round_fill(bx, by, PANEL_BTN, PANEL_BTN, 3, bcol);
+    fb_round_fill(bx + 1, by + 1, PANEL_BTN - 2, PANEL_BTN - 2, 2,
+                  lighten(bcol, 1));
+    draw_power_icon(bx + 4, by + 4);
+}
+
+// ---- desktop context menu + create dialog ---------------------------------
+
+static void draw_menu(struct popmenu *m, int mx, int my) {
+    if (!m->open) return;
+    int x = m->x, y = m->y;
+    int mw = m->w;
+    int mh = m->n * MENU_ITEM_H + 2 * MENU_BORDER;
     if (x + mw > (int)fb_w) x = (int)fb_w - mw;
     if (y + mh > (int)fb_h) y = (int)fb_h - mh;
-    menu_draw_x = x;
-    menu_draw_y = y;
+    m->draw_x = x;
+    m->draw_y = y;
     fb_round_fill(x, y, mw, mh, 3, col_accent);
     fb_round_fill(x + MENU_BORDER, y + MENU_BORDER, mw - 2 * MENU_BORDER,
                   mh - 2 * MENU_BORDER, 2, col_menu_bg);
-    int hi = menu_item_at(mx, my);
-    for (int i = 0; i < MENU_N; i++) {
+    int hi = menu_item_at(m, mx, my);
+    for (int i = 0; i < m->n; i++) {
         int iy = y + MENU_BORDER + i * MENU_ITEM_H;
         unsigned int bg = col_menu_bg;
         if (i == hi) {
@@ -809,17 +921,17 @@ static void draw_menu(int mx, int my) {
                     MENU_ITEM_H, col_accent);
             bg = col_accent;
         }
-        fb_text(x + 10, iy + 3, menu_items[i], col_menu_fg, bg);
+        fb_text(x + 10, iy + 3, m->items[i], col_menu_fg, bg);
     }
 }
 
-static int menu_item_at(int mx, int my) {
-    if (!menu_open) return -1;
-    int x = menu_draw_x, y = menu_draw_y;
-    if (mx < x || mx >= x + MENU_W) return -1;
-    if (my < y || my >= y + MENU_N * MENU_ITEM_H + 2 * MENU_BORDER) return -1;
+static int menu_item_at(struct popmenu *m, int mx, int my) {
+    if (!m->open) return -1;
+    int x = m->draw_x, y = m->draw_y;
+    if (mx < x || mx >= x + m->w) return -1;
+    if (my < y || my >= y + m->n * MENU_ITEM_H + 2 * MENU_BORDER) return -1;
     int i = (my - (y + MENU_BORDER)) / MENU_ITEM_H;
-    if (i < 0 || i >= MENU_N) return -1;
+    if (i < 0 || i >= m->n) return -1;
     return i;
 }
 
@@ -909,11 +1021,13 @@ static void update_cursor(int mx, int my) {
 // re-fetch the new back address before the next frame is drawn.
 static void gpu_present(void) {
     if (!gpu_mode) return;
+    fb_front = fb_addr;          // this buffer becomes the scanout
     aos_gpu_flip();
     unsigned int a, w, h, p, act;
     aos_fb_info(&a, &w, &h, &p, &act);
     fb_addr = a;
     fb_pitch = p;
+    back_dirty = 0;              // fresh back holds the previous visible frame
 }
 
 static int cursor_overlaps(int x, int y, int w, int h) {
@@ -936,7 +1050,7 @@ static int alloc_window(unsigned int pid, int w, int h, int *out_wid, int *out_s
         wins[i].ch = h;
         wins[i].app = app_type_of(pid);
         wins[i].x = 20 + i * 24;
-        wins[i].y = 20 + i * 28;
+        wins[i].y = PANEL_H + 8 + i * 28;
         *out_wid = i;
         *out_slab = wins[i].slab;
         zorder[nz++] = i;
@@ -1046,13 +1160,44 @@ int main(void) {
         aos_mouse(&mx, &my, &mb, &wheel);
         g_mx = mx;
         g_my = my;
-        if (menu_open && (mx != last_mx || my != last_my)) {
-            int hi = menu_item_at(mx, my);
-            if (hi != last_hover) { last_hover = hi; redraw = 1; }
+        if (ctx_menu.open && (mx != last_mx || my != last_my)) {
+            int hi = menu_item_at(&ctx_menu, mx, my);
+            if (hi != ctx_menu.last_hover) { ctx_menu.last_hover = hi; redraw = 1; }
         }
+        if (pwr_menu.open && (mx != last_mx || my != last_my)) {
+            int hi = menu_item_at(&pwr_menu, mx, my);
+            if (hi != pwr_menu.last_hover) { pwr_menu.last_hover = hi; redraw = 1; }
+        }
+        int over_btn = pwr_btn_at(mx, my);
+        if (over_btn != pwr_hover) { pwr_hover = over_btn; redraw = 1; }
 
         refresh_cnt++;
         if (files_dirty || (refresh_cnt & 127) == 0) refresh_files();
+
+        // Refresh the panel clock once per second.
+        unsigned int tk = aos_get_tick();
+        if (tk / 1000 != p_last_sec) {
+            p_last_sec = tk / 1000;
+            struct aos_time t;
+            if (aos_get_rtc(&t) == 0) {
+                p_time[0] = '0' + t.hour / 10;  p_time[1] = '0' + t.hour % 10;
+                p_time[2] = ':';
+                p_time[3] = '0' + t.minute / 10; p_time[4] = '0' + t.minute % 10;
+                p_time[5] = ':';
+                p_time[6] = '0' + t.second / 10; p_time[7] = '0' + t.second % 10;
+                p_time[8] = 0;
+                p_date[0] = '0' + t.day / 10;    p_date[1] = '0' + t.day % 10;
+                p_date[2] = '.';
+                p_date[3] = '0' + t.month / 10;  p_date[4] = '0' + t.month % 10;
+                p_date[5] = '.';
+                p_date[6] = '0' + (t.year / 1000) % 10;
+                p_date[7] = '0' + (t.year / 100) % 10;
+                p_date[8] = '0' + (t.year / 10) % 10;
+                p_date[9] = '0' + t.year % 10;
+                p_date[10] = 0;
+            }
+            redraw = 1;
+        }
 
         struct aos_msg m;
         while (aos_recv(&m) == 0) {
@@ -1123,10 +1268,39 @@ int main(void) {
 
         int moved = mx != last_mx || my != last_my || mb != last_mb;
         if (moved && (mb & 1) && !(last_mb & 1)) {
-            if (menu_open) {
-                int it = menu_item_at(mx, my);
-                menu_open = 0;
-                last_hover = -1;
+            if (pwr_btn_at(mx, my)) {
+                if (pwr_menu.open) {
+                    pwr_menu.open = 0;
+                    pwr_menu.last_hover = -1;
+                } else {
+                    pwr_menu.x = (int)fb_w - 8 - pwr_menu.w;
+                    pwr_menu.y = PANEL_H + 2;
+                    pwr_menu.open = 1;
+                    pwr_menu.last_hover = -1;
+                    ctx_menu.open = 0;
+                    ctx_menu.last_hover = -1;
+                }
+                redraw = 1;
+            } else if (pwr_menu.open) {
+                int it = menu_item_at(&pwr_menu, mx, my);
+                pwr_menu.open = 0;
+                pwr_menu.last_hover = -1;
+                redraw = 1;
+                if (it >= 0) {
+                    if (it == 0) {
+                        printf("wm: shutdown\n");
+                        fflush(stdout);
+                        reboot(RB_POWER_OFF);
+                    } else {
+                        printf("wm: reboot\n");
+                        fflush(stdout);
+                        reboot(RB_AUTOBOOT);
+                    }
+                }
+            } else if (ctx_menu.open) {
+                int it = menu_item_at(&ctx_menu, mx, my);
+                ctx_menu.open = 0;
+                ctx_menu.last_hover = -1;
                 redraw = 1;
                 if (it >= 0) {
                     dlg_open = 1;
@@ -1162,14 +1336,20 @@ int main(void) {
         if (moved && (mb & 2) && !(last_mb & 2)) {
             if (dlg_open) {
                 // keep the dialog open, ignore right clicks
-            } else if (menu_open) {
-                menu_open = 0;
+            } else if (pwr_menu.open) {
+                pwr_menu.open = 0;
+                pwr_menu.last_hover = -1;
                 redraw = 1;
-            } else if (!dock_hit(mx, my) && win_index_at(mx, my) < 0) {
-                menu_x = mx;
-                menu_y = my;
-                menu_open = 1;
-                last_hover = -1;
+            } else if (ctx_menu.open) {
+                ctx_menu.open = 0;
+                ctx_menu.last_hover = -1;
+                redraw = 1;
+            } else if (!dock_hit(mx, my) && win_index_at(mx, my) < 0 &&
+                       !pwr_btn_at(mx, my)) {
+                ctx_menu.x = mx;
+                ctx_menu.y = my;
+                ctx_menu.open = 1;
+                ctx_menu.last_hover = -1;
                 redraw = 1;
             }
         }
@@ -1181,7 +1361,7 @@ int main(void) {
             int nx = mx - drag_dx;
             int ny = my - drag_dy;
             if (nx < 0) nx = 0;
-            if (ny < 0) ny = 0;
+            if (ny < PANEL_H) ny = PANEL_H;
             if (nx > (int)fb_w - (wn->cw + 2 * BORDER))
                 nx = (int)fb_w - (wn->cw + 2 * BORDER);
             if (ny > (int)fb_h - (wn->ch + TITLE_H + 2 * BORDER))
