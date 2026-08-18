@@ -13,9 +13,29 @@ void serial_init(void) {
     outb(PORT + 4, 0x0B);
 }
 
+static int ser_esc = 0;   // 0 idle, 1 = saw ESC, 2 = in CSI
+static int ser_csi_n = 0; // bytes seen in CSI (cap to avoid runaway skip)
+
 void serial_putchar(char c) {
-    while (!(inb(PORT + 5) & 0x20));
-    outb(PORT, c);
+    if (ser_esc == 0) {
+        if (c == 0x1b) { ser_esc = 1; return; }
+        while (!(inb(PORT + 5) & 0x20));
+        outb(PORT, c);
+        return;
+    }
+    if (ser_esc == 1) {
+        if (c == '[') { ser_esc = 2; ser_csi_n = 0; }
+        else ser_esc = 0;                 // lone ESC: drop it (wasn't followed by [)
+        return;
+    }
+    /* in CSI: digits, ;, ? are skipped; a final alpha byte ends the sequence.
+       A >64-byte "sequence" is treated as garbage and dropped too. */
+    ser_csi_n++;
+    if (ser_csi_n > 64 || !(c >= 0x20 && c < 0x7F)) { ser_esc = 0; return; }
+    if (c >= '0' && c <= '9') return;
+    if (c == ';' || c == '?') return;
+    ser_esc = 0;                           // final byte consumed
+    return;
 }
 
 void serial_print(const char *str) {
