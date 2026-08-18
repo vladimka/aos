@@ -145,7 +145,7 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     // It takes over the screen and registers as the event consumer; the idle
     // task keeps running the main loop below (mouse flush + hlt).
     unsigned int wm_pid;
-    int wm_rc = task_spawn("bin/wm", "", 0, &wm_pid);
+    int wm_rc = task_spawn("bin/wm", "", 0, &wm_pid, 0);
     if (wm_rc == 0) {
         printf("Window manager spawned (pid %u).\n", wm_pid);
     } else {

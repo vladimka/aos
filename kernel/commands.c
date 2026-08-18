@@ -211,7 +211,7 @@ static int try_exec(const char *full_path, const char *arg, int trace) {
     serial_print_dec((unsigned int)trace);
     serial_print("\n");
     if (trace) me->trace_on = 1;
-    void (*entry)(void) = program_load(full_path, arg);
+    void (*entry)(void) = program_load(full_path, arg, 0);
     if (entry) {
         if (task_current_abi() == ABI_LINUX)
             user_program_start_linux(entry, task_current_lctx()->stack_sp);
@@ -435,7 +435,7 @@ static void exec_pipe(const char *line) {
     // right after spawn (the scheduler has not run the child yet).
     for (int i = 0; i < n; i++) {
         unsigned int pid;
-        if (task_spawn(full[i], args[i], 0, &pid) != 0) {
+        if (task_spawn(full[i], args[i], 0, &pid, 0) != 0) {
             for (int j = 0; j < n - 1; j++) { vfs_close_fd(rd[j]); vfs_close_fd(wr[j]); }
             terminal_print("\npipe: spawn failed");
             shell_set_status(1);
@@ -643,7 +643,7 @@ static int bg_spawn(const char *line, unsigned int *out_pid) {
     }
 
     unsigned int pid;
-    if (task_spawn(full_path, arg, 0, &pid) != 0) {
+    if (task_spawn(full_path, arg, 0, &pid, 0) != 0) {
         terminal_print("\nbg: spawn failed");
         shell_set_status(1);
         return 0;

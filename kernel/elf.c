@@ -108,8 +108,8 @@ static unsigned int arglen(const char *s) {
 }
 
 static void stack_build(struct linux_ctx *lc, const char *prog,
-                        const char *args, struct elf_header *ehdr,
-                        unsigned int phdr_vaddr) {
+                        const char *args, const char *env,
+                        struct elf_header *ehdr, unsigned int phdr_vaddr) {
     const char *argv[MAX_ARGC];
     int argc = 0;
     argv[argc++] = prog;
@@ -121,6 +121,20 @@ static void stack_build(struct linux_ctx *lc, const char *prog,
         while (*p && *p != ' ') p++;
     }
 
+    // envp: parse "NAME=VAL\0NAME=VAL\0\0" (double-NUL) or NULL
+    const char *env_strs[16];
+    int nenv = 0;
+    if (env) {
+        const char *p = env;
+        while (*p && nenv < 16) {
+            env_strs[nenv++] = p;
+            while (*p) p++;
+            p++;                       // skip the NUL
+        }
+    }
+    unsigned int env_str_len = 0;
+    for (int i = 0; i < nenv; i++) env_str_len += strlen(env_strs[i]) + 1;
+
     // Compute the footprint first so the layout can be 16-aligned: musl's
     // _start keeps the *original* ESP (pointing at argc) in %eax and realigns
     // %esp itself, so stack_sp must point exactly at argc AND be 16-aligned.
@@ -128,7 +142,8 @@ static void stack_build(struct linux_ctx *lc, const char *prog,
     unsigned int str_len = 0;
     for (int i = 0; i < argc; i++)
         str_len += arglen(argv[i]) + 1;
-    unsigned int total = 16 + (el + 1) + str_len + 13 * 8 + 4 + (argc + 1) * 4 + 4;
+    unsigned int total = 16 + (el + 1) + str_len + env_str_len + 13 * 8 +
+                         (nenv + 1) * 4 + (argc + 1) * 4 + 4;
     unsigned int pad = total & 0xF;   // pad at top so final ESP is 16-aligned
     unsigned char *s = (unsigned char *)lc->stack_top - pad;
 
@@ -155,6 +170,16 @@ static void stack_build(struct linux_ctx *lc, const char *prog,
         arg_addrs[i] = (unsigned int)s;
     }
 
+    // env strings (copied into the stack, highest address first)
+    unsigned int env_addrs[16];
+    for (int i = nenv - 1; i >= 0; i--) {
+        unsigned int n = strlen(env_strs[i]);
+        s -= n + 1;
+        memcpy(s, env_strs[i], n);
+        s[n] = '\0';
+        env_addrs[i] = (unsigned int)s;
+    }
+
     // auxv
     struct auxv_pair { unsigned int a, v; } auxv[] = {
         { 3, phdr_vaddr },              // AT_PHDR
@@ -175,10 +200,11 @@ static void stack_build(struct linux_ctx *lc, const char *prog,
     s -= naux * 8;
     memcpy(s, auxv, naux * 8);
 
-    // envp array = { NULL }
-    unsigned int z = 0;
-    s -= 4;
-    memcpy(s, &z, 4);
+    // envp pointer array + NULL terminator
+    s -= (nenv + 1) * 4;
+    unsigned int *ev = (unsigned int *)s;
+    for (int i = 0; i < nenv; i++) ev[i] = env_addrs[i];
+    ev[nenv] = 0;
 
     // argv pointer array + argc
     s -= (argc + 1) * 4;
@@ -192,7 +218,8 @@ static void stack_build(struct linux_ctx *lc, const char *prog,
     lc->stack_sp = (unsigned int)s;
 }
 
-void *elf_load_linux(const char *path, const char *args, struct linux_ctx *lc) {
+void *elf_load_linux(const char *path, const char *args, struct linux_ctx *lc,
+                     const char *env) {
     struct aos_stat st;
     if (vfs_kernel_stat(path, &st) < 0) { elf_error("linux: not found"); return 0; }
 
@@ -271,7 +298,7 @@ void *elf_load_linux(const char *path, const char *args, struct linux_ctx *lc) {
     lc->brk_base = brk_hi;
     lc->brk_cur  = brk_hi;
 
-    stack_build(lc, path, args, ehdr, phdr_vaddr);
+    stack_build(lc, path, args, env, ehdr, phdr_vaddr);
 
     // Map any stack pages below the pre-mapped margin that stack_build used.
     for (unsigned int a = lc->stack_sp & ~0xFFFu; a < lc->stack_top; a += 0x1000)
