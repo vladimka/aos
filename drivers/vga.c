@@ -94,6 +94,16 @@ static unsigned char xterm_to_vga(int idx) {
     return col;
 }
 
+/* Kernel callers (vga_set_color) pass VGA color numbers (drivers/vga.h),
+   whose 0-15 numbering differs from the xterm base-16 (1=red vs 4=blue). */
+static unsigned char vga_to_xterm(unsigned char idx) {
+    static const unsigned char map[16] = {
+        0, 4, 2, 6, 1, 5, 3, 7,          /* black blue green cyan red magenta brown lgrey */
+        8, 12, 10, 14, 9, 13, 11, 15,    /* dgrey lblue lgreen lcyan lred lmag lbrown white */
+    };
+    return map[idx & 15];
+}
+
 static void vga_refresh_text_color(void) {
     text_color = (xterm_to_vga(bg_index) << 4) | xterm_to_vga(fg_index);
 }
@@ -170,9 +180,9 @@ static void mirror_shift_up(void) {
 void vga_set_color(unsigned char fg, unsigned char bg) {
     fg_color = fg;
     bg_color = bg;
-    fg_index = (unsigned char)fg;
-    bg_index = (unsigned char)bg;
-    vga_refresh_text_color();
+    fg_index = vga_to_xterm(fg);
+    bg_index = vga_to_xterm(bg);
+    text_color = (bg << 4) | fg;    /* VGA hardware attribute, kernel numbering */
 }
 
 static void draw_pixel(unsigned int x, unsigned int y, unsigned int rgb) {
