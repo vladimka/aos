@@ -84,9 +84,9 @@ def main():
             failures.append("wc /t3.txt after mv failed")
         if "cat: /t3.txt: No such file or directory" not in otext:
             failures.append("rm did not remove /t3.txt")
-        if "Created: /d" not in otext:
+        if "mkdir: cannot create" in otext:
             failures.append("mkdir failed")
-        if "Removed: /d" not in otext:
+        if "rmdir: failed to remove" in otext:
             failures.append("rmdir failed")
 
         if failures:

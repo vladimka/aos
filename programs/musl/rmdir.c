@@ -2,13 +2,12 @@
 #include <unistd.h>
 
 int main(int argc, char **argv) {
-    if (argc < 2) {
-        printf("\nUsage: rmdir <dirname>");
-        return 0;
+    if (argc < 2) { fprintf(stderr, "rmdir: missing operand\n"); return 1; }
+    int rc = 0;
+    for (int i = 1; i < argc; i++) {
+        if (rmdir(argv[i]) == 0) continue;
+        fprintf(stderr, "rmdir: failed to remove '%s': No such file or directory\n", argv[i]);
+        rc = 1;
     }
-    if (rmdir(argv[1]) == 0)
-        printf("\nRemoved: %s", argv[1]);
-    else
-        printf("\nFailed: %s", argv[1]);
-    return 0;
+    return rc;
 }
