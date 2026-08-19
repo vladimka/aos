@@ -82,7 +82,7 @@ def main():
             failures.append("mv failed")
         if "\n6 3 17 /t3.txt" not in otext:
             failures.append("wc /t3.txt after mv failed")
-        if "File not found: /t3.txt" not in otext:
+        if "cat: /t3.txt: No such file or directory" not in otext:
             failures.append("rm did not remove /t3.txt")
         if "Created: /d" not in otext:
             failures.append("mkdir failed")
