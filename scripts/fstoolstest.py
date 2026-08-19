@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """E2E FS-tools test: cp/mv/mkdir/rmdir/head/wc via foreground redirects.
 
-echo (musl echo.c) prints "\n<word>\n", so the redirect file for three echos
-is "\none\n\ntwo\n\nthree\n" -> wc reports "6 3 17". head truncates, so
+echo (musl echo.c) prints "<word>\n", so the redirect file for three echos
+is "one\ntwo\nthree\n" -> wc reports "3 3 14". head truncates, so
 its output is checked as a marker-bounded segment that must NOT contain the
 omitted tail ("three").
 
@@ -66,8 +66,8 @@ def main():
             return tail.split(b, 1)[0] if b in tail else ""
 
         failures = []
-        if "\n6 3 17 /t.txt" not in otext:
-            failures.append("wc /t.txt did not report 6 3 17")
+        if "\n3 3 14 /t.txt" not in otext:
+            failures.append("wc /t.txt did not report 3 3 14")
         head_seg = between("HEAD-MARK", "HEAD-END")
         if "one" not in head_seg:
             failures.append("head did not print the first two lines")
@@ -80,7 +80,7 @@ def main():
             failures.append("cat /t2.txt did not show the full copy")
         if "'/t2.txt' -> '/t3.txt'" not in otext:
             failures.append("mv failed")
-        if "\n6 3 17 /t3.txt" not in otext:
+        if "\n3 3 14 /t3.txt" not in otext:
             failures.append("wc /t3.txt after mv failed")
         if "cat: /t3.txt: No such file or directory" not in otext:
             failures.append("rm did not remove /t3.txt")
