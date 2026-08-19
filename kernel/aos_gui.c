@@ -54,6 +54,83 @@ static char *copy_lstr(const void *usr) {
     return dst;
 }
 
+// Shared body of AOS_SPAWN_FDS (env = 0) and AOS_SPAWN_FDS_ENV (env copied
+// from %edi). Parses the redir pair list in %esi, dups real global fds into
+// private slots owned by the child, spawns, then wires stdin/stdout/fds.
+static int spawn_fds_common(struct registers *r, const char *env) {
+    char *s = copy_lstr((const void *)r->ebx);
+    if (!s) return -5;
+    char *a = r->ecx ? copy_lstr((const void *)r->ecx) : 0;
+    if (r->ecx && !a) { kfree(s); return -5; }
+    struct aos_redir redirs[16];
+    int nredirs = 0;
+    const struct aos_redir *rp = (const struct aos_redir *)r->esi;
+    while (rp && nredirs < 16) {
+        if (!in_luser(rp, 8)) { kfree(s); if (a) kfree(a); return -5; }
+        struct aos_redir rv;
+        rv.child_fd = ((const unsigned int *)rp)[0];
+        rv.global_fd = ((const unsigned int *)rp)[1];
+        if (rv.child_fd == 0xFFFFFFFF) break;
+        if (rv.child_fd >= TASK_MAX_FDS) {
+            kfree(s); if (a) kfree(a); return -5;
+        }
+        if (rv.global_fd == AOS_INHERIT_FD) {
+            if (!get_current_task()->fds[rv.child_fd]) {
+                kfree(s); if (a) kfree(a); return -5;
+            }
+        } else if (rv.global_fd < 3 || rv.global_fd >= VFS_OFILES ||
+                   !vfs_ofile_ptr(rv.global_fd)) {
+            kfree(s); if (a) kfree(a); return -5;
+        }
+        redirs[nredirs++] = rv;
+        rp = (const struct aos_redir *)((const char *)rp + 8);
+    }
+    if (rp && nredirs >= 16) {              // too many pairs
+        kfree(s); if (a) kfree(a); return -5;
+    }
+    unsigned int pid;
+    // Phase 1: dup every real redirect into a private global slot owned by the
+    // child (vfs_dup_fd bumps pipe counters via pipe_dup). AOS_INHERIT_FD and
+    // console fds (0/1/2) are passed through untouched.
+    for (int i = 0; i < nredirs; i++) {
+        if (redirs[i].global_fd == AOS_INHERIT_FD) continue;
+        int g2 = vfs_dup_fd((int)redirs[i].global_fd);
+        if (g2 < 0) {
+            for (int j = 0; j < i; j++)
+                if (redirs[j].global_fd != AOS_INHERIT_FD)
+                    vfs_close_fd((int)redirs[j].global_fd);
+            kfree(s); if (a) kfree(a); return g2;
+        }
+        redirs[i].global_fd = (unsigned int)g2;
+    }
+    int rc = task_spawn(s, a, r->edx, &pid, env);
+    if (rc == 0) {
+        struct task *c = task_slot(pid);
+        struct task *parent = get_current_task();
+        for (int i = 0; i < nredirs && c; i++) {
+            unsigned int cfd = redirs[i].child_fd;
+            unsigned int g = redirs[i].global_fd;
+            if (g == AOS_INHERIT_FD) {
+                // inherit: child references the parent's handle (parent owns it)
+                if (cfd == 0) c->stdin_fd = parent->stdin_fd;
+                else if (cfd == 1) c->stdout_fd = parent->stdout_fd;
+                else c->fds[cfd] = parent->fds[cfd];
+            } else {
+                // redirect: child gets its OWN dup'd global slot (it will close it)
+                c->fds[g] = vfs_ofile_ptr(g);
+                if (cfd == 0) c->stdin_fd = (int)g;
+                else if (cfd == 1) c->stdout_fd = (int)g;
+            }
+        }
+        kfree(s);
+        if (a) kfree(a);
+        return (int)pid;
+    }
+    kfree(s);
+    if (a) kfree(a);
+    return rc;
+}
+
 void aos_gui_handler(struct registers *r) {
     unsigned int n = r->eax;
     trace_record(r);
@@ -234,79 +311,14 @@ void aos_gui_handler(struct registers *r) {
         }
         break;
     }
-    case AOS_SPAWN_FDS: {
-        char *s = copy_lstr((const void *)r->ebx);
-        if (!s) { r->eax = -5; break; }
-        char *a = r->ecx ? copy_lstr((const void *)r->ecx) : 0;
-        if (r->ecx && !a) { kfree(s); r->eax = -5; break; }
-        struct aos_redir redirs[16];
-        int nredirs = 0;
-        const struct aos_redir *rp = (const struct aos_redir *)r->esi;
-        while (rp && nredirs < 16) {
-            if (!in_luser(rp, 8)) { kfree(s); if (a) kfree(a); r->eax = -5; break; }
-            struct aos_redir rv;
-            rv.child_fd = ((const unsigned int *)rp)[0];
-            rv.global_fd = ((const unsigned int *)rp)[1];
-            if (rv.child_fd == 0xFFFFFFFF) break;
-            if (rv.child_fd >= TASK_MAX_FDS) {
-                kfree(s); if (a) kfree(a); r->eax = -5; break;
-            }
-            if (rv.global_fd == AOS_INHERIT_FD) {
-                if (!get_current_task()->fds[rv.child_fd]) {
-                    kfree(s); if (a) kfree(a); r->eax = -5; break;
-                }
-            } else if (rv.global_fd < 3 || rv.global_fd >= VFS_OFILES ||
-                       !vfs_ofile_ptr(rv.global_fd)) {
-                kfree(s); if (a) kfree(a); r->eax = -5; break;
-            }
-            redirs[nredirs++] = rv;
-            rp = (const struct aos_redir *)((const char *)rp + 8);
-        }
-        if (rp && nredirs >= 16) {              // too many pairs
-            kfree(s); if (a) kfree(a); r->eax = -5; break;
-        }
-        unsigned int pid;
-        // Phase 1: dup every real redirect into a private global slot owned by the
-        // child (vfs_dup_fd bumps pipe counters via pipe_dup). AOS_INHERIT_FD and
-        // console fds (0/1/2) are passed through untouched.
-        int dupfail = 0;
-        for (int i = 0; i < nredirs; i++) {
-            if (redirs[i].global_fd == AOS_INHERIT_FD) continue;
-            int g2 = vfs_dup_fd((int)redirs[i].global_fd);
-            if (g2 < 0) {
-                for (int j = 0; j < i; j++)
-                    if (redirs[j].global_fd != AOS_INHERIT_FD)
-                        vfs_close_fd((int)redirs[j].global_fd);
-                kfree(s); if (a) kfree(a); r->eax = g2; dupfail = 1; break;
-            }
-            redirs[i].global_fd = (unsigned int)g2;
-        }
-        if (dupfail) break;
-        int rc = task_spawn(s, a, r->edx, &pid, 0);
-        if (rc == 0) {
-            struct task *c = task_slot(pid);
-            struct task *parent = get_current_task();
-            for (int i = 0; i < nredirs && c; i++) {
-                unsigned int cfd = redirs[i].child_fd;
-                unsigned int g = redirs[i].global_fd;
-                if (g == AOS_INHERIT_FD) {
-                    // inherit: child references the parent's handle (parent owns it)
-                    if (cfd == 0) c->stdin_fd = parent->stdin_fd;
-                    else if (cfd == 1) c->stdout_fd = parent->stdout_fd;
-                    else c->fds[cfd] = parent->fds[cfd];
-                } else {
-                    // redirect: child gets its OWN dup'd global slot (it will close it)
-                    c->fds[g] = vfs_ofile_ptr(g);
-                    if (cfd == 0) c->stdin_fd = (int)g;
-                    else if (cfd == 1) c->stdout_fd = (int)g;
-                }
-            }
-            r->eax = (int)pid;
-        } else {
-            r->eax = rc;
-        }
-        kfree(s);
-        if (a) kfree(a);
+    case AOS_SPAWN_FDS:
+        r->eax = spawn_fds_common(r, 0);
+        break;
+    case AOS_SPAWN_FDS_ENV: {
+        char *envb = r->edi ? copy_lstr((const void *)r->edi) : 0;
+        if (r->edi && !envb) { r->eax = -5; break; }
+        r->eax = spawn_fds_common(r, envb);
+        kfree(envb);
         break;
     }
     case AOS_WAITPID:

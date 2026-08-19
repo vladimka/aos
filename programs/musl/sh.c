@@ -126,6 +126,27 @@ static void env_set(const char *name, const char *val) {
     }
 }
 
+static char sh_last_cwd[256] = "/";
+
+// Serialize the shell env into a double-NUL-terminated block for
+// SYS_SPAWN_FDS_ENV. term_off skips the leading TERM=aos entry (used for the
+// last pipeline stage so `sh TERM` survives the pipeline's env).
+static void sh_build_env(char *buf, int cap, int term_off) {
+    int o = 0;
+    if (!term_off) {
+        const char *t = "TERM=aos";
+        for (int i = 0; t[i] && o < cap - 2; i++) buf[o++] = t[i];
+        buf[o++] = 0;
+    }
+    for (int i = 0; i < var_count && o < cap - 2; i++) {
+        for (int j = 0; var_name[i][j] && o < cap - 2; j++) buf[o++] = var_name[i][j];
+        if (o < cap - 2) buf[o++] = '=';
+        for (int j = 0; var_val[i][j] && o < cap - 2; j++) buf[o++] = var_val[i][j];
+        buf[o++] = 0;
+    }
+    buf[o] = 0;
+}
+
 #define HIST_MAX 16
 static char hist[HIST_MAX][LBUF];
 static int hist_count;
@@ -309,19 +330,36 @@ static int run_builtin(int argc, char **argv) {
         exit(0);
     }
     if (strcmp(c, "cd") == 0) {
-        if (argc < 2) { write(1, "usage: cd <path>\r\n", 18); last_status = 1; return 1; }
-        if (chdir(argv[1]) != 0) {
+        char b[256];                       // valid for the whole if (tgt may point at it)
+        const char *tgt;
+        if (argc < 2) tgt = "/";
+        else if (strcmp(argv[1], "-") == 0) tgt = sh_last_cwd;
+        else if (argv[1][0] == '~') {
+            const char *rest = argv[1] + 1;
+            if (*rest == '/') rest++;
+            snprintf(b, sizeof b, "/%s", rest);
+            tgt = b;
+        } else tgt = argv[1];
+        char cur[256];
+        getcwd(cur, sizeof cur);
+        if (chdir(tgt) != 0) {
             write(1, "cd: no such directory: ", 23);
-            write(1, argv[1], strlen(argv[1]));
+            write(1, tgt, strlen(tgt));
             write(1, "\r\n", 2);
             last_status = 1;
         } else {
+            if (argc >= 2 && strcmp(argv[1], "-") == 0) {
+                write(1, tgt, strlen(tgt));
+                write(1, "\r\n", 2);
+            }
+            strncpy(sh_last_cwd, cur, sizeof sh_last_cwd - 1);
             last_status = 0;
         }
         return 1;
     }
     if (strcmp(c, "pwd") == 0) {
         char buf[256];
+        if (argc >= 2 && strcmp(argv[1], "-P") == 0) { /* -P == default */ }
         if (getcwd(buf, sizeof buf)) {
             write(1, buf, strlen(buf));
             write(1, "\r\n", 2);
@@ -464,7 +502,9 @@ static void run_stage(int i, int nstages, int argc, char **argv,
     if (o) o--;
     args[o] = 0;
 
-    int pid = aos_spawn_fds(path, args, 0, redirs);
+    char envb[512];
+    sh_build_env(envb, sizeof envb, (out_f != 0) || (i + 1 < nstages));
+    int pid = aos_spawn_env(path, args, 0, envb, redirs);
     for (int k = 0; k < nkeep; k++) close(kept[k]);
     if (pid < 0) {
         write(1, "cannot run command\r\n", 20);
@@ -619,6 +659,7 @@ static void handle_byte(unsigned char b) {
 }
 
 int main(void) {
+    env_set("TERM", "aos");
     redraw();
     for (;;) {
         unsigned char b;
