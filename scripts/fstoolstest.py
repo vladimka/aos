@@ -25,11 +25,11 @@ CMDS = [
     "echo HEAD-MARK",
     "head -n 2 /t.txt",
     "echo HEAD-END",
-    "cp /t.txt /t2.txt",
+    "cp -v /t.txt /t2.txt",
     "echo CAT-MARK",
     "cat /t2.txt",
     "echo CAT-END",
-    "mv /t2.txt /t3.txt",
+    "mv -v /t2.txt /t3.txt",
     "wc /t3.txt",
     "rm /t3.txt",
     "cat /t3.txt",
@@ -73,12 +73,12 @@ def main():
             failures.append("head did not print the first two lines")
         if "three" in head_seg:
             failures.append("head printed more than 2 lines (no truncation)")
-        if "Copied: /t.txt -> /t2.txt" not in otext:
+        if "'/t.txt' -> '/t2.txt'" not in otext:
             failures.append("cp failed")
         cat_seg = between("CAT-MARK", "CAT-END")
         if "three" not in cat_seg:
             failures.append("cat /t2.txt did not show the full copy")
-        if "Moved: /t2.txt -> /t3.txt" not in otext:
+        if "'/t2.txt' -> '/t3.txt'" not in otext:
             failures.append("mv failed")
         if "\n6 3 17 /t3.txt" not in otext:
             failures.append("wc /t3.txt after mv failed")
