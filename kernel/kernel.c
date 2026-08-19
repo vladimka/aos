@@ -13,6 +13,7 @@
 #include "ports.h"
 #include "progload.h"
 #include "config.h"
+#include "commands.h"
 #include "mouse.h"
 #include "uhci.h"
 #include "virtio.h"
@@ -140,6 +141,7 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     klog(KLOG_INFO, "klog: ready");
 
     terminal_init();
+    commands_env_default();
 
     // Multitasking + GUI: spawn the window manager as the first user task.
     // It takes over the screen and registers as the event consumer; the idle

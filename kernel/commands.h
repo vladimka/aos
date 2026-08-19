@@ -8,6 +8,9 @@ extern char command_path[PATH_MAX];
 void commands_execute(const char *line);
 void commands_set_path(const char *p);
 
+// Set the boot-time default environment (TERM=aos); called by kernel_main.
+void commands_env_default(void);
+
 // Build a normalized absolute path from the caller's absolute `cwd` and an
 // input path (relative or absolute). Resolves '.', '..' and stray slashes.
 // Returns 0 on success, -1 on overflow / too-long name.
