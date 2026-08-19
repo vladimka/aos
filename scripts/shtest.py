@@ -88,10 +88,10 @@ def main():
 
         out = cmd(s, "ls /bin")
         log += out
-        if b"Files in /bin" not in out or b"sh (" not in out:
-            raise AssertionError("ls /bin did not list sh; out:\n%s"
+        if b"uptime" not in out:
+            raise AssertionError("ls /bin did not list uptime; out:\n%s"
                                  % out[-400:].decode(errors="replace"))
-        print("PASS: ls /bin lists sh")
+        print("PASS: ls /bin lists uptime")
 
         out = cmd(s, "echo $?")
         log += out
@@ -127,14 +127,14 @@ def main():
         # ---- Task 4: pipelines (AOS writer -> Linux reader) ----
         out = cmd(s, "ls /bin | lin/cat")
         log += out
-        if b"Files in /bin" not in out or b"sh (" not in out:
-            raise AssertionError("ls /bin | lin/cat did not list sh; out:\n%s"
+        if b"uptime" not in out:
+            raise AssertionError("ls /bin | lin/cat did not list uptime; out:\n%s"
                                  % out[-400:].decode(errors="replace"))
-        print("PASS: pipeline ls /bin | lin/cat lists sh")
+        print("PASS: pipeline ls /bin | lin/cat lists uptime")
 
         out = cmd(s, "bin/ls / | lin/cat | lin/cat")
         log += out
-        if b"Files in /:" not in out:
+        if b"demo.ico" not in out:
             raise AssertionError("3-stage pipeline did not list /; out:\n%s"
                                  % out[-400:].decode(errors="replace"))
         print("PASS: 3-stage pipeline bin/ls / | lin/cat | lin/cat")

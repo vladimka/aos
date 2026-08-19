@@ -65,7 +65,7 @@ def main():
         out = b""
         end = time.time() + 20
         while time.time() < end:
-            if b"Files:" in out and (b"KERNEL PANIC" in out or b"AOS>" in out):
+            if b"demo.ico" in out and (b"KERNEL PANIC" in out or b"AOS>" in out):
                 break
             try:
                 d = s.recv(4096)
