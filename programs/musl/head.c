@@ -1,24 +1,31 @@
 #include <fcntl.h>
+#include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
 int main(int argc, char **argv) {
-    if (argc < 2) {
-        printf("\nUsage: head <file> [lines]");
-        return 0;
+    int n = 10;
+    int c;
+    while ((c = getopt(argc, argv, "n:h")) != -1) {
+        switch (c) {
+        case 'n': n = atoi(optarg); break;
+        case 'h': printf("usage: head [-n N] file\n"); return 0;
+        default:  return 1;
+        }
     }
-    int lines = 10;
-    if (argc > 2) lines = atoi(argv[2]);
-    if (lines <= 0) lines = 10;
-    int fd = open(argv[1], O_RDONLY);
-    if (fd < 0) { printf("\nhead: %s: No such file", argv[1]); return 1; }
-    int nl = 0;
-    char c;
-    while (nl < lines && read(fd, &c, 1) == 1) {
-        putchar(c);
-        if (c == '\n') nl++;
+    if (optind >= argc) { fprintf(stderr, "head: missing file operand\n"); return 1; }
+    for (int i = optind; i < argc; i++) {
+        int fd = open(argv[i], O_RDONLY);
+        if (fd < 0) { fprintf(stderr, "head: %s: No such file or directory\n", argv[i]); return 1; }
+        if (argc - optind > 1) printf("==> %s <==\n", argv[i]);
+        int nl = 0;
+        char ch;
+        while (nl < n && read(fd, &ch, 1) == 1) {
+            putchar(ch);
+            if (ch == '\n') nl++;
+        }
+        close(fd);
     }
-    close(fd);
     return 0;
 }

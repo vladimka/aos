@@ -23,7 +23,7 @@ CMDS = [
     "echo three >> /t.txt",
     "wc /t.txt",
     "echo HEAD-MARK",
-    "head /t.txt 2",
+    "head -n 2 /t.txt",
     "echo HEAD-END",
     "cp /t.txt /t2.txt",
     "echo CAT-MARK",
