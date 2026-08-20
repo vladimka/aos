@@ -17,6 +17,7 @@
 - **Caps Lock** (`scancode 0x3A`): toggles `caps_lock` flag, affects only US layout letters
 - **Serial console input**: `timer_handler` (`kernel/kernel.c`) drains the COM1 FIFO (`serial_available`/`serial_read`) into `terminal_serial_byte()`. The serial console **always feeds the shell line editor** (system console) — it is NOT rerouted to the GUI even after the WM registers as event consumer; GUI apps receive keyboard input from the PS/2 keyboard via `keyboard_handler` → `route_gui_key`. While a user program is running, serial bytes are pushed to the key queue (`key_queue_push`) instead of the line buffer
 - **Key queue**: circular `key_queue[64]` for user programs. When `user_program_active()`, printable keys (and serial bytes) push to the queue; `terminal_read_key()` pops (returns -1 when empty). `SYS_READ_KEY` is **non-blocking**; `read_key()` blocks in userland by spinning + `yield()`
+- **SGR 256-color output**: kernel fb text (`drivers/vga.c`) and the GUI terminal (`programs/musl/term.c`) both parse `\x1b[38;5;N`/`\x1b[48;5;N` and render `fg/bg` through `xterm_rgb[256]` (base-16 = xterm ordering; kernel VGA numbers map via `vga_to_xterm()`). `term.c` holds `struct tcell {cp, fg, bg}` cells + parallel `esc_params[8]/esc_np` accumulator, `sgr_apply` clamps N to 0..255 and resets on 0/39/49. COM1 output is stripped of all ANSI escapes by the serial filter (see `serial: filter ANSI`), so redirected/console output stays clean. Programs emit `38;5;N` only via `u_color()` when `u_have_color(1)` (TERM set, stdout not a redirect)
 
 # AOS — minimal x86 kernel
 
@@ -74,6 +75,7 @@ No dedicated test, lint, or typecheck commands.
 - Invalid pointers return `-5` instead of crashing the kernel (verified by `test`)
 - `SYS_READ_KEY` is **non-blocking** (returns `-1` when the queue is empty); `read_key()` blocks in userland by spinning + `yield()`
 - **Process syscalls** (`SYS_SLEEP` 30, `SYS_WAITPID` 31, `SYS_GET_CHILDREN` 32): `SYS_SLEEP`/`SYS_WAITPID` block **in the syscall handler** via `sti; hlt; cli` (`task_sleep`/`task_waitpid`, `kernel/task.c`) — the scheduler skips `TASK_SLEEPING`/`TASK_WAITING` tasks and promotes them when `tick >= wake_tick` or the waited child dies. `SYS_EXIT` (16) reads the exit code from `%ebx`; the exiting task stays as `TASK_ZOMBIE` holding `exit_code` until `waitpid` reaps it (its address space/mbox are freed as before, only the slot scalars are kept). `TASK_ZOMBIE` slots are reclaimed by `task_spawn` when no free slot exists (never one a live `TASK_WAITING` task waits on)
+- **`AOS_SPAWN_FDS_ENV` (524)**: like `AOS_SPAWN_FDS` (520) but takes an extra env block (`%edi`) — a double-NUL-terminated `KEY=value` array copied via `copy_lstr` into `kernel/syscall.c` scratch and threaded through `task_spawn` → `elf_load_linux` → `stack_build` onto the startup stack (`envp`). Used by the kernel shell (`shell_build_env`) and GUI `sh` (`sh_build_env`) to pass `TERM=aos` and exported vars to child processes. Userland wrapper `aos_spawn_env` in `programs/aosabi.h` (6-arg `aos_syscall`, `%esi`=redirs, `%edi`=env). The old `AOS_SPAWN_FDS` (520) is kept for compat (env=NULL)
 
 ### ELF loader (`kernel/elf.c`)
 
@@ -108,6 +110,13 @@ All commands (`help`, `uptime`, `clear`, `echo`, `tick`, `info`, `reboot`, `pani
 - Embedded into kernel at build time by `scripts/gen_progs.py` → `kernel/progs.c`
 - Stored in ramdisk as `bin/<name>`; loaded by `elf_load()` which parses PT_LOAD segments
 - Run in **ring 3**; `bin/test` (aos_test framework) exercises `malloc/free`, blocking `read_key()`, and syscall pointer validation
+
+#### Shared `uutils` layer & tool flags
+
+- `programs/musl/uutils.{c,h}` — shared helpers for the utilities: `u_list_dir(dir, ent, max, show_dot)` (dir entries with `/` markers), `u_hsize` (human-readable sizes for `ls -h`), `u_print_columns` (column layout, writes directly to fd 1), `u_color`/`u_have_color` (SGR `38;5;N` color prefixes). Used by `ls`, `head`, `wc`, `cat`, `cp`, `mv`, `mkdir`, `rmdir`, `rm`, `echo`.
+- **Tool flags** (all via `getopt`, errors to stderr `<<tool>: <path>: No such file or directory>` + rc=1, success silent): `head -n N`, `wc -l/-w/-c` (no flags = all three), `cat -n` (multi-file), `cp -r/-v/-f`, `mv -v/-f`, `mkdir -p`, `rm -r/-f`, `rmdir`, `ls -a/-l/-h/-R/-r/-1`, `echo -n/-e`. `ls` defaults to cwd (`.`), colors dirs via `u_color(1, U_C_DIR)`.
+- **`TERM` env for utilities**: `TERM=aos` is set by the kernel shell (see `cd -` below) and by `sh` (`sh_build_env`, `programs/musl/sh.c`) — `u_have_color(fd)` checks `getenv("TERM")` and only then enables SGR color. Redirects (`>`/pipe) drop TERM (`term_off`), so `ls > file` stays clean.
+- **`cd`/`pwd`** (`programs/musl/sh.c` + kernel shell `cmd_cd`): `cd` (no arg) → `/`, `cd -` → previous dir (printed), `cd ~`/`cd ~/x` → `/`/`/x`, `pwd -P` ignores the flag.
 
 ### Program search order (shell, `kernel/commands.c`)
 
