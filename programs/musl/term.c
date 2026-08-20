@@ -182,7 +182,7 @@ static void term_out_byte(unsigned char b) {
         if (b == ';') { esc_r = esc_n; esc_n = 0; if (esc_np < 8) esc_np++; return; }
         int pn = esc_n, pr = esc_r;
         esc_state = 0;
-        if (b == 'm') { sgr_apply(esc_params, esc_np); esc_np = 0; return; }
+        if (b == 'm') { sgr_apply(esc_params, esc_np + 1); esc_np = 0; return; }
         if (pn < 0) {                    // ESC[?25h / ESC[?25l
             cursor_visible = (b == 'h');
             return;

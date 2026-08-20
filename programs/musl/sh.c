@@ -139,6 +139,7 @@ static void sh_build_env(char *buf, int cap, int term_off) {
         buf[o++] = 0;
     }
     for (int i = 0; i < var_count && o < cap - 2; i++) {
+        if (strcmp(var_name[i], "TERM") == 0) continue;
         for (int j = 0; var_name[i][j] && o < cap - 2; j++) buf[o++] = var_name[i][j];
         if (o < cap - 2) buf[o++] = '=';
         for (int j = 0; var_val[i][j] && o < cap - 2; j++) buf[o++] = var_val[i][j];
