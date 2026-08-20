@@ -172,7 +172,7 @@ debug: aos.iso
 # Headless regression suite: each script boots aos.iso under QEMU, drives the
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
 LINUX_TESTS = linhello lincat lindirtest pipetest
-TESTS = ipctest manytest notepadtest sleeptest rngtest blktest atatest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest $(LINUX_TESTS) vguitest powertest tablettest
+TESTS = ipctest manytest notepadtest sleeptest rngtest blktest atatest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest toolflags lsflagstest sgrcolor $(LINUX_TESTS) vguitest powertest tablettest
 
 # Fast subset for CI: quick boots, no extra virtio devices.
 FAST_TESTS = ipctest linhello lincat
