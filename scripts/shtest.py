@@ -196,6 +196,17 @@ def main():
         out = send_raw(s, b"\r")              # run ls or linrun; harmless
         log += out
 
+        # ---- env passing to children (AOS_SPAWN_FDS_ENV double-NUL block) ----
+        out = cmd(s, "export FOO=bar")
+        log += out
+        out = cmd(s, "bin/envp")
+        log += out
+        if b"TERM=aos" not in out or b"FOO=bar" not in out:
+            raise AssertionError("bin/envp did not see the full exported env "
+                                 "(TERM=aos + FOO=bar); out:\n%s"
+                                 % out[-400:].decode(errors="replace"))
+        print("PASS: bin/envp sees TERM=aos and FOO=bar")
+
         out = cmd(s, "exit")
         log += out
         if b"\nAOS> " not in out:

@@ -54,6 +54,30 @@ static char *copy_lstr(const void *usr) {
     return dst;
 }
 
+/* Copy a double-NUL-terminated KEY=value block from user memory.
+ * copy_lstr() stops at the first NUL and would truncate the block to its
+ * first variable (stack_build expects the full "A=1\0B=2\0\0" array). */
+#define ENV_BLOCK_MAX 1024
+static char *copy_env_block(const void *usr) {
+    unsigned int a = (unsigned int)usr;
+    struct linux_ctx *lc = lcx();
+    if (a < lc->win_lo) return 0;
+    unsigned int len = 0;
+    int prev_nul = 0;
+    while (len < ENV_BLOCK_MAX && a + len < lc->win_hi) {
+        char c = ((const char *)a)[len];
+        len++;
+        if (prev_nul && c == '\0') break;
+        prev_nul = (c == '\0');
+    }
+    char *dst = kmalloc(len + 1);
+    if (!dst) return 0;
+    for (unsigned int i = 0; i < len; i++)
+        dst[i] = ((const char *)a)[i];
+    dst[len] = '\0';
+    return dst;
+}
+
 // Shared body of AOS_SPAWN_FDS (env = 0) and AOS_SPAWN_FDS_ENV (env copied
 // from %edi). Parses the redir pair list in %esi, dups real global fds into
 // private slots owned by the child, spawns, then wires stdin/stdout/fds.
@@ -315,7 +339,7 @@ void aos_gui_handler(struct registers *r) {
         r->eax = spawn_fds_common(r, 0);
         break;
     case AOS_SPAWN_FDS_ENV: {
-        char *envb = r->edi ? copy_lstr((const void *)r->edi) : 0;
+        char *envb = r->edi ? copy_env_block((const void *)r->edi) : 0;
         if (r->edi && !envb) { r->eax = -5; break; }
         r->eax = spawn_fds_common(r, envb);
         kfree(envb);

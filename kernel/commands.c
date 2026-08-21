@@ -98,7 +98,7 @@ static void shell_build_env(char *buf, int cap, int term_off) {
     }
     for (unsigned int i = 0; i < shell_env_count && o < cap - 2; i++) {
         int n = 0;
-        for (; shell_env[i].name[n] && n < 40; n++) buf[o++] = shell_env[i].name[n];
+        for (; shell_env[i].name[n] && n < 40 && o < cap - 2; n++) buf[o++] = shell_env[i].name[n];
         if (o < cap - 2) buf[o++] = '=';
         for (int j = 0; shell_env[i].val[j] && o < cap - 2; j++) buf[o++] = shell_env[i].val[j];
         buf[o++] = 0;

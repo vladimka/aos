@@ -25,21 +25,36 @@ static int copy_file(const char *src, const char *dst) {
 static int copy_tree(const char *src, const char *dst) {
     struct stat st;
     if (stat(src, &st) != 0) { fprintf(stderr, "mv: %s: No such file or directory\n", src); return -1; }
-    if (!S_ISDIR(st.st_mode)) return copy_file(src, dst);
+    if (!S_ISDIR(st.st_mode)) {
+        if (copy_file(src, dst) != 0) return -1;
+        if (unlink(src) != 0) { fprintf(stderr, "mv: %s: cannot remove\n", src); return -1; }
+        return 0;
+    }
     if (mkdir(dst, 0777) != 0 && stat(dst, &st) != 0) { fprintf(stderr, "mv: %s: cannot create dir\n", dst); return -1; }
+    /* Snapshot the entry names before recursing: the recursion removes
+     * source entries (files unlinked, subdirs rmdir'd), which shifts the
+     * SFS2 dirent indices and would make readdir skip entries. */
+    char names[64][32];
+    int n = 0;
     DIR *d = opendir(src);
     if (!d) return -1;
     struct dirent *e;
-    while ((e = readdir(d))) {
+    while ((e = readdir(d)) != 0 && n < 64) {
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
-        char s[512], ds[512];
-        snprintf(s, sizeof s, "%s/%s", src, e->d_name);
-        snprintf(ds, sizeof ds, "%s/%s", dst, e->d_name);
-        copy_tree(s, ds);
+        snprintf(names[n], sizeof names[0], "%s", e->d_name);
+        n++;
     }
     closedir(d);
-    rmdir(src);          // source dir emptied by the recursion above -> remove it
-    return 0;
+    if (n >= 64) { fprintf(stderr, "mv: %s: directory too large\n", src); return -1; }
+    int rc = 0;
+    for (int i = 0; i < n; i++) {
+        char s[512], ds[512];
+        snprintf(s, sizeof s, "%s/%s", src, names[i]);
+        snprintf(ds, sizeof ds, "%s/%s", dst, names[i]);
+        if (copy_tree(s, ds) != 0) rc = -1;
+    }
+    if (rc == 0 && rmdir(src) != 0) { fprintf(stderr, "mv: %s: cannot remove\n", src); rc = -1; }
+    return rc;
 }
 
 int main(int argc, char **argv) {
@@ -64,13 +79,8 @@ int main(int argc, char **argv) {
             strncpy(target, dst, sizeof target - 1);
             target[sizeof target - 1] = 0;
         }
-        if (copy_tree(src, target) == 0) {
-            struct stat st;
-            if (stat(src, &st) == 0 && !S_ISDIR(st.st_mode))
-                unlink(src);   // files: remove the source (dirs rmdir'd in copy_tree)
-        } else {
+        if (copy_tree(src, target) != 0)
             rc = 1;
-        }
     }
     return rc;
 }

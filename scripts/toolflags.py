@@ -32,6 +32,20 @@ CMDS = [
     "echo RM2-MARK",
     "ls /b2",
     "echo RM2-END",
+    "mkdir -p /m1/sub",
+    "echo tree-file > /m1/f",
+    "mv /m1 /m2",
+    "echo MVDST-MARK",
+    "ls /m2",
+    "echo MVDST-END",
+    "echo MVSRC-MARK",
+    "ls /m1",
+    "echo MVSRC-END",
+    "export KV1=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "export KV2=yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+    "echo ENVP-MARK",
+    "bin/envp",
+    "echo ENVP-END",
     "cd /a/b/c",
     "pwd",
     "cd -",
@@ -83,6 +97,15 @@ def main():
         rm2 = between("RM2-MARK", "RM2-END")
         if "No such file or directory" not in rm2:
             failures.append("rm -r /b2 did not remove the tree (ls should error)")
+        mvdst = between("MVDST-MARK", "MVDST-END")
+        if "sub" not in mvdst or "f" not in mvdst:
+            failures.append("mv /m1 /m2 did not copy the tree (ls /m2 missing sub/f)")
+        mvsrc = between("MVSRC-MARK", "MVSRC-END")
+        if "No such file or directory" not in mvsrc:
+            failures.append("mv /m1 /m2 did not remove the source (ls /m1 should error)")
+        envp = between("ENVP-MARK", "ENVP-END")
+        if "TERM=aos" not in envp or "KV1=xxx" not in envp or "KV2=yyy" not in envp:
+            failures.append("bin/envp did not see TERM=aos + KV1/KV2 from the kernel shell")
         if "CMD:[cd] ARG:[-]" not in otext or "/a/b/c" not in otext:
             failures.append("cd - did not echo the previous directory")
 
