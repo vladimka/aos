@@ -318,7 +318,13 @@ class QTest:
 
     def type_text(self, text):
         """Type a string via sendkey (``\\n`` -> ``ret``, space -> ``spc``)."""
-        keys = {"\n": "ret", " ": "spc", "/": "slash"}
+        keys = {
+            "\n": "ret", " ": "spc", "/": "slash",
+            ">": "shift-dot", "<": "shift-comma",
+            "|": "shift-backslash", "?": "shift-slash",
+            ":": "shift-semicolon", ";": "semicolon",
+            "_": "shift-minus", "!": "shift-1", "~": "shift-grave",
+        }
         for ch in text:
             self.key(keys.get(ch, ch))
 

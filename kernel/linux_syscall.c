@@ -67,23 +67,23 @@ void linux_ctx_init(struct linux_ctx *lc) {
     memset(lc, 0, sizeof(struct linux_ctx));
 }
 
-// i386 musl struct stat (see toolchain bits/stat.h): 108 bytes.
+// i386 musl struct stat (toolchain bits/stat.h): 144 bytes, st_mode at +16.
 static void fill_stat64(struct linux_ctx *lc, unsigned int type,
                         unsigned int size, unsigned char *st) {
     (void)lc;
-    memset(st, 0, 108);
-    *(unsigned int *)(st + 8)  = 1;                        // __st_ino_truncated
+    memset(st, 0, 144);
+    *(unsigned int *)(st + 12) = 1;                        // __st_ino_truncated
     if (type == 2)
-        *(unsigned int *)(st + 12) = 0x41ED;               // st_mode S_IFDIR|0777
+        *(unsigned int *)(st + 16) = 0x41ED;               // st_mode S_IFDIR|0777
     else
-        *(unsigned int *)(st + 12) = 0x81ED;               // st_mode S_IFREG|0777
-    *(unsigned int *)(st + 16) = 1;                        // st_nlink
-    *(unsigned int *)(st + 20) = 0;                        // st_uid
-    *(unsigned int *)(st + 24) = 0;                        // st_gid
-    *(unsigned long long *)(st + 36) = size;               // st_size
-    *(unsigned int *)(st + 44) = 512;                      // st_blksize
-    *(unsigned long long *)(st + 48) = (unsigned long long)(size + 511) / 512; // st_blocks
-    *(unsigned int *)(st + 80) = 1;                        // st_ino
+        *(unsigned int *)(st + 16) = 0x81ED;               // st_mode S_IFREG|0777
+    *(unsigned int *)(st + 20) = 1;                        // st_nlink
+    *(unsigned int *)(st + 24) = 0;                        // st_uid
+    *(unsigned int *)(st + 28) = 0;                        // st_gid
+    *(unsigned long long *)(st + 44) = size;               // st_size
+    *(unsigned int *)(st + 52) = 512;                      // st_blksize
+    *(unsigned long long *)(st + 56) = (unsigned long long)(size + 511) / 512; // st_blocks
+    *(unsigned int *)(st + 88) = 1;                        // st_ino
 }
 
 // linux_dirent64: u64 d_ino, i64 d_off, u16 d_reclen, u8 d_type, char d_name[]

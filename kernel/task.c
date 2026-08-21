@@ -285,7 +285,7 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
     return next->kernel_esp;
 }
 
-int task_spawn(const char *path, const char *args, unsigned int sink, unsigned int *out_pid) {
+int task_spawn(const char *path, const char *args, unsigned int sink, unsigned int *out_pid, const char *env) {
     drain_zombies();
 
     int pid = -1;
@@ -437,7 +437,7 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     __asm__ volatile("cli");
     paging_set_cr3(t->cr3);
     entry = (t->abi == ABI_LINUX)
-                ? elf_load_linux(path, args, t->lctx)
+                ? elf_load_linux(path, args, t->lctx, env)
                 : elf_load(path);
     paging_set_cr3((unsigned int)kpd);
     __asm__ volatile("sti");

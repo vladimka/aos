@@ -533,7 +533,7 @@ void syscall_handler(struct registers *r) {
                 break;
             }
             unsigned int pid;
-            int rc = task_spawn(s, a, r->edx, &pid);
+            int rc = task_spawn(s, a, r->edx, &pid, 0);
             kfree(s);
             if (a) kfree(a);
             r->eax = rc == 0 ? (int)pid : rc;

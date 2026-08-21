@@ -13,6 +13,7 @@
 #include "ports.h"
 #include "progload.h"
 #include "config.h"
+#include "commands.h"
 #include "mouse.h"
 #include "uhci.h"
 #include "virtio.h"
@@ -140,12 +141,13 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     klog(KLOG_INFO, "klog: ready");
 
     terminal_init();
+    commands_env_default();
 
     // Multitasking + GUI: spawn the window manager as the first user task.
     // It takes over the screen and registers as the event consumer; the idle
     // task keeps running the main loop below (mouse flush + hlt).
     unsigned int wm_pid;
-    int wm_rc = task_spawn("bin/wm", "", 0, &wm_pid);
+    int wm_rc = task_spawn("bin/wm", "", 0, &wm_pid, 0);
     if (wm_rc == 0) {
         printf("Window manager spawned (pid %u).\n", wm_pid);
     } else {

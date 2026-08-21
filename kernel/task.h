@@ -53,7 +53,7 @@ struct task {
 
 void task_init(void);
 unsigned int task_switch_kernel(unsigned int cur_esp);
-int task_spawn(const char *path, const char *args, unsigned int sink, unsigned int *out_pid);
+int task_spawn(const char *path, const char *args, unsigned int sink, unsigned int *out_pid, const char *env);
 void task_exit_current(unsigned int code);
 void task_sleep(unsigned int ms);
 int  task_waitpid(unsigned int pid);

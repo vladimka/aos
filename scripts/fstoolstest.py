@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """E2E FS-tools test: cp/mv/mkdir/rmdir/head/wc via foreground redirects.
 
-echo (musl echo.c) prints "\n<word>\n", so the redirect file for three echos
-is "\none\n\ntwo\n\nthree\n" -> wc reports "6 3 17". head truncates, so
-its output is checked as a marker-bounded segment that must NOT contain the
-omitted tail ("three").
-
-Commands are sent one at a time, waiting for the shell prompt after each:
-under TCG a whole burst at once overruns the guest COM1 FIFO while a user
-program is running (excess bytes land in the key queue and are lost), so the
-tail of a large burst is never executed.
+echo prints "<word>\n" (no leading blank line), so the redirect file for
+three echos is "one\ntwo\nthree\n" -> wc reports "3 3 14". head truncates,
+so its output is checked as a marker-bounded segment that must NOT contain
+the omitted tail ("three"). New tool messages: cp/mv/mkdir/rmdir/rm write
+errors to stderr; successful copies are silent (no "Copied:").
 """
 import socket
 import sys
@@ -21,20 +17,25 @@ CMDS = [
     "echo one > /t.txt",
     "echo two >> /t.txt",
     "echo three >> /t.txt",
-    "wc /t.txt",
+    "wc /t.txt",                 # -> "3 3 14 /t.txt"
     "echo HEAD-MARK",
-    "head /t.txt 2",
+    "head -n 2 /t.txt",
     "echo HEAD-END",
     "cp /t.txt /t2.txt",
     "echo CAT-MARK",
     "cat /t2.txt",
     "echo CAT-END",
     "mv /t2.txt /t3.txt",
-    "wc /t3.txt",
+    "wc /t3.txt",                # -> "3 3 14 /t3.txt"
     "rm /t3.txt",
-    "cat /t3.txt",
-    "mkdir /d",
-    "rmdir /d",
+    "echo RM-MARK",
+    "cat /t3.txt",               # -> "cat: /t3.txt: No such file or directory"
+    "echo RM-END",
+    "mkdir -p /d/sub",
+    "echo LS-MARK",
+    "ls /d",
+    "echo LS-END",
+    "rm -r /d",
     "echo fstools-done",
 ]
 
@@ -66,28 +67,24 @@ def main():
             return tail.split(b, 1)[0] if b in tail else ""
 
         failures = []
-        if "\n6 3 17 /t.txt" not in otext:
-            failures.append("wc /t.txt did not report 6 3 17")
+        if "3 3 14 /t.txt" not in otext:
+            failures.append("wc /t.txt did not report 3 3 14")
         head_seg = between("HEAD-MARK", "HEAD-END")
         if "one" not in head_seg:
             failures.append("head did not print the first two lines")
         if "three" in head_seg:
             failures.append("head printed more than 2 lines (no truncation)")
-        if "Copied: /t.txt -> /t2.txt" not in otext:
-            failures.append("cp failed")
         cat_seg = between("CAT-MARK", "CAT-END")
         if "three" not in cat_seg:
             failures.append("cat /t2.txt did not show the full copy")
-        if "Moved: /t2.txt -> /t3.txt" not in otext:
-            failures.append("mv failed")
-        if "\n6 3 17 /t3.txt" not in otext:
+        if "3 3 14 /t3.txt" not in otext:
             failures.append("wc /t3.txt after mv failed")
-        if "File not found: /t3.txt" not in otext:
-            failures.append("rm did not remove /t3.txt")
-        if "Created: /d" not in otext:
-            failures.append("mkdir failed")
-        if "Removed: /d" not in otext:
-            failures.append("rmdir failed")
+        rm_seg = between("RM-MARK", "RM-END")
+        if "No such file or directory" not in rm_seg:
+            failures.append("rm did not remove /t3.txt (cat should have errored)")
+        ls_seg = between("LS-MARK", "LS-END")
+        if "sub" not in ls_seg:
+            failures.append("ls /d did not show sub")
 
         if failures:
             raise AssertionError("; ".join(failures) + ";\nout:\n" + otext[-800:])

@@ -52,7 +52,7 @@ void load_embedded_data(void) {
 #define LINUX_WIN_HI 0x08800000
 #define STACK_MARGIN 0x10000
 
-void *program_load(const char *path, const char *args) {
+void *program_load(const char *path, const char *args, const char *env) {
     syscall_set_args(args);
     int abi;
     if (elf_probe(path, &abi) < 0) return 0;
@@ -65,7 +65,7 @@ void *program_load(const char *path, const char *args) {
         lc->stack_top = LINUX_WIN_HI;
         lc->mmap_cur = LINUX_WIN_HI - STACK_MARGIN;   // below the stack margin
         task_set_abi_current(ABI_LINUX);
-        return elf_load_linux(path, args, lc);
+        return elf_load_linux(path, args, lc, env);
     }
     return elf_load(path);
 }

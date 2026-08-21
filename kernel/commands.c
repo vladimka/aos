@@ -84,6 +84,28 @@ static void cmd_export(const char *arg) {
     }
 }
 
+// Build a "NAME=VAL\0..." env block (double-NUL at the end) from the shell
+// env vars, plus "TERM=aos" iff this is a terminal-bound run (console stdout
+// is -1; a redirect is a global fd >= 3). term_off forces TERM out for
+// pipelines and background redirects whose stdout is not the terminal.
+static void shell_build_env(char *buf, int cap, int term_off) {
+    int term_ok = !term_off && get_current_task()->stdout_fd < 0;
+    int o = 0;
+    if (term_ok) {
+        const char *t = "TERM=aos";
+        for (int i = 0; t[i] && o < cap - 2; i++) buf[o++] = t[i];
+        buf[o++] = 0;
+    }
+    for (unsigned int i = 0; i < shell_env_count && o < cap - 2; i++) {
+        int n = 0;
+        for (; shell_env[i].name[n] && n < 40 && o < cap - 2; n++) buf[o++] = shell_env[i].name[n];
+        if (o < cap - 2) buf[o++] = '=';
+        for (int j = 0; shell_env[i].val[j] && o < cap - 2; j++) buf[o++] = shell_env[i].val[j];
+        buf[o++] = 0;
+    }
+    buf[o] = 0;    // double-NUL
+}
+
 // Expand $NAME and $? into `out`. Unknown vars become "". A '$' not followed
 // by a name char or '?' is copied literally. Truncates at outsz-1.
 static void shell_expand(const char *in, char *out, unsigned int outsz) {
@@ -129,6 +151,11 @@ static void cmd_format(void) {
 void commands_set_path(const char *p) {
     strncpy(command_path, p, PATH_MAX - 1);
     command_path[PATH_MAX - 1] = '\0';
+}
+
+// Boot-time default environment (called from kernel_main after terminal_init).
+void commands_env_default(void) {
+    env_set("TERM", "aos");
 }
 
 // Resolve a (relative or absolute) input path against the caller's absolute
@@ -177,28 +204,51 @@ int path_norm(const char *cwd, const char *in, char *out, unsigned int outsz) {
     return 0;
 }
 
+static char last_cwd[PATH_MAX] = "/";
+
 static void cmd_cd(const char *path) {
-    if (!*path) {
-        terminal_print("\nusage: cd <path>");
-        return;
-    }
+    while (*path == ' ') path++;
     struct task *t = get_current_task();
+    char target[PATH_MAX];
+    if (!*path) {                              // cd (no arg) -> /
+        target[0] = '/';
+        target[1] = '\0';
+    } else if (strcmp(path, "-") == 0) {       // cd - -> previous dir
+        strncpy(target, last_cwd, PATH_MAX);
+        target[PATH_MAX - 1] = '\0';
+    } else if (path[0] == '~') {               // ~ or ~/x -> / or /x
+        const char *rest = path + 1;
+        if (*rest == '/') rest++;
+        target[0] = '/';
+        strncpy(target + 1, rest, PATH_MAX - 2);
+        target[PATH_MAX - 1] = '\0';
+    } else {
+        strncpy(target, path, sizeof target - 1);
+        target[sizeof target - 1] = 0;
+    }
+    if (strcmp(path, "-") != 0 && *path != 0)
+        strncpy(last_cwd, t->cwd, sizeof last_cwd - 1);
     char nb[PATH_MAX];
-    if (path_norm(t->cwd, path, nb, sizeof(nb)) < 0) {
+    if (path_norm(t->cwd, target, nb, sizeof nb) < 0) {
         terminal_print("\ncd: bad path");
         return;
     }
     struct aos_stat st;
     if (vfs_kernel_stat(nb, &st) != 0 || st.type != 2) {
         terminal_print("\ncd: no such directory: ");
-        terminal_print(path);
+        terminal_print(target);
         return;
     }
     strncpy(t->cwd, nb, PATH_MAX);
     t->cwd[PATH_MAX - 1] = '\0';
+    if (strcmp(path, "-") == 0) {              // cd - prints the new dir
+        terminal_print("\n");
+        terminal_print(t->cwd);
+    }
 }
 
-static void cmd_pwd(void) {
+static void cmd_pwd(const char *arg) {
+    if (arg && strcmp(arg, "-P") == 0) { /* -P == default physical cwd */ }
     terminal_print("\n");
     terminal_print(get_current_task()->cwd);
 }
@@ -211,7 +261,9 @@ static int try_exec(const char *full_path, const char *arg, int trace) {
     serial_print_dec((unsigned int)trace);
     serial_print("\n");
     if (trace) me->trace_on = 1;
-    void (*entry)(void) = program_load(full_path, arg);
+    char envb[512];
+    shell_build_env(envb, sizeof envb, 0);
+    void (*entry)(void) = program_load(full_path, arg, envb);
     if (entry) {
         if (task_current_abi() == ABI_LINUX)
             user_program_start_linux(entry, task_current_lctx()->stack_sp);
@@ -435,7 +487,9 @@ static void exec_pipe(const char *line) {
     // right after spawn (the scheduler has not run the child yet).
     for (int i = 0; i < n; i++) {
         unsigned int pid;
-        if (task_spawn(full[i], args[i], 0, &pid) != 0) {
+        char envb[512];
+        shell_build_env(envb, sizeof envb, 1);
+        if (task_spawn(full[i], args[i], 0, &pid, envb) != 0) {
             for (int j = 0; j < n - 1; j++) { vfs_close_fd(rd[j]); vfs_close_fd(wr[j]); }
             terminal_print("\npipe: spawn failed");
             shell_set_status(1);
@@ -503,7 +557,7 @@ static void run_command_raw(const char *line) {
     }
 
     if (strcmp(cmd, "pwd") == 0) {
-        cmd_pwd();
+        cmd_pwd(arg);
         return;
     }
 
@@ -619,7 +673,7 @@ static void exec_stage(const char *line) {
 // Spawn `line` (a simple "cmd args" line, no operators) as a background task.
 // Prints "bg: pid N" on success and sets $?; returns 1 on success, 0 on
 // failure. Builtins are NOT handled here (caller runs them inline).
-static int bg_spawn(const char *line, unsigned int *out_pid) {
+static int bg_spawn(const char *line, unsigned int *out_pid, int term_off) {
     while (*line == ' ') line++;
     if (!*line) return 0;
 
@@ -643,7 +697,9 @@ static int bg_spawn(const char *line, unsigned int *out_pid) {
     }
 
     unsigned int pid;
-    if (task_spawn(full_path, arg, 0, &pid) != 0) {
+    char envb[512];
+    shell_build_env(envb, sizeof envb, term_off);
+    if (task_spawn(full_path, arg, 0, &pid, envb) != 0) {
         terminal_print("\nbg: spawn failed");
         shell_set_status(1);
         return 0;
@@ -693,7 +749,7 @@ static void run_bg_redirect(const char *line, int op, const char *op_pos) {
     }
 
     unsigned int pid;
-    if (!bg_spawn(left_buf, &pid)) {
+    if (!bg_spawn(left_buf, &pid, 1)) {
         vfs_close_fd(fd);   // spawn failed / not found: close, nothing wired
         return;
     }
@@ -731,7 +787,7 @@ static void run_bg(const char *line) {
         run_bg_redirect(line, op, op_pos);
         return;
     }
-    bg_spawn(line, 0);
+    bg_spawn(line, 0, 0);
 }
 
 void commands_execute(const char *line) {

@@ -68,7 +68,7 @@ def main():
         # a user program runs serial is diverted to its key queue, so only the
         # final program of an early burst reaches the shell. `procinfo` reads
         # /proc/uptime, /proc/version, /proc/mounts and lists /proc in one run.
-        s.sendall(b"procinfo\n")
+        s.sendall(b"procinfo -a\n")
         out = drain(s, b"", time.time() + 30, b"PROCINFO PASS")
         if b"KERNEL PANIC" in out:
             raise AssertionError("kernel panic during procfs commands:\n"

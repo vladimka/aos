@@ -33,6 +33,7 @@
 #define AOS_GPU_INFO      521
 #define AOS_GPU_FLIP      522
 #define AOS_CURSOR        523
+#define AOS_SPAWN_FDS_ENV 524
 #define AOS_INHERIT_FD    0xFFFFFFFE
 
 #ifndef FIONBIO
@@ -159,6 +160,12 @@ static __attribute__((unused)) int aos_spawn_fds(const char *path,
         const struct aos_redir *redirs) {
     return aos_syscall(AOS_SPAWN_FDS, (int)path, (int)args, (int)sink,
                        (int)redirs, 0);
+}
+static __attribute__((unused)) int aos_spawn_env(const char *path,
+        const char *args, unsigned int sink, const char *env,
+        const struct aos_redir *redirs) {
+    return aos_syscall(AOS_SPAWN_FDS_ENV, (int)path, (int)args, (int)sink,
+                       (int)redirs, (int)env);
 }
 static __attribute__((unused)) int aos_gpu_info(unsigned int *addr, unsigned int *w,
                        unsigned int *h, unsigned int *pitch, unsigned int *active) {

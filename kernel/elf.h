@@ -47,6 +47,6 @@ void *elf_load(const char *path);
 struct linux_ctx;
 
 int elf_probe(const char *path, int *abi);
-void *elf_load_linux(const char *path, const char *args, struct linux_ctx *lc);
+void *elf_load_linux(const char *path, const char *args, struct linux_ctx *lc, const char *env);
 
 #endif

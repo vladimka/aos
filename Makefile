@@ -23,7 +23,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
                kernel/task.o kernel/linux_syscall.o kernel/pipe.o kernel/block.o kernel/sfs2.o \
                kernel/klog.o kernel/trace.o kernel/symtab.o
 
-PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest sh exitto random fstest procinfo bgspawn cp mv mkdir rmdir head wc sync
+PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest sh exitto random fstest procinfo bgspawn cp mv mkdir rmdir head wc sync envp
 
 # All AOS programs and the Linux ELF payload (lin/*) are built with the
 # static musl i386 toolchain. It is a hard build dependency: without it the
@@ -101,9 +101,9 @@ arch/i386/%.o: arch/i386/%.c
 # Programs are static musl ELFs (Task 30). wm additionally links the pure-C
 # ICO decoder (programs/musl/ico.c); the GUI apps link the shared theme loader
 # (programs/musl/theme.c).
-build/prog/%.elf: programs/musl/%.c programs/aosabi.h
+build/prog/%.elf: programs/musl/%.c programs/musl/uutils.c programs/aosabi.h
 	@mkdir -p build/prog
-	$(MUSL_CC) -static -no-pie -Os -Wall -Wextra -Iprograms -o $@ $<
+	$(MUSL_CC) -static -no-pie -Os -Wall -Wextra -Iprograms -o $@ $< programs/musl/uutils.c
 
 build/prog/wm.elf: programs/musl/wm.c programs/musl/ico.c programs/musl/theme.c programs/aosabi.h
 	@mkdir -p build/prog
@@ -172,7 +172,7 @@ debug: aos.iso
 # Headless regression suite: each script boots aos.iso under QEMU, drives the
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
 LINUX_TESTS = linhello lincat lindirtest pipetest
-TESTS = ipctest manytest notepadtest sleeptest rngtest blktest atatest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest $(LINUX_TESTS) vguitest powertest tablettest
+TESTS = ipctest manytest notepadtest sleeptest rngtest blktest atatest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest toolflags lsflagstest sgrcolor $(LINUX_TESTS) vguitest powertest tablettest
 
 # Fast subset for CI: quick boots, no extra virtio devices.
 FAST_TESTS = ipctest linhello lincat

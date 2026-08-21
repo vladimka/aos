@@ -26,12 +26,87 @@ static unsigned char bg_color = VGA_BLACK;
 
 static unsigned char text_color;
 
-static const unsigned int color_rgb[16] = {
+static const unsigned int color_rgb[16] __attribute__((unused)) = {
     0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
     0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
     0x555555, 0x5555FF, 0x55FF55, 0x55FFFF,
     0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF,
 };
+
+static const unsigned int xterm_rgb[256] = {
+    0x000000, 0x800000, 0x008000, 0x808000, 0x000080, 0x800080, 0x008080, 0xC0C0C0,
+    0x808080, 0xFF0000, 0x00FF00, 0xFFFF00, 0x0000FF, 0xFF00FF, 0x00FFFF, 0xFFFFFF,
+    0x000000, 0x00005F, 0x000087, 0x0000AF, 0x0000D7, 0x0000FF, 0x005F00, 0x005F5F,
+    0x005F87, 0x005FAF, 0x005FD7, 0x005FFF, 0x008700, 0x00875F, 0x008787, 0x0087AF,
+    0x0087D7, 0x0087FF, 0x00AF00, 0x00AF5F, 0x00AF87, 0x00AFAF, 0x00AFD7, 0x00AFFF,
+    0x00D700, 0x00D75F, 0x00D787, 0x00D7AF, 0x00D7D7, 0x00D7FF, 0x00FF00, 0x00FF5F,
+    0x00FF87, 0x00FFAF, 0x00FFD7, 0x00FFFF, 0x5F0000, 0x5F005F, 0x5F0087, 0x5F00AF,
+    0x5F00D7, 0x5F00FF, 0x5F5F00, 0x5F5F5F, 0x5F5F87, 0x5F5FAF, 0x5F5FD7, 0x5F5FFF,
+    0x5F8700, 0x5F875F, 0x5F8787, 0x5F87AF, 0x5F87D7, 0x5F87FF, 0x5FAF00, 0x5FAF5F,
+    0x5FAF87, 0x5FAFAF, 0x5FAFD7, 0x5FAFFF, 0x5FD700, 0x5FD75F, 0x5FD787, 0x5FD7AF,
+    0x5FD7D7, 0x5FD7FF, 0x5FFF00, 0x5FFF5F, 0x5FFF87, 0x5FFFAF, 0x5FFFD7, 0x5FFFFF,
+    0x870000, 0x87005F, 0x870087, 0x8700AF, 0x8700D7, 0x8700FF, 0x875F00, 0x875F5F,
+    0x875F87, 0x875FAF, 0x875FD7, 0x875FFF, 0x878700, 0x87875F, 0x878787, 0x8787AF,
+    0x8787D7, 0x8787FF, 0x87AF00, 0x87AF5F, 0x87AF87, 0x87AFAF, 0x87AFD7, 0x87AFFF,
+    0x87D700, 0x87D75F, 0x87D787, 0x87D7AF, 0x87D7D7, 0x87D7FF, 0x87FF00, 0x87FF5F,
+    0x87FF87, 0x87FFAF, 0x87FFD7, 0x87FFFF, 0xAF0000, 0xAF005F, 0xAF0087, 0xAF00AF,
+    0xAF00D7, 0xAF00FF, 0xAF5F00, 0xAF5F5F, 0xAF5F87, 0xAF5FAF, 0xAF5FD7, 0xAF5FFF,
+    0xAF8700, 0xAF875F, 0xAF8787, 0xAF87AF, 0xAF87D7, 0xAF87FF, 0xAFAF00, 0xAFAF5F,
+    0xAFAF87, 0xAFAFAF, 0xAFAFD7, 0xAFAFFF, 0xAFD700, 0xAFD75F, 0xAFD787, 0xAFD7AF,
+    0xAFD7D7, 0xAFD7FF, 0xAFFF00, 0xAFFF5F, 0xAFFF87, 0xAFFFAF, 0xAFFFD7, 0xAFFFFF,
+    0xD70000, 0xD7005F, 0xD70087, 0xD700AF, 0xD700D7, 0xD700FF, 0xD75F00, 0xD75F5F,
+    0xD75F87, 0xD75FAF, 0xD75FD7, 0xD75FFF, 0xD78700, 0xD7875F, 0xD78787, 0xD787AF,
+    0xD787D7, 0xD787FF, 0xD7AF00, 0xD7AF5F, 0xD7AF87, 0xD7AFAF, 0xD7AFD7, 0xD7AFFF,
+    0xD7D700, 0xD7D75F, 0xD7D787, 0xD7D7AF, 0xD7D7D7, 0xD7D7FF, 0xD7FF00, 0xD7FF5F,
+    0xD7FF87, 0xD7FFAF, 0xD7FFD7, 0xD7FFFF, 0xFF0000, 0xFF005F, 0xFF0087, 0xFF00AF,
+    0xFF00D7, 0xFF00FF, 0xFF5F00, 0xFF5F5F, 0xFF5F87, 0xFF5FAF, 0xFF5FD7, 0xFF5FFF,
+    0xFF8700, 0xFF875F, 0xFF8787, 0xFF87AF, 0xFF87D7, 0xFF87FF, 0xFFAF00, 0xFFAF5F,
+    0xFFAF87, 0xFFAFAF, 0xFFAFD7, 0xFFAFFF, 0xFFD700, 0xFFD75F, 0xFFD787, 0xFFD7AF,
+    0xFFD7D7, 0xFFD7FF, 0xFFFF00, 0xFFFF5F, 0xFFFF87, 0xFFFFAF, 0xFFFFD7, 0xFFFFFF,
+    0x080808, 0x121212, 0x1C1C1C, 0x262626, 0x303030, 0x3A3A3A, 0x444444, 0x4E4E4E,
+    0x585858, 0x626262, 0x6C6C6C, 0x767676, 0x808080, 0x8A8A8A, 0x949494, 0x9E9E9E,
+    0xA8A8A8, 0xB2B2B2, 0xBCBCBC, 0xC6C6C6, 0xD0D0D0, 0xDADADA, 0xE4E4E4, 0xEEEEEE
+};
+
+static unsigned char fg_index = 7;   /* xterm light-grey */
+static unsigned char bg_index = 0;
+static int ansi_bold = 0;
+static int ansi_params[8];
+static int ansi_np = 0;
+
+static unsigned int cur_fg_rgb(void) {
+    return xterm_rgb[ansi_bold ? ((fg_index & 0xF8) | 8) : fg_index];
+}
+static unsigned int cur_bg_rgb(void) {
+    return xterm_rgb[bg_index];
+}
+
+static unsigned char xterm_to_vga(int idx) {
+    /* nearest of the 16 base colors */
+    if (idx < 8) return (unsigned char)idx;
+    if (idx < 16) return (unsigned char)(idx & 7);        /* bright -> base */
+    if (idx >= 232) return (unsigned char)(idx < 244 ? 8 : 7);
+    /* cube colors: pick by luminance buckets */
+    int r = ((idx - 16) / 36), g = ((idx - 16) / 6) % 6, b = (idx - 16) % 6;
+    int gr = (r + 1) / 2, gg = (g + 1) / 2, gb = (b + 1) / 2;
+    unsigned char col = (unsigned char)(gr * 4 + gg * 2 + gb);
+    if (col > 8) col = 7;
+    return col;
+}
+
+/* Kernel callers (vga_set_color) pass VGA color numbers (drivers/vga.h),
+   whose 0-15 numbering differs from the xterm base-16 (1=red vs 4=blue). */
+static unsigned char vga_to_xterm(unsigned char idx) {
+    static const unsigned char map[16] = {
+        0, 4, 2, 6, 1, 5, 3, 7,          /* black blue green cyan red magenta brown lgrey */
+        8, 12, 10, 14, 9, 13, 11, 15,    /* dgrey lblue lgreen lcyan lred lmag lbrown white */
+    };
+    return map[idx & 15];
+}
+
+static void vga_refresh_text_color(void) {
+    text_color = (xterm_to_vga(bg_index) << 4) | xterm_to_vga(fg_index);
+}
 
 #include "fb_font.h"
 
@@ -105,7 +180,9 @@ static void mirror_shift_up(void) {
 void vga_set_color(unsigned char fg, unsigned char bg) {
     fg_color = fg;
     bg_color = bg;
-    text_color = (bg << 4) | fg;
+    fg_index = vga_to_xterm(fg);
+    bg_index = vga_to_xterm(bg);
+    text_color = (bg << 4) | fg;    /* VGA hardware attribute, kernel numbering */
 }
 
 static void draw_pixel(unsigned int x, unsigned int y, unsigned int rgb) {
@@ -126,7 +203,51 @@ static unsigned int utf8_codepoint = 0;
 
 // ANSI CSI escape state (ESC [ <params> <final>)
 static int ansi_state = 0;
-static int ansi_n = 0;
+
+static void ansi_sgr(int *p, int np) {
+    for (int i = 0; i < np; i++) {
+        int v = p[i];
+        if (v == 0) { fg_index = 7; bg_index = 0; ansi_bold = 0; }
+        else if (v == 1) ansi_bold = 1;
+        else if (v == 39) { fg_index = 7; ansi_bold = 0; }
+        else if (v == 49) bg_index = 0;
+        else if (v == 38 || v == 48) {
+            if (i + 2 < np && p[i + 1] == 5) {
+                int idx = p[i + 2];
+                if (idx < 0) idx = 0;
+                if (idx > 255) idx = 255;
+                if (v == 38) fg_index = (unsigned char)idx;
+                else bg_index = (unsigned char)idx;
+                i += 2;
+            } else if (i + 4 < np && p[i + 1] == 2) {
+                /* 38;2;r;g;b -> skip, unsupported */
+                i += 4;
+            }
+        }
+    }
+    vga_refresh_text_color();
+}
+
+static void ansi_collect(unsigned char c) {
+    /* called when ansi_state==2 and c is a non-digit, non-';' final byte */
+    if (c == 'm') ansi_sgr(ansi_params, ansi_np);
+    else if (c == 'K') {
+        if (fb_initialized && scroll_offset > 0) {
+            /* in scrollback: update the mirror only, never draw to the screen */
+            for (int x = cursor_x; x <= max_x; x++)
+                screen_mirror[cursor_y][x] = ' ';
+        } else {
+            vga_clear_eol();          /* both paths share clear */
+        }
+    }
+    else if (c == 'D') {                         /* CUB: cursor left N */
+        int k = ansi_np > 0 ? ansi_params[0] : 0;
+        if (k <= 0) k = 1;                       /* bare ESC[D moves 1 */
+        cursor_x -= k;
+        if (cursor_x < 0) cursor_x = 0;
+    }
+    ansi_np = 0;
+}
 
 static unsigned char fb_glyph_from_cp(unsigned short cp) {
     return fb_cp_to_glyph(cp);
@@ -146,8 +267,8 @@ static void fb_draw_glyph(unsigned int x, unsigned int y, unsigned char glyph, u
 
 static void fb_erase_underline(void) {
     if (!fb_initialized) return;
-    unsigned int fg_rgb = color_rgb[fg_color];
-    unsigned int bg_rgb = color_rgb[bg_color];
+    unsigned int fg_rgb = cur_fg_rgb();
+    unsigned int bg_rgb = cur_bg_rgb();
     unsigned short cp = screen_mirror[cursor_y][cursor_x];
     if (cp == 0) cp = ' ';
     unsigned short glyph = fb_cp_to_glyph(cp);
@@ -170,7 +291,7 @@ static void fb_scroll(void) {
     unsigned char *fb = (unsigned char *)fb_addr;
     for (unsigned int y = 0; y + row_bytes < fb_height * fb_pitch; y += row_bytes)
         memcpy_fast(fb + y, fb + y + row_bytes, row_bytes);
-    unsigned int bg_rgb = color_rgb[bg_color];
+    unsigned int bg_rgb = cur_bg_rgb();
     fb_fill_rows(fb, fb_height - 16, fb_height, bg_rgb);
     cursor_y--;
 }
@@ -205,21 +326,21 @@ static void text_putchar(char c) {
         return;
     }
     if (ansi_state == 1) {
-        if (uc == '[') { ansi_state = 2; ansi_n = 0; return; }
+        if (uc == '[') {
+            ansi_state = 2;
+            ansi_np = 0;
+            for (int i = 0; i < 8; i++) ansi_params[i] = 0;
+            return;
+        }
         ansi_state = 0;
     } else if (ansi_state == 2) {
-        if (uc >= '0' && uc <= '9') { ansi_n = ansi_n * 10 + (uc - '0'); return; }
-        if (uc == ';') return;
+        if (uc >= '0' && uc <= '9') {
+            if (ansi_np < 8) ansi_params[ansi_np] = ansi_params[ansi_np] * 10 + (uc - '0');
+            return;
+        }
+        if (uc == ';') { if (ansi_np < 8) ansi_np++; return; }
         ansi_state = 0;
-        if (uc == 'K') {
-            vga_clear_eol();
-            return;
-        }
-        if (uc == 'D') {
-            cursor_x -= ansi_n;
-            if (cursor_x < 0) cursor_x = 0;
-            return;
-        }
+        ansi_collect(uc);
         return;
     } else if (uc == 0x1b) {
         ansi_state = 1;
@@ -251,7 +372,7 @@ static void fb_putchar(char c) {
         if (cursor_x > 0) cursor_x--;
         if (scroll_offset == 0) {
             fb_draw_glyph(cursor_x * 8, cursor_y * 16,
-                          fb_glyph_from_cp(' '), color_rgb[fg_color], color_rgb[bg_color]);
+                          fb_glyph_from_cp(' '), cur_fg_rgb(), cur_bg_rgb());
         }
         screen_mirror[cursor_y][cursor_x] = ' ';
         return;
@@ -261,26 +382,21 @@ static void fb_putchar(char c) {
         return;
     }
     if (ansi_state == 1) {
-        if (uc == '[') { ansi_state = 2; ansi_n = 0; return; }
+        if (uc == '[') {
+            ansi_state = 2;
+            ansi_np = 0;
+            for (int i = 0; i < 8; i++) ansi_params[i] = 0;
+            return;
+        }
         ansi_state = 0;
     } else if (ansi_state == 2) {
-        if (uc >= '0' && uc <= '9') { ansi_n = ansi_n * 10 + (uc - '0'); return; }
-        if (uc == ';') return;
+        if (uc >= '0' && uc <= '9') {
+            if (ansi_np < 8) ansi_params[ansi_np] = ansi_params[ansi_np] * 10 + (uc - '0');
+            return;
+        }
+        if (uc == ';') { if (ansi_np < 8) ansi_np++; return; }
         ansi_state = 0;
-        if (uc == 'K') {
-            if (scroll_offset == 0) {
-                vga_clear_eol();
-            } else {
-                for (int x = cursor_x; x <= max_x; x++)
-                    screen_mirror[cursor_y][x] = ' ';
-            }
-            return;
-        }
-        if (uc == 'D') {
-            cursor_x -= ansi_n;
-            if (cursor_x < 0) cursor_x = 0;
-            return;
-        }
+        ansi_collect(uc);
         return;
     } else if (uc == 0x1b) {
         ansi_state = 1;
@@ -328,7 +444,7 @@ render:
     if (cpi > 0xFFFF) cpi = '?';
     if (scroll_offset == 0)
         fb_draw_glyph(cursor_x * 8, cursor_y * 16,
-                      fb_glyph_from_cp(cpi), color_rgb[fg_color], color_rgb[bg_color]);
+                      fb_glyph_from_cp(cpi), cur_fg_rgb(), cur_bg_rgb());
     if (cursor_x < mirror_cols)
         screen_mirror[cursor_y][cursor_x] = cpi;
     cursor_x++;
@@ -405,7 +521,7 @@ static void fb_fill_rows(unsigned char *dst, unsigned int y0, unsigned int y1, u
 
 // Fast row renderer: background is already filled, so only fg pixels are written.
 static void fb_render_row_fast(const unsigned short *cp_row, int len, int screen_row) {
-    unsigned int fg_rgb = color_rgb[fg_color];
+    unsigned int fg_rgb = cur_fg_rgb();
     unsigned char *base = fb_stage_active ? (unsigned char *)FB_STAGE_ADDR : (unsigned char *)fb_addr;
     unsigned int row_base = screen_row * 16 * fb_pitch;
     for (int col = 0; col < len && col < mirror_cols; col++) {
@@ -436,7 +552,7 @@ static void render_scrollback_full(void) {
 
     if (fb_initialized) {
         fb_stage_begin();
-        fb_fill_rows((unsigned char *)FB_STAGE_ADDR, 0, (max_y + 1) * 16, color_rgb[bg_color]);
+        fb_fill_rows((unsigned char *)FB_STAGE_ADDR, 0, (max_y + 1) * 16, cur_bg_rgb());
         int screen_row = 0;
         for (int si = sb_start; si < scrollback_count && screen_row <= max_y; si++, screen_row++) {
             int idx = (scrollback_head + si) % SCROLLBACK_LINES;
@@ -475,7 +591,7 @@ static void render_scrollback_full(void) {
 static void render_live_full(void) {
     if (fb_initialized) {
         fb_stage_begin();
-        fb_fill_rows((unsigned char *)FB_STAGE_ADDR, 0, (max_y + 1) * 16, color_rgb[bg_color]);
+        fb_fill_rows((unsigned char *)FB_STAGE_ADDR, 0, (max_y + 1) * 16, cur_bg_rgb());
         for (int row = 0; row <= max_y; row++)
             fb_render_row_fast(screen_mirror[row], mirror_cols, row);
         fb_stage_flush();
@@ -505,7 +621,7 @@ static void shift_view(int d) {
     unsigned int rowbytes = mirror_cols * 8 * (fb_bpp / 8);
     unsigned char *base = (unsigned char *)FB_STAGE_ADDR;
     int vstart = scrollback_count - scroll_offset;
-    unsigned int bg_rgb = color_rgb[bg_color];
+    unsigned int bg_rgb = cur_bg_rgb();
 
     fb_stage_begin();
 
@@ -582,7 +698,7 @@ void vga_cursor_on(void) {
     if (fb_initialized) {
         unsigned int x = cursor_x * 8;
         unsigned int y = cursor_y * 16 + 14;
-        unsigned int rgb = color_rgb[fg_color];
+        unsigned int rgb = cur_fg_rgb();
         for (unsigned int row = 0; row < 2 && y + row < fb_height; row++)
             for (unsigned int col = 0; col < 8 && x + col < fb_width; col++)
                 draw_pixel(x + col, y + row, rgb);
@@ -597,7 +713,7 @@ void vga_cursor_off(void) {
     if (fb_initialized) {
         unsigned int x = cursor_x * 8;
         unsigned int y = cursor_y * 16 + 14;
-        unsigned int rgb = color_rgb[bg_color];
+        unsigned int rgb = cur_bg_rgb();
         for (unsigned int row = 0; row < 2 && y + row < fb_height; row++)
             for (unsigned int col = 0; col < 8 && x + col < fb_width; col++)
                 draw_pixel(x + col, y + row, rgb);
@@ -633,8 +749,8 @@ int vga_get_max_x(void) {
 
 void vga_clear_eol(void) {
     if (fb_initialized) {
-        unsigned int fg = color_rgb[fg_color];
-        unsigned int bg = color_rgb[bg_color];
+        unsigned int fg = cur_fg_rgb();
+        unsigned int bg = cur_bg_rgb();
         unsigned char glyph = fb_glyph_from_cp(' ');
         for (int x = cursor_x; x <= max_x; x++) {
             fb_draw_glyph(x * 8, cursor_y * 16, glyph, fg, bg);
@@ -739,7 +855,7 @@ void vga_init(void) {
 
     if (!ok) {
         serial_print("Framebuffer: not available, using text mode\n");
-        text_color = (bg_color << 4) | fg_color;
+        vga_refresh_text_color();
         unsigned short blank = text_color << 8 | ' ';
         for (int i = 0; i < TEXT_ROWS * TEXT_COLS; i++)
             TEXT_ADDR[i] = blank;
@@ -752,7 +868,7 @@ void vga_init(void) {
         return;
     }
 
-    unsigned int bg_rgb = color_rgb[bg_color];
+    unsigned int bg_rgb = cur_bg_rgb();
     for (unsigned int y = 0; y < fb_height; y++)
         for (unsigned int x = 0; x < fb_width; x++)
             draw_pixel(x, y, bg_rgb);
@@ -780,10 +896,10 @@ void vga_clear(void) {
     cursor_y = 0;
     reset_utf8_state();
     ansi_state = 0;
-    ansi_n = 0;
+    ansi_np = 0;
 
     if (fb_initialized) {
-        unsigned int bg_rgb = color_rgb[bg_color];
+        unsigned int bg_rgb = cur_bg_rgb();
         for (unsigned int y = 0; y < fb_height; y++)
             for (unsigned int x = 0; x < fb_width; x++)
                 draw_pixel(x, y, bg_rgb);
