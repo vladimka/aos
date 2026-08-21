@@ -1,8 +1,25 @@
 #!/usr/bin/env python3
-import sys, os, re
+import subprocess, sys, os, re, tempfile
 
 def cname(name, prefix):
     return prefix + re.sub(r'\W', '_', name)
+
+# The kernel image is size-capped (_end <= RAMDISK_BASE, asserted in
+# linker.ld), so embed stripped copies: the raw build ELFs carry ~16 KB of
+# symtab/strtab each that elf_load() never reads. The build/prog/*.elf
+# artifacts themselves stay unstripped for nm-level debugging.
+STRIP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     'tools', 'musl-i686', 'bin', 'i686-linux-musl-strip')
+
+def read_stripped(path):
+    with tempfile.NamedTemporaryFile(suffix='.elf', delete=False) as tf:
+        tmp = tf.name
+    try:
+        subprocess.run([STRIP, '-o', tmp, path], check=True)
+        with open(tmp, 'rb') as fp:
+            return fp.read()
+    finally:
+        os.unlink(tmp)
 
 progs = []
 data = []
@@ -18,9 +35,7 @@ while i < len(args):
         i += 2
         continue
     name = os.path.basename(a).replace('.elf', '')
-    with open(a, 'rb') as fp:
-        blob = fp.read()
-    progs.append((name, blob))
+    progs.append((name, read_stripped(a)))
     i += 1
 
 print('#include "elf.h"')

@@ -107,7 +107,7 @@ All commands (`help`, `uptime`, `clear`, `echo`, `tick`, `info`, `reboot`, `pani
 - Compiled for load address `0x01000000` (`programs/programs.ld`)
 - Statically linked (`-static -nostdlib -n`), **no INTERP segment**
 - Compiled from `programs/musl/*.c` via static musl i386 toolchain; include path `-Iprograms` for `aosabi.h`
-- Embedded into kernel at build time by `scripts/gen_progs.py` → `kernel/progs.c`
+- Embedded into kernel at build time by `scripts/gen_progs.py` → `kernel/progs.c`; each program ELF is embedded **stripped** (via `tools/musl-i686/bin/i686-linux-musl-strip` into a temp copy — the kernel image is size-capped by the `_end <= RAMDISK_BASE` ASSERT in `linker.ld`, and unstripped ELFs carry ~16 KB of symtab each). The `build/prog/*.elf` artifacts themselves stay unstripped for `nm` debugging
 - Stored in ramdisk as `bin/<name>`; loaded by `elf_load()` which parses PT_LOAD segments
 - Run in **ring 3**; `bin/test` (aos_test framework) exercises `malloc/free`, blocking `read_key()`, and syscall pointer validation
 
