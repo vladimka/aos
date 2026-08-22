@@ -23,7 +23,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
                kernel/task.o kernel/linux_syscall.o kernel/pipe.o kernel/block.o kernel/sfs2.o \
                kernel/klog.o kernel/trace.o kernel/symtab.o
 
-PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest sh exitto random fstest procinfo bgspawn cp mv mkdir rmdir head wc sync envp ps
+PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest sh exitto random fstest procinfo bgspawn cp mv mkdir rmdir head wc sync envp ps init
 
 # All AOS programs and the Linux ELF payload (lin/*) are built with the
 # static musl i386 toolchain. It is a hard build dependency: without it the
@@ -128,8 +128,9 @@ build/linux/%: tools/linux/%.c
 	@mkdir -p build/linux
 	$(LINUX_CC) -static -no-pie -Os -o $@ $<
 
-kernel/progs.c: $(PROG_ELFS) scripts/demo.ico scripts/gen_progs.py $(LINUX_BINS)
+kernel/progs.c: $(PROG_ELFS) scripts/demo.ico scripts/init.conf scripts/gen_progs.py $(LINUX_BINS)
 	$(PYTHON) scripts/gen_progs.py $(PROG_ELFS) --data demo.ico=scripts/demo.ico \
+		--data etc/init.conf=scripts/init.conf \
 		$(LINUX_EMBED) > $@
 
 compile_commands.json: scripts/gen_compile_commands.py $(wildcard kernel/*.c drivers/*.c arch/i386/*.c boot/*.c programs/musl/*.c)
@@ -144,11 +145,19 @@ aos.elf: $(KERNEL_OBJS) linker.ld scripts/gen_symtab.py
 	$(CC) $(CFLAGS) -c -o kernel/symtab.o kernel/symtab.c
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
 
-aos.iso: aos.elf
+aos.iso: aos.elf aos-text.elf
 	mkdir -p iso/boot/grub
-	cp $< iso/boot/aos.elf
-	printf 'set timeout=0\nmenuentry "AOS" {\n  insmod all_video\n  multiboot2 /boot/aos.elf\n}\n' > iso/boot/grub/grub.cfg
+	cp aos.elf iso/boot/aos.elf
+	cp aos-text.elf iso/boot/aos-text.elf
+	printf 'set timeout=60\nset default=0\nmenuentry "AOS" {\n  insmod all_video\n  multiboot2 /boot/aos.elf\n}\nmenuentry "AOS (text)" {\n  multiboot2 /boot/aos-text.elf\n}\n' > iso/boot/grub/grub.cfg
 	grub-mkrescue -o $@ iso
+
+# Text-mode kernel: same objects, but the MB2 header requests no framebuffer,
+# so GRUB leaves the console in VGA text mode (vga_init() takes the text path).
+# Depends on aos.elf so the two-pass symtab link has already produced the
+# final kernel/symtab.o.
+aos-text.elf: aos.elf boot/boot-text.o $(filter-out boot/boot.o,$(KERNEL_OBJS))
+	$(LD) $(LDFLAGS) -o $@ boot/boot-text.o $(filter-out boot/boot.o,$(KERNEL_OBJS))
 
 disk.img:
 	truncate -s 4M $@
@@ -172,7 +181,7 @@ debug: aos.iso
 # Headless regression suite: each script boots aos.iso under QEMU, drives the
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
 LINUX_TESTS = linhello lincat lindirtest pipetest
-TESTS = ipctest manytest notepadtest sleeptest rngtest blktest atatest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest toolflags lsflagstest sgrcolor pstest $(LINUX_TESTS) vguitest powertest tablettest
+TESTS = ipctest manytest notepadtest sleeptest rngtest blktest atatest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest toolflags lsflagstest sgrcolor pstest textmodetest $(LINUX_TESTS) vguitest powertest tablettest
 
 # Fast subset for CI: quick boots, no extra virtio devices.
 FAST_TESTS = ipctest linhello lincat
@@ -198,6 +207,7 @@ clean:
 	rm -f $(MUSL_TGZ)
 
 -include $(KERNEL_OBJS:.o=.d)
+-include boot/boot-text.d
 
 .SECONDARY: $(KERNEL_OBJS)
 
