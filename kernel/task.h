@@ -59,6 +59,8 @@ void task_exit_current(unsigned int code);
 void task_sleep(unsigned int ms);
 int  task_waitpid(unsigned int pid);
 int  task_get_children(unsigned int *buf, unsigned int max);
+void task_set_init_pid(unsigned int pid);
+unsigned int task_init_pid(void);
 
 unsigned int task_current_pid(void);
 unsigned int task_current_sink(void);

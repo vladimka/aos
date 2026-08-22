@@ -49,6 +49,13 @@ static int event_pid = 0;
 static int current_exited = 0;
 static unsigned int current_exit_code = 0;
 
+// Pid of /bin/init (set by kernel_main). Orphaned children are re-parented
+// here and report their exit through the mailbox (SIGCHLD analog). 0 = none.
+static unsigned int init_pid = 0;
+
+void task_set_init_pid(unsigned int pid) { init_pid = pid; }
+unsigned int task_init_pid(void) { return init_pid; }
+
 // ---- IF-preserving cli/sti (mailbox + kmalloc ops run in IRQ and syscall ctx) ----
 static void irq_save(unsigned int *flags) {
     unsigned int f;
@@ -192,6 +199,23 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         for (int i = 1; i < MAX_TASKS; i++)
             if (tasks[i].parent == dead->pid && tasks[i].state == TASK_ZOMBIE)
                 tasks[i].state = TASK_FREE;
+        // Re-parent surviving children of a dying non-init task to init so
+        // their later exits are reported and reaped there. Children of a
+        // dying init keep the stale parent until ensure_init() hands them to
+        // the new instance via task_reassign_children().
+        if (init_pid > 0 && init_pid != dead->pid) {
+            for (int i = 1; i < MAX_TASKS; i++)
+                if (tasks[i].parent == dead->pid &&
+                    tasks[i].state != TASK_FREE &&
+                    tasks[i].state != TASK_ZOMBIE)
+                    tasks[i].parent = init_pid;
+        }
+        // A child of init died (own service or an adopted orphan): queue the
+        // SIGCHLD-style notice so the init loop can waitpid() the zombie.
+        if (dead->parent == init_pid && dead->parent > 0 &&
+            dead->parent != dead->pid && task_alive(dead->parent))
+            task_mailbox_send(dead->parent, MSG_TYPE_EXIT, dead->pid,
+                              current_exit_code, 0, 0);
     }
 
     struct task *next = 0;
