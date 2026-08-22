@@ -356,7 +356,8 @@ static int exec_from_path(const char *cmd, const char *arg, int trace) {
 static int cmd_is_builtin(const char *cmd) {
     return strcmp(cmd, "format") == 0 || strcmp(cmd, "setpath") == 0 ||
            strcmp(cmd, "cd") == 0 || strcmp(cmd, "pwd") == 0 ||
-           strcmp(cmd, "strace") == 0 || strcmp(cmd, "export") == 0;
+           strcmp(cmd, "strace") == 0 || strcmp(cmd, "export") == 0 ||
+           strcmp(cmd, "kill") == 0;
 }
 
 // strace <prog> [args]: run <prog> in-place with this task's syscalls traced,
@@ -378,6 +379,28 @@ static void cmd_strace(const char *line) {
     for (unsigned int i = 0; i < cl; i++) prog[i] = line[i];
     prog[cl] = '\0';
     exec_from_path(prog, p, 1);
+}
+
+// kill <pid>: cooperative kill via task_kill (the target exits with code 9
+// at its next syscall). Refuses pid 0 and unknown pids.
+static void cmd_kill(const char *arg) {
+    while (*arg == ' ') arg++;
+    if (*arg < '0' || *arg > '9') {
+        terminal_print("\nusage: kill <pid>");
+        return;
+    }
+    unsigned int pid = 0;
+    while (*arg >= '0' && *arg <= '9') {
+        pid = pid * 10 + (unsigned)(*arg - '0');
+        arg++;
+    }
+    if (task_kill(pid) == 0) {
+        terminal_print("\nkill: pid ");
+        terminal_print_dec(pid);
+        terminal_print(" signaled");
+    } else {
+        terminal_print("\nkill: no such process");
+    }
 }
 
 #define OP_NONE   0
@@ -568,6 +591,11 @@ static void run_command_raw(const char *line) {
 
     if (strcmp(cmd, "export") == 0) {
         cmd_export(arg);
+        return;
+    }
+
+    if (strcmp(cmd, "kill") == 0) {
+        cmd_kill(arg);
         return;
     }
 
