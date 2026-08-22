@@ -348,6 +348,9 @@ void aos_gui_handler(struct registers *r) {
     case AOS_WAITPID:
         r->eax = task_waitpid(r->ebx);
         break;
+    case AOS_KILL:
+        r->eax = task_kill(r->ebx);
+        break;
     case AOS_GET_CHILDREN: {
         unsigned int max = r->ecx;
         if (max > MAX_TASKS) max = MAX_TASKS;

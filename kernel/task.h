@@ -30,6 +30,7 @@ struct task {
     unsigned int wake_tick;   // TASK_SLEEPING: wake when tick >= wake_tick
     unsigned int wait_pid;    // TASK_WAITING: child pid being waited on
     unsigned int exit_code;   // TASK_ZOMBIE: exit code to hand to waitpid
+    unsigned int kill_pending; // set by task_kill: exit(9) on next syscall
     unsigned int *pd;           // task's own page directory page
     unsigned int *pts[3];       // the 3 user-area page table pages
     unsigned int *lpts[32];     // Linux window (PD 32..63) page-table pages
@@ -61,6 +62,7 @@ int  task_waitpid(unsigned int pid);
 int  task_get_children(unsigned int *buf, unsigned int max);
 void task_set_init_pid(unsigned int pid);
 unsigned int task_init_pid(void);
+int task_kill(unsigned int pid);
 
 unsigned int task_current_pid(void);
 unsigned int task_current_sink(void);

@@ -143,6 +143,15 @@ static void route_dec(unsigned int n) {
 void syscall_handler(struct registers *r) {
     unsigned int n = r->eax;
 
+    // Cooperative kill: a task marked by AOS_KILL exits at its next syscall,
+    // before any dispatch (covers both ABI routes below).
+    if (get_current_task()->kill_pending) {
+        get_current_task()->kill_pending = 0;
+        task_exit_current(9);
+        r->eax = 0;
+        return;
+    }
+
     if (n >= AOS_EXT && n < AOS_EXT + 100) {
         aos_gui_handler(r);
         return;

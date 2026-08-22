@@ -36,6 +36,8 @@ struct open_file console_open_file = { .flags = VFS_O_RDWR, .inode = 0 };
 #define MSG_TYPE_DATA 2
 #define MSG_TYPE_EXIT 6
 
+#define KILL_EXIT_CODE 9   // AOS_KILL target exit code
+
 static struct task tasks[MAX_TASKS];
 
 // Kernel stacks of exited tasks, freed only from a live task's context (the
@@ -567,6 +569,13 @@ int task_alive(unsigned int pid) {
 // pattern stuck when the wait ran in kernel context (exec_pipe's task_waitpid
 // on the main-loop stack), leaving the shell's main `hlt` with IF=0 forever.
 void task_sleep(unsigned int ms) {
+    // A pending kill resolves here too: sleepers may never make another
+    // syscall, so this is their exit point.
+    if (current_task->kill_pending) {
+        current_task->kill_pending = 0;
+        task_exit_current(KILL_EXIT_CODE);
+        return;
+    }
     unsigned int f;
     irq_save(&f);
     current_task->wake_tick = tick + (ms & 0x7FFFFFFF);
@@ -624,6 +633,21 @@ int task_get_children(unsigned int *buf, unsigned int max) {
             buf[n++] = tasks[i].pid;
     }
     return n;
+}
+
+// Cooperative kill: mark the target so it exits with code 9 at its next
+// syscall (or immediately from task_sleep). pid 0 is the kernel and can never
+// be killed; killing init is allowed (the main loop revives it).
+int task_kill(unsigned int pid) {
+    if (pid == 0 || pid >= MAX_TASKS || !task_alive(pid)) return -1;
+    unsigned int f;
+    irq_save(&f);
+    tasks[pid].kill_pending = 1;
+    irq_restore(f);
+    serial_print("KILL:pid=");
+    serial_print_dec(pid);
+    serial_print("\n");
+    return 0;
 }
 
 // syscall.c only calls this for pid > 0; task 0 uses its own prog_args buffer.

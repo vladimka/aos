@@ -34,6 +34,7 @@
 #define AOS_GPU_FLIP      522
 #define AOS_CURSOR        523
 #define AOS_SPAWN_FDS_ENV 524
+#define AOS_KILL          525
 #define AOS_INHERIT_FD    0xFFFFFFFE
 
 #ifndef FIONBIO
@@ -178,6 +179,7 @@ static __attribute__((unused)) void aos_cursor(int x, int y, int visible) {
     aos_syscall(AOS_CURSOR, x, y, visible, 0, 0);
 }
 static __attribute__((unused)) int aos_waitpid(unsigned int pid) { return aos_syscall(AOS_WAITPID, (int)pid, 0, 0, 0, 0); }
+static __attribute__((unused)) int aos_kill(unsigned int pid) { return aos_syscall(AOS_KILL, (int)pid, 0, 0, 0, 0); }
 static __attribute__((unused)) int aos_get_children(unsigned int *pids, unsigned int max) {
     return aos_syscall(AOS_GET_CHILDREN, (int)pids, (int)max, 0, 0, 0);
 }
