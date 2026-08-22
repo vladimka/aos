@@ -62,6 +62,7 @@ int  task_waitpid(unsigned int pid);
 int  task_get_children(unsigned int *buf, unsigned int max);
 void task_set_init_pid(unsigned int pid);
 unsigned int task_init_pid(void);
+void task_reassign_children(unsigned int old_parent, unsigned int new_parent);
 int task_kill(unsigned int pid);
 
 unsigned int task_current_pid(void);

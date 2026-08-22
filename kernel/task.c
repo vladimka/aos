@@ -58,6 +58,19 @@ static unsigned int init_pid = 0;
 void task_set_init_pid(unsigned int pid) { init_pid = pid; }
 unsigned int task_init_pid(void) { return init_pid; }
 
+// After init died and was re-spawned under a new pid: hand over its
+// surviving children and discard zombies nobody can waitpid anymore.
+void task_reassign_children(unsigned int old_parent, unsigned int new_parent) {
+    if (old_parent == 0 || old_parent == new_parent) return;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].parent != old_parent) continue;
+        if (tasks[i].state == TASK_ZOMBIE)
+            tasks[i].state = TASK_FREE;
+        else
+            tasks[i].parent = new_parent;
+    }
+}
+
 // ---- IF-preserving cli/sti (mailbox + kmalloc ops run in IRQ and syscall ctx) ----
 static void irq_save(unsigned int *flags) {
     unsigned int f;

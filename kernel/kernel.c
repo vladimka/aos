@@ -77,6 +77,33 @@ static void mouse_handler(void) {
     }
 }
 
+// Revive /bin/init when it dies (crash or kill): spawn a fresh instance,
+// hand it the survivors of the dead one, discard its unreaped zombies.
+// Throttled to one attempt per 100 ticks so a failing binary does not spin
+// the idle loop. The first call (from kernel_main) passes immediately.
+static void ensure_init(void) {
+    static unsigned int next_try = 0;
+    unsigned int ip = task_init_pid();
+    if (ip != 0 && task_alive(ip)) return;
+    if ((int)(tick - next_try) < 0) return;
+    next_try = tick + 100;
+    // "KEY=value\0" + implicit terminator = double-NUL-terminated one-entry
+    // env block (the format shell_build_env produces).
+    static const char init_env_gui[] = "AOS_MODE=gui";
+    static const char init_env_text[] = "AOS_MODE=text";
+    unsigned int npid = 0;
+    int rc = task_spawn("bin/init", "", 0, &npid,
+                        vga_fb_active() ? init_env_gui : init_env_text);
+    if (rc != 0) {
+        serial_print("init: respawn attempt failed\n");
+        return;
+    }
+    unsigned int old = ip;
+    task_set_init_pid(npid);
+    task_reassign_children(old, npid);
+    printf("init spawned (pid %u).\n", npid);
+}
+
 void kernel_main(unsigned int magic, unsigned int mb_info) {
     __saved_mb_info = mb_info;
     __saved_magic = magic;
@@ -143,24 +170,14 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     terminal_init();
     commands_env_default();
 
-    // Multitasking + GUI: spawn the window manager as the first user task.
-    // It takes over the screen and registers as the event consumer; the idle
-    // task keeps running the main loop below (mouse flush + hlt).
-    unsigned int wm_pid;
-    int wm_rc = task_spawn("bin/wm", "", 0, &wm_pid, 0);
-    if (wm_rc == 0) {
-        printf("Window manager spawned (pid %u).\n", wm_pid);
-    } else {
-        struct aos_stat st;
-        if (vfs_kernel_stat("bin/wm", &st) != 0)
-            printf("Failed to spawn window manager (rc=%d): /bin/wm missing on the filesystem. Run `format`.\n",
-                   wm_rc);
-        else
-            printf("Failed to spawn window manager (rc=%d): /bin/wm exists but load/spawn failed.\n",
-                   wm_rc);
-    }
+    // Multitasking + GUI: /bin/init reads /etc/init.conf and starts the
+    // services (the window manager et al). The idle loop below revives init
+    // if it dies. Text-mode boot passes AOS_MODE=text, so gui-only services
+    // stay down and the console remains with the kernel shell.
+    ensure_init();
 
     while (1) {
+        ensure_init();
         // Serial/console commands accumulate in the terminal's pending buffer
         // (set by the serial IRQ handler); execute them here, on task 0, so an
         // in-place program launched by the command belongs to the kernel shell
