@@ -313,6 +313,18 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     }
     memset(t, 0, sizeof(*t));
     t->pid = pid;
+    // Remember the program basename for /proc/<pid>/cmdline (ps et al).
+    {
+        const char *base = path;
+        for (const char *p = path; *p; p++)
+            if (*p == '/') base = p + 1;
+        unsigned int ni = 0;
+        while (base[ni] && ni < sizeof(t->name) - 1) {
+            t->name[ni] = base[ni];
+            ni++;
+        }
+        t->name[ni] = '\0';
+    }
     // Hold the slot NOW, before the slow allocations below. Otherwise a
     // reentrant task_spawn (a serial command run from the timer handler while
     // this spawn is mid-allocation) sees state == TASK_FREE here and steals

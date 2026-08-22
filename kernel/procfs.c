@@ -16,8 +16,12 @@
 // 0x1000 dirs is limited to MAX_TASKS, so decimal task pids never collide.
 #define PROCFS_PID_BASE   0x1000
 #define PROCFS_TRACE_BASE 0x2000
+#define PROCFS_CMDLINE_BASE 0x3000
+#define PROCFS_STATUS_BASE 0x4000
 #define PROCFS_PID_DIR(pid)   (PROCFS_PID_BASE + (pid))
 #define PROCFS_TRACE(pid)     (PROCFS_TRACE_BASE + (pid))
+#define PROCFS_CMDLINE(pid)   (PROCFS_CMDLINE_BASE + (pid))
+#define PROCFS_STATUS(pid)    (PROCFS_STATUS_BASE + (pid))
 
 extern volatile unsigned int tick;
 
@@ -88,6 +92,54 @@ static char *proc_content(unsigned int ino, unsigned int *len_out) {
     return buf;
 }
 
+static const char *proc_state_str(unsigned int state) {
+    switch (state) {
+    case TASK_READY:    return "ready";
+    case TASK_RUNNING:  return "run";
+    case TASK_SLEEPING: return "sleep";
+    case TASK_WAITING:  return "wait";
+    case TASK_ZOMBIE:   return "zomb";
+    case TASK_SPAWNING: return "spawn";
+    default:            return "free";
+    }
+}
+
+// Render /proc/<pid>/cmdline ("<name>[ <args>]") into buf. Returns length.
+static unsigned int proc_render_cmdline(unsigned int pid, char *buf,
+                                        unsigned int cap) {
+    struct task *t = pid < MAX_TASKS ? task_slot(pid) : 0;
+    if (!t || t->state == TASK_FREE) return 0;
+    unsigned int i = 0;
+    for (; t->name[i] && i < cap - 1; i++) buf[i] = t->name[i];
+    if (t->args && t->args[0] && i < cap - 1) {
+        buf[i++] = ' ';
+        for (unsigned int j = 0; t->args[j] && i < cap - 1; j++)
+            buf[i++] = t->args[j];
+    }
+    buf[i] = '\0';
+    return i;
+}
+
+// Render /proc/<pid>/status as "State:/PPid:/Abi:" lines. Returns length.
+static unsigned int proc_render_status(unsigned int pid, char *buf,
+                                       unsigned int cap) {
+    struct task *t = pid < MAX_TASKS ? task_slot(pid) : 0;
+    if (!t || t->state == TASK_FREE) return 0;
+    static const char *abis[] = { "aos", "linux" };
+    unsigned int abi = (t->abi == ABI_LINUX) ? 1u : 0u;
+    const char *state = proc_state_str(t->state);
+    char num[12];
+    u32_str(t->parent, num);
+    unsigned int i = 0;
+    const char *parts[] = { "State:\t", state, "\nPPid:\t", num,
+                            "\nAbi:\t", abis[abi], "\n" };
+    for (unsigned int k = 0; k < sizeof(parts) / sizeof(parts[0]); k++)
+        for (unsigned int j = 0; parts[k][j] && i < cap - 1; j++)
+            buf[i++] = parts[k][j];
+    buf[i] = '\0';
+    return i;
+}
+
 static int proc_stat(struct vfs_fs *fs, unsigned int ino, struct aos_stat *st) {
     (void)fs;
     if (ino == PROCFS_ROOT) {
@@ -120,6 +172,24 @@ static int proc_stat(struct vfs_fs *fs, unsigned int ino, struct aos_stat *st) {
         st->nlink = 1;
         return 0;
     }
+    if (ino >= PROCFS_CMDLINE_BASE && ino < PROCFS_CMDLINE_BASE + MAX_TASKS) {
+        static char cbuf[384];
+        st->type = 1;
+        st->size = proc_render_cmdline(ino - PROCFS_CMDLINE_BASE,
+                                       cbuf, sizeof(cbuf));
+        st->mtime = 0;
+        st->nlink = 1;
+        return 0;
+    }
+    if (ino >= PROCFS_STATUS_BASE && ino < PROCFS_STATUS_BASE + MAX_TASKS) {
+        static char sbuf[128];
+        st->type = 1;
+        st->size = proc_render_status(ino - PROCFS_STATUS_BASE,
+                                      sbuf, sizeof(sbuf));
+        st->mtime = 0;
+        st->nlink = 1;
+        return 0;
+    }
     for (unsigned int i = 0; i < PROC_FILES; i++) {
         if (proc_files[i].ino == ino) {
             unsigned int len;
@@ -141,6 +211,14 @@ static int proc_lookup(struct vfs_fs *fs, unsigned int dir_ino,
         if (dir_ino >= PROCFS_PID_BASE && dir_ino < PROCFS_PID_BASE + MAX_TASKS) {
             if (strcmp(name, "trace") == 0) {
                 *out_ino = PROCFS_TRACE(dir_ino - PROCFS_PID_BASE);
+                return 0;
+            }
+            if (strcmp(name, "cmdline") == 0) {
+                *out_ino = PROCFS_CMDLINE(dir_ino - PROCFS_PID_BASE);
+                return 0;
+            }
+            if (strcmp(name, "status") == 0) {
+                *out_ino = PROCFS_STATUS(dir_ino - PROCFS_PID_BASE);
                 return 0;
             }
             return VFS_ENOENT;
@@ -206,12 +284,16 @@ static int proc_readdir(struct vfs_fs *fs, unsigned int dir_ino,
         return 0;
     }
     if (dir_ino >= PROCFS_PID_BASE && dir_ino < PROCFS_PID_BASE + MAX_TASKS) {
-        if (idx == 0) {
+        static const char *const pid_files[] = { "trace", "cmdline", "status" };
+        if (idx < sizeof(pid_files) / sizeof(pid_files[0])) {
             unsigned int i = 0;
-            const char *nm = "trace";
+            const char *nm = pid_files[idx];
             while (nm[i] && i < VFS_NAME_MAX) { name_out[i] = nm[i]; i++; }
             name_out[i] = '\0';
-            if (ino_out) *ino_out = PROCFS_TRACE(dir_ino - PROCFS_PID_BASE);
+            unsigned int base = (idx == 0) ? PROCFS_TRACE_BASE
+                              : (idx == 1) ? PROCFS_CMDLINE_BASE
+                                           : PROCFS_STATUS_BASE;
+            if (ino_out) *ino_out = base + (dir_ino - PROCFS_PID_BASE);
             return 1;
         }
         return 0;
@@ -222,16 +304,30 @@ static int proc_readdir(struct vfs_fs *fs, unsigned int dir_ino,
 static int proc_read_at(struct vfs_fs *fs, unsigned int ino, void *buf,
                         unsigned int len, unsigned int off) {
     (void)fs;
+    static char rbuf[384];
     if (ino == PROCFS_KLOG)
         return (int)klog_read(off, buf, len);
     if (ino >= PROCFS_TRACE_BASE && ino < PROCFS_TRACE_BASE + MAX_TASKS)
         return (int)trace_render_at(ino - PROCFS_TRACE_BASE, off, buf, len, 0);
     unsigned int clen;
-    char *content = proc_content(ino, &clen);
+    if (ino >= PROCFS_CMDLINE_BASE && ino < PROCFS_CMDLINE_BASE + MAX_TASKS)
+        clen = proc_render_cmdline(ino - PROCFS_CMDLINE_BASE,
+                                   rbuf, sizeof(rbuf));
+    else if (ino >= PROCFS_STATUS_BASE && ino < PROCFS_STATUS_BASE + MAX_TASKS)
+        clen = proc_render_status(ino - PROCFS_STATUS_BASE,
+                                  rbuf, sizeof(rbuf));
+    else {
+        char *content = proc_content(ino, &clen);
+        if (off >= clen) return 0;
+        if (len > clen - off) len = clen - off;
+        for (unsigned int i = 0; i < len; i++)
+            ((char *)buf)[i] = content[off + i];
+        return (int)len;
+    }
     if (off >= clen) return 0;
     if (len > clen - off) len = clen - off;
     for (unsigned int i = 0; i < len; i++)
-        ((char *)buf)[i] = content[off + i];
+        ((char *)buf)[i] = rbuf[off + i];
     return (int)len;
 }
 

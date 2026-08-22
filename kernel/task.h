@@ -37,6 +37,7 @@ struct task {
     unsigned int mbox_head;
     unsigned int mbox_tail;
     char *args;                 // argument buffer (kmalloc'd)
+    char name[28];              // program basename from the spawn path
     unsigned int abi;           // ABI_AOS or ABI_LINUX
     struct linux_ctx *lctx;     // Linux runtime context (kmalloc'd)
     struct open_file *fds[TASK_MAX_FDS];  // per-task open-file table (0/1/2 console)
