@@ -8,6 +8,13 @@ struct open_file;   // forward decl (fully defined in vfs.h)
 #define MAX_TASKS 24
 #define TASK_MAX_FDS 64   // per-task open-file table size
 
+// strace session marker: every task of a userland strace(1) session records
+// the pid of the strace process that owns it (set at spawn from the parent's
+// flag/trace_root, see task_spawn). It survives reparenting to init and slot
+// FREE-ing, so the tracer can collect the whole tree after exits.
+// TRACE_ROOT_NONE = not part of any session.
+#define TRACE_ROOT_NONE 0xFFFFFFFFu
+
 #define TASK_FREE    0
 #define TASK_READY   1
 #define TASK_RUNNING 2
@@ -35,6 +42,7 @@ struct task {
     unsigned int *pts[3];       // the 3 user-area page table pages
     unsigned int *lpts[32];     // Linux window (PD 32..63) page-table pages
     unsigned int (*mbox)[5];    // mailbox ring buffer (kmalloc'd): MSG_CAP x 5 words
+    char (*mbox_str)[16];       // parallel title strings per entry (kmalloc'd)
     unsigned int mbox_head;
     unsigned int mbox_tail;
     char *args;                 // argument buffer (kmalloc'd)
@@ -46,6 +54,7 @@ struct task {
     int stdout_fd;
     int stdin_fd;
     unsigned int trace_on;        // 1 = record this task's syscalls
+    unsigned int trace_root;      // strace session owner pid (TRACE_ROOT_NONE = none)
     unsigned char *trace_buf;     // kmalloc'd ring of struct trace_rec (lazy)
     unsigned int trace_head;      // next write slot (wraps)
     unsigned int trace_count;     // records written so far
@@ -71,8 +80,8 @@ int task_set_sink(unsigned int pid);
 int task_alive(unsigned int pid);
 const char *task_current_args(void);
 
-int task_mailbox_send(unsigned int pid, unsigned int t, unsigned int a, unsigned int b, unsigned int c, unsigned int d);
-int task_mailbox_recv(unsigned int *t, unsigned int *a, unsigned int *b, unsigned int *c, unsigned int *d);
+int task_mailbox_send(unsigned int pid, unsigned int t, unsigned int a, unsigned int b, unsigned int c, unsigned int d, const char *title);
+int task_mailbox_recv(unsigned int *t, unsigned int *a, unsigned int *b, unsigned int *c, unsigned int *d, char *title_out);
 
 int task_event_pid(void);
 int task_set_event_pid(void);

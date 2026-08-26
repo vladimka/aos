@@ -13,6 +13,8 @@ static unsigned int v_menu_bg = 0x20283A;
 static unsigned int v_menu_fg = 0xFFFFFF;
 static unsigned int v_text_fg = 0xD8D8D8;
 static unsigned int v_text_bg = 0x101010;
+static unsigned int v_app_fg = 0x1E1E1E;
+static unsigned int v_app_bg = 0xE8E8E8;
 static unsigned int v_top = 0x1A2030;
 static unsigned int v_bot = 0x0E1620;
 
@@ -32,6 +34,8 @@ static struct th_entry entries[] = {
     { "theme_menu_fg", &v_menu_fg },
     { "theme_text_fg", &v_text_fg },
     { "theme_text_bg", &v_text_bg },
+    { "theme_app_fg", &v_app_fg },
+    { "theme_app_bg", &v_app_bg },
     { "wallpaper_top", &v_top },
     { "wallpaper_bot", &v_bot },
 };

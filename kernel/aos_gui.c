@@ -292,7 +292,17 @@ void aos_gui_handler(struct registers *r) {
             mv.b = m->b;
             mv.c = m->c;
             mv.d = m->d;
-            r->eax = task_mailbox_send(r->ebx, mv.type, mv.a, mv.b, mv.c, mv.d);
+            const char *title = (const char *)0;
+            char title_buf[16];
+            if (mv.d && in_luser((void *)mv.d, 1)) {
+                const char *src = (const char *)mv.d;
+                int j;
+                for (j = 0; j < 15 && src[j]; j++)
+                    title_buf[j] = src[j];
+                title_buf[j] = '\0';
+                title = title_buf;
+            }
+            r->eax = task_mailbox_send(r->ebx, mv.type, mv.a, mv.b, mv.c, mv.d, title);
         } else {
             r->eax = -5;
         }
@@ -302,8 +312,15 @@ void aos_gui_handler(struct registers *r) {
         struct aos_msg *m = (struct aos_msg *)r->ebx;
         if (in_luser(m, sizeof(struct aos_msg))) {
             unsigned int t, a, b, c, d;
-            if (task_mailbox_recv(&t, &a, &b, &c, &d) == 0) {
+            char title_buf[16] = {0};
+            if (task_mailbox_recv(&t, &a, &b, &c, &d, title_buf) == 0) {
                 m->type = t; m->a = a; m->b = b; m->c = c; m->d = d;
+                char *dst = (char *)(m + 1);
+                if (in_luser(dst, 16)) {
+                    int j;
+                    for (j = 0; j < 16; j++)
+                        dst[j] = title_buf[j];
+                }
                 r->eax = 0;
             } else {
                 r->eax = -1;
@@ -350,6 +367,19 @@ void aos_gui_handler(struct registers *r) {
         break;
     case AOS_KILL:
         r->eax = task_kill(r->ebx);
+        break;
+    case AOS_TRACE_SET: {
+        // strace(1): toggle THIS task's syscall trace flag. Children spawned
+        // while it is set inherit it (strace -f semantics, race-free).
+        struct task *me = get_current_task();
+        r->eax = me->trace_on ? 1 : 0;
+        me->trace_on = r->ebx ? 1 : 0;
+        break;
+    }
+    case AOS_TRACE_DUMP:
+        // Dump (and reap the buffers of) every traced task of this strace
+        // session; ebx = the caller's pid = session owner.
+        r->eax = (int)trace_session_dump_root(r->ebx);
         break;
     case AOS_GET_CHILDREN: {
         unsigned int max = r->ecx;

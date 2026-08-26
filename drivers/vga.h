@@ -33,6 +33,9 @@ void vga_print_dec(unsigned int n);
 void vga_get_fb_info(unsigned int *addr, unsigned int *size);
 void vga_get_fb_dimensions(unsigned int *addr, unsigned int *width, unsigned int *height,
                            unsigned int *pitch, unsigned int *bpp);
+/* Non-zero when GRUB handed us a linear framebuffer (graphics boot);
+ * zero in classic VGA text mode (the "AOS (text)" menu entry). */
+int vga_fb_active(void);
 
 int  vga_get_cursor_x(void);
 int  vga_get_cursor_y(void);

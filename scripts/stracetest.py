@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import re
 import sys
 
 from qtest import QTest
@@ -10,18 +11,16 @@ def main():
         q.boot_and_ready(socket=s)
 
         s.sendall(b"strace linrun\n")
-        out = q.serial_drain(s, timeout=45, needle=b"TDMP:done")
+        out = q.serial_drain(s, timeout=45, needle=b"AOS>")
         tail = out[-1200:]
         try:
             if b"KERNEL PANIC" in out:
                 raise AssertionError("kernel panic during strace linrun:\n"
                                      + tail.decode(errors="replace"))
-            if b"== pid 0 ==" not in out:
-                raise AssertionError("strace session did not dump == pid 0 ==\n"
-                                     + tail.decode(errors="replace"))
-            if b"== pid 2 ==" not in out:
+            headers = set(re.findall(rb"== pid (\d+) ==", out))
+            if len(headers) < 2:
                 raise AssertionError(
-                    "strace did not collect the spawned child\n"
+                    "strace did not collect both linrun and its hello child\n"
                     "(saw %r in the dump)\n%s"
                     % ([l for l in out.split(b"\n") if b"==" in l and b"pid" in l],
                        tail.decode(errors="replace")))

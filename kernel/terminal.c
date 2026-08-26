@@ -235,6 +235,8 @@ int terminal_scan_event(unsigned char scancode) {
         case 0x47: return GUI_KEY_HOME;
         case 0x4F: return GUI_KEY_END;
         case 0x53: return GUI_KEY_DEL;
+        case 0x49: return GUI_KEY_PGUP;
+        case 0x51: return GUI_KEY_PGDN;
         default: return -1;
         }
     }

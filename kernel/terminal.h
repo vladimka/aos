@@ -11,6 +11,8 @@
 #define GUI_KEY_HOME  0x0105
 #define GUI_KEY_END   0x0106
 #define GUI_KEY_DEL   0x0107
+#define GUI_KEY_PGUP  0x0108
+#define GUI_KEY_PGDN  0x0109
 
 void terminal_init(void);
 void terminal_print(const char *str);

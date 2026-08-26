@@ -157,8 +157,10 @@ void task_init(void) {
     // not owned/freed by task.c. It needs a mailbox to receive exit notices.
     tasks[0].state = TASK_RUNNING;
     tasks[0].cr3 = (unsigned int)paging_kernel_pd();
+    tasks[0].trace_root = TRACE_ROOT_NONE;
     tasks[0].kstack_top = user_kstack_top();
     tasks[0].mbox = kmalloc(MSG_CAP * 5 * 4);
+    tasks[0].mbox_str = kmalloc(MSG_CAP * 16);
     tasks[0].mbox_head = 0;
     tasks[0].mbox_tail = 0;
     tasks[0].abi = ABI_AOS;
@@ -205,10 +207,10 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         // (task_mailbox_send returns -3) silently drops the message. Zombies
         // have a freed mailbox, so never send to one (task_alive excludes them).
         if (sink < MAX_TASKS && sink != dead->pid && task_alive(sink))
-            task_mailbox_send(sink, MSG_TYPE_EXIT, dead->pid, 0, 0, 0);
+            task_mailbox_send(sink, MSG_TYPE_EXIT, dead->pid, 0, 0, 0, (const char *)0);
         if (ep > 0 && ep < MAX_TASKS && ep != dead->pid && ep != sink &&
             task_alive(ep))
-            task_mailbox_send(ep, MSG_TYPE_EXIT, dead->pid, 0, 0, 0);
+            task_mailbox_send(ep, MSG_TYPE_EXIT, dead->pid, 0, 0, 0, (const char *)0);
         // Reap this task's own zombie children: nobody can waitpid them now
         // (only a parent may wait on its children, and we are exiting).
         for (int i = 1; i < MAX_TASKS; i++)
@@ -230,7 +232,7 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         if (dead->parent == init_pid && dead->parent > 0 &&
             dead->parent != dead->pid && task_alive(dead->parent))
             task_mailbox_send(dead->parent, MSG_TYPE_EXIT, dead->pid,
-                              current_exit_code, 0, 0);
+                              current_exit_code, 0, 0, (const char *)0);
     }
 
     struct task *next = 0;
@@ -304,10 +306,12 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         task_close_fds(dead);
         task_free_addrspace(dead);
         kfree(dead->mbox);
+        kfree(dead->mbox_str);
         kfree(dead->args);
         kfree(dead->lctx);
         dead->lctx = 0;
         dead->mbox = 0;
+        dead->mbox_str = 0;
         dead->args = 0;
         // Trace buffer: a traced task's log is collected by the strace session
         // that owns it. Free it here when already dumped or untraced; a
@@ -373,8 +377,18 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     t->state = TASK_SPAWNING;
     t->sink = sink;
     t->parent = task_current_pid();
-    // strace -f: a child inherits the parent's trace flag.
+    // strace -f: a child inherits the parent's trace flag. trace_root marks
+    // the session owner (the userland strace process): it propagates down the
+    // whole traced tree and SURVIVES reparenting to init, so the strace
+    // program can still find grandchildren after their parent exits.
     t->trace_on = current_task->trace_on;
+    if (current_task->trace_on) {
+        unsigned int p = current_task->pid;
+        t->trace_root = current_task->trace_root != TRACE_ROOT_NONE
+                            ? current_task->trace_root : p;
+    } else {
+        t->trace_root = TRACE_ROOT_NONE;
+    }
 
     // The child inherits the parent's cwd and its console stdio fds 0/1/2
     // (the shared console pseudo-file). fds >= 3 are NOT inherited (CLOEXEC:
@@ -401,13 +415,15 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     if (!is_linux)
         for (int i = 0; i < 3; i++) pts[i] = page_alloc_zero();
     unsigned int (*mbox)[5] = (unsigned int (*)[5])kmalloc(MSG_CAP * 5 * 4);
+    char (*mbox_str)[16] = (char (*)[16])kmalloc(MSG_CAP * 16);
     char *argsb = kmalloc(256);
-    if (!ks || !pd || !mbox || !argsb ||
+    if (!ks || !pd || !mbox || !mbox_str || !argsb ||
         (!is_linux && (!pts[0] || !pts[1] || !pts[2]))) {
         if (ks) kfree(ks);
         if (pd) page_free(pd);
         for (int i = 0; i < 3; i++) if (pts[i]) page_free(pts[i]);
         if (mbox) kfree(mbox);
+        if (mbox_str) kfree(mbox_str);
         if (argsb) kfree(argsb);
         return -1;
     }
@@ -418,6 +434,7 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     t->pts[1] = pts[1];
     t->pts[2] = pts[2];
     t->mbox = mbox;
+    t->mbox_str = mbox_str;
     t->mbox_head = 0;
     t->mbox_tail = 0;
     t->args = argsb;
@@ -425,7 +442,7 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     t->abi = is_linux ? ABI_LINUX : ABI_AOS;
     t->lctx = kmalloc(sizeof(struct linux_ctx));
     if (!t->lctx) {
-        kfree(ks); page_free(pd); kfree(mbox); kfree(argsb);
+        kfree(ks); page_free(pd); kfree(mbox); kfree(mbox_str); kfree(argsb);
         for (int i = 0; i < 3; i++) if (pts[i]) page_free(pts[i]);
         t->state = TASK_FREE;
         return -1;
@@ -451,8 +468,8 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
             unsigned int *pt = page_alloc_zero();
             if (!pt) {
                 task_free_addrspace(t);
-                kfree(t->kstack); kfree(t->mbox); kfree(t->args); kfree(t->lctx);
-                t->kstack = 0; t->mbox = 0; t->args = 0; t->lctx = 0;
+                kfree(t->kstack); kfree(t->mbox); kfree(t->mbox_str); kfree(t->args); kfree(t->lctx);
+                t->kstack = 0; t->mbox = 0; t->mbox_str = 0; t->args = 0; t->lctx = 0;
                 t->state = TASK_FREE;
                 return -1;
             }
@@ -468,9 +485,10 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
                     task_free_addrspace(t);
                     kfree(t->kstack);
                     kfree(t->mbox);
+                    kfree(t->mbox_str);
                     kfree(t->args);
                     kfree(t->lctx); t->lctx = 0;
-                    t->kstack = 0; t->mbox = 0; t->args = 0;
+                    t->kstack = 0; t->mbox = 0; t->mbox_str = 0; t->args = 0;
                     t->state = TASK_FREE;
                     return -1;
                 }
@@ -497,9 +515,10 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
         task_free_addrspace(t);
         kfree(t->kstack);
         kfree(t->mbox);
+        kfree(t->mbox_str);
         kfree(t->args);
         kfree(t->lctx); t->lctx = 0;
-        t->kstack = 0; t->mbox = 0; t->args = 0;
+        t->kstack = 0; t->mbox = 0; t->mbox_str = 0; t->args = 0;
         t->state = TASK_FREE;
         return -2;
     }
@@ -669,7 +688,8 @@ const char *task_current_args(void) {
 }
 
 int task_mailbox_send(unsigned int pid, unsigned int t, unsigned int a,
-                      unsigned int b, unsigned int c, unsigned int d) {
+                      unsigned int b, unsigned int c, unsigned int d,
+                      const char *title) {
     unsigned int flags;
     irq_save(&flags);
     if (pid >= MAX_TASKS) {
@@ -691,12 +711,19 @@ int task_mailbox_send(unsigned int pid, unsigned int t, unsigned int a,
     target->mbox[target->mbox_tail][2] = b;
     target->mbox[target->mbox_tail][3] = c;
     target->mbox[target->mbox_tail][4] = d;
+    target->mbox_str[target->mbox_tail][0] = '\0';
+    if (title) {
+        int j;
+        for (j = 0; j < 15 && title[j]; j++)
+            target->mbox_str[target->mbox_tail][j] = title[j];
+        target->mbox_str[target->mbox_tail][j] = '\0';
+    }
     target->mbox_tail = next;
     irq_restore(flags);
     return 0;
 }
 
-int task_mailbox_recv(unsigned int *t, unsigned int *a, unsigned int *b, unsigned int *c, unsigned int *d) {
+int task_mailbox_recv(unsigned int *t, unsigned int *a, unsigned int *b, unsigned int *c, unsigned int *d, char *title_out) {
     unsigned int flags;
     irq_save(&flags);
     struct task *self = current_task;
@@ -708,6 +735,11 @@ int task_mailbox_recv(unsigned int *t, unsigned int *a, unsigned int *b, unsigne
         if (b) *b = self->mbox[i][2];
         if (c) *c = self->mbox[i][3];
         if (d) *d = self->mbox[i][4];
+        if (title_out) {
+            int j;
+            for (j = 0; j < 16; j++)
+                title_out[j] = self->mbox_str[i][j];
+        }
         self->mbox_head = (i + 1) % MSG_CAP;
         rc = 0;
     }

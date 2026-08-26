@@ -98,8 +98,13 @@ class QTest:
     def __init__(self, name, *, monitor_socket=None, serial_log=None,
                  mouse_state=None, ppm=None, iso=None, mouse_boot=MOUSE_BOOT,
                  boot_wait=5, serial_mode="file", extra_args=None,
-                 qmp_socket=None):
+                 qmp_socket=None, autoboot_grub=True):
         self.name = name
+        # The shipped grub.cfg waits at the boot menu (default GRUB_TIMEOUT).
+        # Tests that boot the default entry fire a few fallback Enters early
+        # so they skip the menu wait entirely; tests that pick a specific
+        # entry pass autoboot_grub=False.
+        self.autoboot_grub = autoboot_grub
         self.mon = monitor_socket or f"/tmp/aos-{name}.sock"
         self.serial_mode = serial_mode
         if serial_mode == "socket":
@@ -159,11 +164,19 @@ class QTest:
                                      stderr=subprocess.DEVNULL)
         wait_for(self.mon)
         if self.serial_mode == "socket":
-            # Connect the serial socket before the guest boots: a unix-socket
-            # chardev drops guest COM1 output while no client is connected, so
-            # a late connect would lose the early boot lines (and the AOS>
+            # Connect the serial socket BEFORE the autoboot Enters: a unix
+            # chardev drops guest COM1 output while no client is connected,
+            # so a late connect would lose the early boot lines (and the AOS>
             # prompt itself) that socket tests assert on.
             self.serial_socket()
+        if self.autoboot_grub:
+            # Fire fallback Enters while the GRUB menu may be showing: the
+            # first one(s) land in SeaBIOS (no-op), one hits the menu and
+            # boots the default entry immediately. Later presses are eaten
+            # by the WM/shell as harmless empty commands.
+            for _ in range(3):
+                time.sleep(1.5)
+                self.hmp("sendkey ret")
         time.sleep(boot_wait)
         return self
 

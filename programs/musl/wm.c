@@ -265,6 +265,7 @@ struct win {
     int x, y;       // screen position (whole window incl. border/title)
     int cw, ch;     // content size
     int app;        // APP_TERM / APP_CLOCK / APP_UNKNOWN
+    char title[16];
 };
 
 enum { APP_TERM = 0, APP_CLOCK = 1, APP_UNKNOWN = 2 };
@@ -466,11 +467,18 @@ static void draw_title(const struct win *wn) {
             lighten(tcol, 4));                       // lighter top strip
     fb_fill(wn->x + BORDER, wn->y + BORDER + 1, wn->cw, 1,
             lighten(tcol, 2));                       // mid strip
-    char buf[8];
-    int2str(buf, wn->winid);
+    char buf[24];
+    if (wn->title[0]) {
+        int j;
+        for (j = 0; j < 23 && wn->title[j]; j++)
+            buf[j] = wn->title[j];
+        buf[j] = '\0';
+    } else {
+        int2str(buf, wn->winid);
+    }
     unsigned int *sc = scratch;
     aos_render_text(sc, 1024 * 4, 0, 0, buf, COL_TITLE_TEXT, tcol);
-    int tw = 8;
+    int tw = 0;
     for (int i = 0; buf[i]; i++) tw += 8;
     int tx = wn->x + BORDER + 6;
     int ty = wn->y + BORDER + (TITLE_H - 16) / 2;
@@ -752,6 +760,8 @@ static void refresh_files(void) {
             if (nm[0] == 'l' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == 0)
                 continue;
             if (nm[0] == 's' && nm[1] == 'y' && nm[2] == 's' && nm[3] == 0)
+                continue;
+            if (nm[0] == 'e' && nm[1] == 't' && nm[2] == 'c' && nm[3] == 0)
                 continue;
             int len = 0;
             while (nm[len]) len++;
@@ -1039,7 +1049,7 @@ static int cursor_overlaps(int x, int y, int w, int h) {
 
 // ---- window management ---------------------------------------------------
 
-static int alloc_window(unsigned int pid, int w, int h, int *out_wid, int *out_slab) {
+static int alloc_window(unsigned int pid, int w, int h, const char *title, int *out_wid, int *out_slab) {
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (wins[i].used) continue;
         wins[i].used = 1;
@@ -1051,6 +1061,13 @@ static int alloc_window(unsigned int pid, int w, int h, int *out_wid, int *out_s
         wins[i].app = app_type_of(pid);
         wins[i].x = 20 + i * 24;
         wins[i].y = PANEL_H + 8 + i * 28;
+        wins[i].title[0] = '\0';
+        if (title) {
+            int j;
+            for (j = 0; j < 15 && title[j]; j++)
+                wins[i].title[j] = title[j];
+            wins[i].title[j] = '\0';
+        }
         *out_wid = i;
         *out_slab = wins[i].slab;
         zorder[nz++] = i;
@@ -1160,6 +1177,13 @@ int main(void) {
         aos_mouse(&mx, &my, &mb, &wheel);
         g_mx = mx;
         g_my = my;
+        if (wheel != 0 && focus_pid) {
+            // Forward wheel deltas to the focused window (+ = up/older).
+            // mouse_wheel uses the PS/2 convention (+ = down) and is reset
+            // by this poll; scale one notch to 3 rows like the kernel console.
+            struct aos_msg wmsg = {MSG_WHEEL, (unsigned int)(-wheel * 3), 0, 0, 0};
+            aos_send(focus_pid, &wmsg);
+        }
         if (ctx_menu.open && (mx != last_mx || my != last_my)) {
             int hi = menu_item_at(&ctx_menu, mx, my);
             if (hi != ctx_menu.last_hover) { ctx_menu.last_hover = hi; redraw = 1; }
@@ -1199,8 +1223,9 @@ int main(void) {
             redraw = 1;
         }
 
-        struct aos_msg m;
-        while (aos_recv(&m) == 0) {
+        struct { struct aos_msg m; char title[16]; } msg;
+        while (aos_recv(&msg.m) == 0) {
+            struct aos_msg m = msg.m;
             switch (m.type) {
             case MSG_KEY:
                 if (dlg_open) {
@@ -1235,7 +1260,8 @@ int main(void) {
                         launched = 1;
                     }
                 int wid, slab;
-                if (alloc_window(m.c, (int)m.a, (int)m.b, &wid, &slab) == 0) {
+                const char *title = msg.title;
+                if (alloc_window(m.c, (int)m.a, (int)m.b, title, &wid, &slab) == 0) {
                     struct aos_msg r = {MSG_WININFO, (unsigned int)wid,
                                         (unsigned int)slab, 0, 0};
                     aos_send(m.c, &r);
@@ -1318,8 +1344,7 @@ int main(void) {
                 } else {
                     int wi = win_index_at(mx, my);
                     if (wi >= 0) {
-                        if (focus_pid != wins[wi].pid) redraw = 1;
-                        focus_pid = wins[wi].pid;
+                        raise_pid(wins[wi].pid);
                         if (my >= wins[wi].y + BORDER &&
                             my < wins[wi].y + BORDER + TITLE_H) {
                             drag_i = wi;

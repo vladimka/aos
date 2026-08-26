@@ -1,6 +1,7 @@
 #include "trace.h"
 #include "task.h"
 #include "terminal.h"
+#include "syscall.h"
 #include "kmm.h"
 #include "interrupts.h"
 #include "serial.h"
@@ -57,8 +58,8 @@ static const struct trace_name aos_names[49] = {
     [48] = { "unlink", 1 },
 };
 
-// ---- AOS_EXT (500-519, aos_gui_handler) ----
-static const struct trace_name aos_ext_names[20] = {
+// ---- AOS_EXT (500-527, aos_gui_handler) ----
+static const struct trace_name aos_ext_names[28] = {
     [0]  = { "fb_info", 5 },
     [1]  = { "text", 1 },
     [2]  = { "fill", 1 },
@@ -79,6 +80,9 @@ static const struct trace_name aos_ext_names[20] = {
     [17] = { "uptime", 0 },
     [18] = { "get_tick", 0 },
     [19] = { "panic", 0 },
+    [25] = { "kill", 1 },
+    [26] = { "trace_set", 1 },
+    [27] = { "trace_dump", 1 },
 };
 
 // ---- Linux ABI (linux_syscall_handler): sparse, ascending ----
@@ -124,7 +128,7 @@ static const struct trace_name *linux_name(unsigned int num) {
 static const struct trace_name *trace_name_for(const struct task *t,
                                                unsigned int num) {
     if (num >= AOS_EXT_BASE && num < AOS_EXT_BASE + 100)
-        return num - AOS_EXT_BASE < 20 ? &aos_ext_names[num - AOS_EXT_BASE] : 0;
+        return num - AOS_EXT_BASE < 28 ? &aos_ext_names[num - AOS_EXT_BASE] : 0;
     if (t->abi == ABI_LINUX)
         return linux_name(num);
     if (num < 49 && aos_names[num].name) return &aos_names[num];
@@ -249,24 +253,33 @@ void trace_finish(struct registers *r) {
     ((struct trace_rec *)t->trace_buf)[slot].ret = r->eax;
 }
 
-// Session dump (shell path): uses terminal_write, NOT printf, so the dump does
-// not feed back into the klog ring.
-static void dump_one(struct task *t) {
+// Line emitter: kernel-side dumps (old shell path) write straight to the
+// console; userland strace dumps go through the CALLER's stdout route so the
+// trace shows up in the GUI terminal (setout sink), a redirect or a pipe.
+typedef void (*trace_emit_fn)(const char *buf, unsigned int len);
+
+static void emit_route(const char *buf, unsigned int len) {
+    route_text(buf, len);
+}
+
+// Session dump: uses the given emitter, NOT printf, so the dump does not feed
+// back into the klog ring.
+static void dump_one(struct task *t, trace_emit_fn emit) {
     if (!t->trace_on || !t->trace_buf || t->trace_dumped) return;
     char line[96];
     unsigned int n = emit_header(t->pid, line, sizeof(line));
-    terminal_write(line, n);
+    emit(line, n);
     unsigned int total = t->trace_wrapped ? TRACE_MAX : t->trace_count;
     unsigned int start = t->trace_wrapped ? t->trace_head : 0;
     for (unsigned int i = 0; i < total; i++) {
         const struct trace_rec *rec =
             (const struct trace_rec *)t->trace_buf + (start + i) % TRACE_MAX;
         n = emit_rec(t, rec, line, sizeof(line));
-        terminal_write(line, n);
+        emit(line, n);
     }
     if (t->trace_wrapped) {
         n = emit_overwritten(t->trace_count - TRACE_MAX, line, sizeof(line));
-        terminal_write(line, n);
+        emit(line, n);
     }
     t->trace_dumped = 1;
     // Only dead tasks lose their buffer here; a live child keeps tracing so
@@ -281,9 +294,30 @@ void trace_session_dump(void) {
     serial_print("TDMP:start\n");
     for (unsigned int i = 0; i < MAX_TASKS; i++) {
         struct task *t = task_slot(i);
-        if (t) dump_one(t);
+        if (t) dump_one(t, terminal_write);
     }
     serial_print("TDMP:done\n");
+}
+
+// Userland strace(1) path (AOS_TRACE_DUMP): dump every traced-undumped task
+// of the session owned by `root` (the caller's pid), ascending pid. Lines go
+// through route_text: the caller's redirect/pipe when stdout_fd is set, its
+// GUI terminal sink otherwise, console as the last resort. Slots the kernel
+// force-freed at a parent's exit keep their trace fields until reuse, so
+// reparented grandchildren are still collected here.
+unsigned int trace_session_dump_root(unsigned int root) {
+    unsigned int dumped = 0;
+    for (unsigned int i = 0; i < MAX_TASKS; i++) {
+        struct task *t = task_slot(i);
+        if (!t || !t->trace_on || !t->trace_buf || t->trace_dumped) continue;
+        if (t->trace_root != root && t->pid != root) continue;
+        // Never dump the tracer itself: its flag was already cleared and it
+        // only holds a few of its own setup records.
+        if (t->pid == root) continue;
+        dump_one(t, emit_route);
+        dumped++;
+    }
+    return dumped;
 }
 
 // Live render (procfs path): runs in the reader's syscall context, IF=0, so

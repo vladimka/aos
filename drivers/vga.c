@@ -928,6 +928,10 @@ void vga_get_fb_info(unsigned int *addr, unsigned int *size) {
     }
 }
 
+int vga_fb_active(void) {
+    return fb_initialized;
+}
+
 void vga_get_fb_dimensions(unsigned int *addr, unsigned int *width, unsigned int *height,
                            unsigned int *pitch, unsigned int *bpp) {
     if (fb_initialized) {

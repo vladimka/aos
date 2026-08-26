@@ -41,7 +41,7 @@ static void route_gui_key(int key) {
     if (key < 0) return;
     int ep = task_event_pid();
     if (ep > 0)
-        task_mailbox_send((unsigned int)ep, MSG_KEY, (unsigned int)key, 0, 0, 0);
+        task_mailbox_send((unsigned int)ep, MSG_KEY, (unsigned int)key, 0, 0, 0, (const char *)0);
 }
 
 static void timer_handler(void) {
@@ -154,7 +154,13 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
 
     virtio_init();
 
-    if (vgu_init() == 0)
+    // Text-mode boot ("AOS (text)" GRUB entry, no MB2 framebuffer tag):
+    // keep the VGA text console as the only display. The virtio-gpu
+    // selftest would steal the scanout from the VGA plane, so the driver
+    // is not initialized at all, and no window manager is spawned.
+    if (!vga_fb_active())
+        serial_print("virtio-gpu: skipped (text mode)\n");
+    else if (vgu_init() == 0)
         serial_print("virtio-gpu: framebuffer flip enabled\n");
     else
         serial_print("virtio-gpu: not present, using VGA\n");

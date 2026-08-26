@@ -97,7 +97,7 @@ int route_text(const char *s, unsigned int len) {
                 else
                     d |= byte << (8 * (j - 8));
             }
-            task_mailbox_send(sink, MSG_DATA, n, b, c, d);
+            task_mailbox_send(sink, MSG_DATA, n, b, c, d, (const char *)0);
         }
         return 0;
     }
@@ -437,7 +437,17 @@ void syscall_handler(struct registers *r) {
             mv.b = m->b;
             mv.c = m->c;
             mv.d = m->d;
-            r->eax = task_mailbox_send(r->ebx, mv.type, mv.a, mv.b, mv.c, mv.d);
+            const char *title = (const char *)0;
+            char title_buf[16];
+            if (mv.d && in_user((void *)mv.d, 1)) {
+                const char *src = (const char *)mv.d;
+                int j;
+                for (j = 0; j < 15 && src[j]; j++)
+                    title_buf[j] = src[j];
+                title_buf[j] = '\0';
+                title = title_buf;
+            }
+            r->eax = task_mailbox_send(r->ebx, mv.type, mv.a, mv.b, mv.c, mv.d, title);
         } else {
             r->eax = -5;
         }
@@ -447,12 +457,19 @@ void syscall_handler(struct registers *r) {
         struct aos_msg *m = (struct aos_msg *)r->ebx;
         if (in_user(m, sizeof(struct aos_msg))) {
             unsigned int t, av, bv, cv, dv;
-            if (task_mailbox_recv(&t, &av, &bv, &cv, &dv) == 0) {
+            char title_buf[16] = {0};
+            if (task_mailbox_recv(&t, &av, &bv, &cv, &dv, title_buf) == 0) {
                 m->type = t;
                 m->a = av;
                 m->b = bv;
                 m->c = cv;
                 m->d = dv;
+                char *dst = (char *)(m + 1);
+                if (in_user(dst, 16)) {
+                    int j;
+                    for (j = 0; j < 16; j++)
+                        dst[j] = title_buf[j];
+                }
                 r->eax = 0;
             } else {
                 r->eax = -1;

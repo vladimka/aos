@@ -28,6 +28,7 @@ void trace_finish(struct registers *r);
 // Print (to the kernel terminal) the trace of every traced, undumped task in
 // pid order and mark them dumped. Freed here only for dead tasks.
 void trace_session_dump(void);
+unsigned int trace_session_dump_root(unsigned int root);
 
 // Render task `pid`'s ring starting at virtual offset `off` into `dst` (up to
 // `cap` bytes); returns bytes copied (0 at/past the end or untraced). When

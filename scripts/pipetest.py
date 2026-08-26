@@ -8,7 +8,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ISO = os.path.join(ROOT, "aos.iso")
 MON = "/tmp/aos-pipetest.sock"
-SER = "/tmp/aos-pipetest.sock"
+SER = "/tmp/aos-pipetest.serial"
 
 BOOT_MARKS = [
     "VFS: / [sfs2] root=1",
@@ -50,6 +50,15 @@ def main():
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(1)
         s.connect(SER)
+
+        # Skip the 60-s GRUB menu: fire fallback Enters through the monitor
+        # (the first ones land in SeaBIOS, one hits the menu).
+        m = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        m.connect(MON)
+        for _ in range(3):
+            time.sleep(1.5)
+            m.sendall(b"sendkey ret\n")
+        m.close()
 
         # The WM registers for events shortly after the prompt and then
         # captures serial input, so the whole command sequence must be

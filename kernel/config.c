@@ -80,7 +80,9 @@ void config_load(void) {
             "theme_menu_bg=0x20283A\n"
             "theme_menu_fg=0xFFFFFF\n"
             "theme_text_fg=0xD8D8D8\n"
-            "theme_text_bg=0x101010\n";
+            "theme_text_bg=0x101010\n"
+            "theme_app_fg=0x1E1E1E\n"
+            "theme_app_bg=0xE8E8E8\n";
         if (vfs_kernel_write(CONFIG_PATH, def, sizeof(def) - 1, 0) >= 0)
             printf("config: created %s\n", CONFIG_PATH);
         else

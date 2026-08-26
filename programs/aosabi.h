@@ -35,6 +35,8 @@
 #define AOS_CURSOR        523
 #define AOS_SPAWN_FDS_ENV 524
 #define AOS_KILL          525
+#define AOS_TRACE_SET     526
+#define AOS_TRACE_DUMP    527
 #define AOS_INHERIT_FD    0xFFFFFFFE
 
 #ifndef FIONBIO
@@ -49,6 +51,7 @@
 #define MSG_WININFO 5   // wm -> app: "window ready"     a = winid, b = slab
 #define MSG_EXIT    6   // kernel -> sink: "task exited" a = pid
 #define MSG_CLOSE   7   // wm -> app: "please exit"    a = unused
+#define MSG_WHEEL   8   // wm -> app: a = scroll rows, + = up (older content)
 
 // ---- Shared-memory window slabs (identity-mapped, user-accessible) ----
 #define AOS_SLAB_BASE 0x03000000
@@ -180,6 +183,8 @@ static __attribute__((unused)) void aos_cursor(int x, int y, int visible) {
 }
 static __attribute__((unused)) int aos_waitpid(unsigned int pid) { return aos_syscall(AOS_WAITPID, (int)pid, 0, 0, 0, 0); }
 static __attribute__((unused)) int aos_kill(unsigned int pid) { return aos_syscall(AOS_KILL, (int)pid, 0, 0, 0, 0); }
+static __attribute__((unused)) int aos_trace_set(unsigned int on) { return aos_syscall(AOS_TRACE_SET, (int)(on ? 1 : 0), 0, 0, 0, 0); }
+static __attribute__((unused)) int aos_trace_dump(unsigned int root) { return aos_syscall(AOS_TRACE_DUMP, (int)root, 0, 0, 0, 0); }
 static __attribute__((unused)) int aos_get_children(unsigned int *pids, unsigned int max) {
     return aos_syscall(AOS_GET_CHILDREN, (int)pids, (int)max, 0, 0, 0);
 }

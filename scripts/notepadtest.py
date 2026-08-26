@@ -27,7 +27,7 @@ GPU_ARGS = ["-vga", "none", "-device", "virtio-vga,disable-modern=on"]
 
 DESKTOP = (26, 32, 48)            # COL_DESKTOP 0x1A2030
 MENU_BG = (32, 40, 58)            # COL_MENU_BG  0x20283A
-CONTENT_BG = (16, 16, 16)         # COL_BG      0x101010
+CONTENT_BG = (232, 232, 232)      # theme_app_bg 0xE8E8E8 (light, non-terminal apps)
 GREEN = (0, 255, 0)
 
 # The WM top panel (PANEL_H=26) shifts the desktop icon grid and the first
