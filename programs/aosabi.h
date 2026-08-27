@@ -68,6 +68,9 @@ struct aos_stat {
     unsigned int size;
     unsigned int mtime;
     unsigned int nlink;
+    unsigned int uid;     // owner user id
+    unsigned int gid;     // owner group id
+    unsigned int mode;    // permission bits (rwxrwxrwx + suid/sgid/sticky)
 };
 
 struct aos_time {

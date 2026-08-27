@@ -7,7 +7,7 @@
 #define SFS2_MAGIC3 '2'
 
 #define SFS2_INODES 256
-#define SFS2_INODE_SIZE 48
+#define SFS2_INODE_SIZE 64
 #define SFS2_INDIRECT_BLOCKS 128          // 512 / 4 pointers per indirect block
 #define SFS2_MAX_FILE_BLOCKS (8 + SFS2_INDIRECT_BLOCKS)
 #define SFS2_DIRENT_SIZE 32
@@ -38,14 +38,18 @@ struct sfs2_super {
 };
 
 struct sfs2_inode {
-    unsigned char type;        // 0
-    unsigned char pad0;        // 1
-    unsigned short nlink;      // 2
-    unsigned int size;         // 4
-    unsigned int mtime;        // 8
-    unsigned int direct[8];    // 12..43
-    unsigned int indirect;     // 44
-};                             // 48 bytes total
+    unsigned char type;        // 0:  0=free, 1=file, 2=dir
+    unsigned char uid;         // 1:  owner user id
+    unsigned char gid;         // 2:  owner group id
+    unsigned char _pad1;       // 3
+    unsigned short nlink;      // 4
+    unsigned short mode;       // 6:  permission bits (rwxrwxrwx + suid/sgid/sticky)
+    unsigned int size;         // 8
+    unsigned int mtime;        // 12
+    unsigned int direct[8];    // 16..47
+    unsigned int indirect;     // 48
+    unsigned char _pad2[12];   // 52..63
+};                             // 64 bytes total
 
 struct sfs2_dirent {
     unsigned int ino;          // 4
@@ -83,5 +87,7 @@ int sfs2_unlink(struct sfs2_fs *fs, unsigned int dir_ino, const char *name);
 int sfs2_readdir(struct sfs2_fs *fs, unsigned int dir_ino, unsigned int idx,
                  char *name_out, unsigned int *ino_out);
 int sfs2_flush(struct sfs2_fs *fs);
+int sfs2_set_attr(struct sfs2_fs *fs, unsigned int ino,
+                  unsigned int uid, unsigned int gid, unsigned int mode);
 
 #endif

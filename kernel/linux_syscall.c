@@ -14,6 +14,9 @@
 #include "vrng.h"
 #include "trace.h"
 #include "serial.h"
+#include "elf.h"
+
+#define STACK_MARGIN 0x10000   // pages mapped ahead of stack building
 
 static struct linux_ctx *cur_lctx(void) {
     return task_current_lctx();
@@ -68,22 +71,30 @@ void linux_ctx_init(struct linux_ctx *lc) {
 }
 
 // i386 musl struct stat (toolchain bits/stat.h): 144 bytes, st_mode at +16.
-static void fill_stat64(struct linux_ctx *lc, unsigned int type,
-                        unsigned int size, unsigned char *st) {
+// uid/gid/mode come from the vfs inode via aos_stat.
+static void fill_stat64(struct linux_ctx *lc, const struct aos_stat *s,
+                        unsigned int ino, unsigned char *st) {
     (void)lc;
     memset(st, 0, 144);
-    *(unsigned int *)(st + 12) = 1;                        // __st_ino_truncated
-    if (type == 2)
-        *(unsigned int *)(st + 16) = 0x41ED;               // st_mode S_IFDIR|0777
+    *(unsigned int *)(st + 8)  = ino;                        // st_ino
+    *(unsigned int *)(st + 12) = 1;                          // __st_ino_truncated
+    // st_mode: map aos mode bits to Linux S_IFMT|S_IRWXO format
+    unsigned int lmode = 0;
+    if (s->type == 2)
+        lmode = 0x4000;                                      // S_IFDIR
     else
-        *(unsigned int *)(st + 16) = 0x81ED;               // st_mode S_IFREG|0777
-    *(unsigned int *)(st + 20) = 1;                        // st_nlink
-    *(unsigned int *)(st + 24) = 0;                        // st_uid
-    *(unsigned int *)(st + 28) = 0;                        // st_gid
-    *(unsigned long long *)(st + 44) = size;               // st_size
-    *(unsigned int *)(st + 52) = 512;                      // st_blksize
-    *(unsigned long long *)(st + 56) = (unsigned long long)(size + 511) / 512; // st_blocks
-    *(unsigned int *)(st + 88) = 1;                        // st_ino
+        lmode = 0x8000;                                      // S_IFREG
+    lmode |= (s->mode & 0777);                               // permission bits
+    if (s->mode & 04000) lmode |= 0x800;                    // S_ISUID
+    if (s->mode & 02000) lmode |= 0x400;                    // S_ISGID
+    if (s->mode & 01000) lmode |= 0x200;                    // S_ISVTX
+    *(unsigned int *)(st + 16) = lmode;                      // st_mode
+    *(unsigned int *)(st + 20) = s->nlink;                   // st_nlink
+    *(unsigned int *)(st + 24) = s->uid;                     // st_uid
+    *(unsigned int *)(st + 28) = s->gid;                     // st_gid
+    *(unsigned long long *)(st + 44) = s->size;              // st_size
+    *(unsigned int *)(st + 52) = 512;                        // st_blksize
+    *(unsigned long long *)(st + 56) = (unsigned long long)(s->size + 511) / 512; // st_blocks
 }
 
 // linux_dirent64: u64 d_ino, i64 d_off, u16 d_reclen, u8 d_type, char d_name[]
@@ -456,12 +467,187 @@ void linux_syscall_handler(struct registers *r) {
         r->eax = 0;
         break;
 
-    case 24:   // getuid
-    case 47:   // getgid
-    case 49:   // geteuid
-    case 50:   // getegid
+    case 24:    // getuid (i386 16-bit)
+    case 199: { // getuid32 (musl i386)
+        r->eax = get_current_task()->uid;
+        break;
+    }
+    case 47:    // getgid (i386 16-bit)
+    case 200: { // getgid32 (musl i386)
+        r->eax = get_current_task()->gid;
+        break;
+    }
+    case 49:    // geteuid (i386 16-bit)
+    case 201: { // geteuid32 (musl i386)
+        r->eax = get_current_task()->euid;
+        break;
+    }
+    case 50:    // getegid (i386 16-bit)
+    case 202: { // getegid32 (musl i386)
+        r->eax = get_current_task()->egid;
+        break;
+    }
+
+    case 23:    // setuid (i386 16-bit)
+    case 213: { // setuid32 (musl i386) — set real and effective uid
+        unsigned int uid = r->ebx;
+        struct task *t = get_current_task();
+        if (t->euid != 0) { r->eax = -1; break; }  // -EPERM
+        t->uid = uid;
+        t->euid = uid;
         r->eax = 0;
         break;
+    }
+    case 46:    // setgid (i386 16-bit)
+    case 214: { // setgid32 (musl i386) — set real and effective gid
+        unsigned int gid = r->ebx;
+        struct task *t = get_current_task();
+        if (t->euid != 0) { r->eax = -1; break; }  // -EPERM
+        t->gid = gid;
+        t->egid = gid;
+        r->eax = 0;
+        break;
+    }
+    case 70:    // setreuid (i386 16-bit)
+    case 203: { // setreuid32 (musl i386)
+        unsigned int ruid = r->ebx;
+        unsigned int euid = r->ecx;
+        struct task *t = get_current_task();
+        if (t->euid != 0 && ruid != t->uid && euid != t->uid) {
+            r->eax = -1; break;                      // -EPERM
+        }
+        if (ruid != (unsigned int)-1) t->uid = ruid;
+        if (euid != (unsigned int)-1) t->euid = euid;
+        r->eax = 0;
+        break;
+    }
+    case 71:    // setregid (i386 16-bit)
+    case 204: { // setregid32 (musl i386)
+        unsigned int rgid = r->ebx;
+        unsigned int egid_val = r->ecx;
+        struct task *t = get_current_task();
+        if (t->euid != 0 && rgid != t->gid && egid_val != t->gid) {
+            r->eax = -1; break;
+        }
+        if (rgid != (unsigned int)-1) t->gid = rgid;
+        if (egid_val != (unsigned int)-1) t->egid = egid_val;
+        r->eax = 0;
+        break;
+    }
+    case 164:   // setresuid (i386 16-bit)
+    case 208: { // setresuid32 (musl i386)
+        unsigned int ruid = r->ebx;
+        unsigned int euid_val = r->ecx;
+        struct task *t = get_current_task();
+        if (t->euid != 0) { r->eax = -1; break; }
+        if (ruid != (unsigned int)-1) t->uid = ruid;
+        if (euid_val != (unsigned int)-1) t->euid = euid_val;
+        r->eax = 0;
+        break;
+    }
+    case 170:   // setresgid (i386 16-bit)
+    case 210: { // setresgid32 (musl i386)
+        unsigned int rgid = r->ebx;
+        unsigned int egid_val = r->ecx;
+        struct task *t = get_current_task();
+        if (t->euid != 0) { r->eax = -1; break; }
+        if (rgid != (unsigned int)-1) t->gid = rgid;
+        if (egid_val != (unsigned int)-1) t->egid = egid_val;
+        r->eax = 0;
+        break;
+    }
+    case 60: {  // umask(mask)
+        struct task *t = get_current_task();
+        unsigned int old = t->umask;
+        t->umask = r->ebx & 0777;
+        r->eax = old;
+        break;
+    }
+    case 80:    // getgroups (i386 16-bit)
+    case 205: { // getgroups32 (musl i386)
+        unsigned int ngids = r->ebx;
+        unsigned int *list = (unsigned int *)r->ecx;
+        struct task *t = get_current_task();
+        if (ngids == 0) { r->eax = 1; break; }      // just return count
+        if (!in_luser(list, ngids * 4)) { r->eax = -14; break; }
+        list[0] = t->gid;
+        r->eax = 1;
+        break;
+    }
+    case 81:    // setgroups (i386 16-bit)
+    case 206: { // setgroups32 (musl i386) — stub (return 0)
+        r->eax = 0;
+        break;
+    }
+
+    case 15: {  // chmod(path, mode)
+        char *p = copy_lin_str((const void *)r->ebx);
+        if (!p) { r->eax = -14; break; }
+        unsigned int mode = r->ecx & 07777;
+        struct vfs_inode *cwd = current_task_cwd();
+        struct task *t = get_current_task();
+        // check: owner or root
+        struct aos_stat st;
+        int rc = vfs_stat(cwd, p, &st);
+        if (rc == 0 && t->euid != 0 && t->euid != st.uid) {
+            vfs_put(cwd); kfree(p); r->eax = -1; break;
+        }
+        rc = vfs_chmod(cwd, p, mode);
+        vfs_put(cwd);
+        kfree(p);
+        r->eax = rc;
+        break;
+    }
+    case 94: {  // fchmod(fd, mode)
+        int fd = (int)r->ebx;
+        unsigned int mode = r->ecx & 07777;
+        if (!lin_fd_valid(fd)) { r->eax = -9; break; }
+        struct task *t = get_current_task();
+        struct open_file *of = vfs_ofile_ptr(fd);
+        if (of && t->euid != 0 && t->euid != of->inode->uid) {
+            r->eax = -1; break;
+        }
+        r->eax = vfs_fchmod(fd, mode);
+        break;
+    }
+    case 182: {  // chown(path, owner, group)
+        char *p = copy_lin_str((const void *)r->ebx);
+        if (!p) { r->eax = -14; break; }
+        unsigned int owner = r->ecx;
+        unsigned int group = r->edx;
+        struct vfs_inode *cwd = current_task_cwd();
+        struct task *t = get_current_task();
+        struct aos_stat st;
+        int rc = vfs_stat(cwd, p, &st);
+        if (rc == 0 && t->euid != 0) {
+            vfs_put(cwd); kfree(p); r->eax = -1; break;
+        }
+        // -1 means "don't change"
+        if (owner == (unsigned int)-1) owner = st.uid;
+        if (group == (unsigned int)-1) group = st.gid;
+        rc = vfs_chown(cwd, p, owner, group);
+        vfs_put(cwd);
+        kfree(p);
+        r->eax = rc;
+        break;
+    }
+    case 95: {  // fchown(fd, owner, group)
+        int fd = (int)r->ebx;
+        unsigned int owner = r->ecx;
+        unsigned int group = r->edx;
+        if (!lin_fd_valid(fd)) { r->eax = -9; break; }
+        struct task *t = get_current_task();
+        struct open_file *of = vfs_ofile_ptr(fd);
+        if (of && t->euid != 0 && t->euid != of->inode->uid) {
+            r->eax = -1; break;
+        }
+        if (of) {
+            if (owner == (unsigned int)-1) owner = of->inode->uid;
+            if (group == (unsigned int)-1) group = of->inode->gid;
+        }
+        r->eax = vfs_fchown(fd, owner, group);
+        break;
+    }
 
     case 54: {  // ioctl(fd, req, arg) — FIONBIO only (0x5421)
         int fd = (int)r->ebx;
@@ -545,7 +731,7 @@ void linux_syscall_handler(struct registers *r) {
         vfs_put(base);
         kfree(p);
         if (rc < 0) { r->eax = -2; break; }
-        fill_stat64(lc, s.type, s.size, st);
+        fill_stat64(lc, &s, 0, st);
         r->eax = 0;
         break;
     }
@@ -558,7 +744,7 @@ void linux_syscall_handler(struct registers *r) {
         struct aos_stat s;
         int rc = vfs_fstat_fd(fd, &s);
         if (rc < 0) { r->eax = rc; break; }
-        fill_stat64(lc, s.type, s.size, st);
+        fill_stat64(lc, &s, 0, st);
         r->eax = 0;
         break;
     }
@@ -590,6 +776,152 @@ void linux_syscall_handler(struct registers *r) {
             entry_ino++;
         }
         r->eax = written;
+        break;
+    }
+
+    case 11: {  // execve(filename, argv, envp)
+        const char *path = (const char *)r->ebx;
+        unsigned int *user_argv = (unsigned int *)r->ecx;
+        unsigned int *user_envp = (unsigned int *)r->edx;
+        struct task *t = get_current_task();
+
+        // Copy filename to kernel buffer before user memory is overwritten
+        char kpath[256];
+        if (!in_luser(path, 1)) { r->eax = -14; break; }
+        {
+            unsigned int len = 0;
+            while (len < 255 && path[len]) { kpath[len] = path[len]; len++; }
+            kpath[len] = 0;
+            if (len == 0) { r->eax = -2; break; }  // -ENOENT
+        }
+
+        // Copy argv strings to kernel buffers
+        char kargv_buf[2048];
+        unsigned int kargv_count = 0;
+        {
+            unsigned int kpos = 0;
+            if (user_argv && in_luser(user_argv, 4)) {
+                unsigned int a_ptr;
+                while (kargv_count < 63) {
+                    if (!in_luser(user_argv + kargv_count, 4)) break;
+                    a_ptr = user_argv[kargv_count];
+                    if (a_ptr == 0) break;
+                    if (!in_luser((const char *)a_ptr, 1)) break;
+                    unsigned int slen = 0;
+                    while (slen < 255 && ((const char *)a_ptr)[slen]) slen++;
+                    if (kpos + slen + 1 > sizeof(kargv_buf)) break;
+                    for (unsigned int i = 0; i <= slen; i++)
+                        kargv_buf[kpos++] = ((const char *)a_ptr)[i];
+                    kargv_count++;
+                }
+            }
+        }
+
+        // Copy envp strings to kernel buffers (strip __AOS_UID/__AOS_GID)
+        char kenv_buf[2048];
+        unsigned int kenv_len = 0;
+        {
+            unsigned int kpos = 0;
+            if (user_envp && in_luser(user_envp, 4)) {
+                unsigned int e_ptr;
+                for (unsigned int ei = 0; ei < 64; ei++) {
+                    if (!in_luser(user_envp + ei, 4)) break;
+                    e_ptr = user_envp[ei];
+                    if (e_ptr == 0) break;
+                    if (!in_luser((const char *)e_ptr, 1)) break;
+                    unsigned int slen = 0;
+                    while (slen < 511 && ((const char *)e_ptr)[slen]) slen++;
+
+                    // Skip __AOS_UID and __AOS_GID (handled by kernel)
+                    if (slen >= 10 && strncmp((const char *)e_ptr, "__AOS_UID=", 10) == 0) {
+                        // Extract uid
+                        const char *v = (const char *)e_ptr + 10;
+                        unsigned int uid = 0;
+                        while (*v >= '0' && *v <= '9') { uid = uid * 10 + (*v - '0'); v++; }
+                        t->uid = uid;
+                        t->euid = uid;
+                        continue;
+                    }
+                    if (slen >= 10 && strncmp((const char *)e_ptr, "__AOS_GID=", 10) == 0) {
+                        const char *v = (const char *)e_ptr + 10;
+                        unsigned int gid = 0;
+                        while (*v >= '0' && *v <= '9') { gid = gid * 10 + (*v - '0'); v++; }
+                        t->gid = gid;
+                        t->egid = gid;
+                        continue;
+                    }
+
+                    if (kpos + slen + 1 > sizeof(kenv_buf)) break;
+                    for (unsigned int i = 0; i <= slen; i++)
+                        kenv_buf[kpos++] = ((const char *)e_ptr)[i];
+                    kenv_len = kpos;
+                }
+            }
+            // Double-NUL terminate
+            if (kpos + 1 <= sizeof(kenv_buf)) { kenv_buf[kpos] = 0; kenv_len = kpos + 1; }
+        }
+
+        // Reset linux context for fresh address space
+        struct linux_ctx *lc = t->lctx;
+        lc->brk_base = 0;
+        lc->brk_cur = 0;
+        lc->mmap_cur = 0x10000000 - STACK_MARGIN;
+        lc->tls_base = 0;
+        lc->tls_limit = 0;
+        lc->tls_seg32 = 0;
+        lc->tls_ro = 0;
+        lc->tls_gran_pages = 0;
+
+        // Build the argv string (space-delimited) for elf_load_linux
+        char kargs_str[1024];
+        {
+            unsigned int pos = 0;
+            unsigned int off = 0;
+            for (unsigned int i = 0; i < kargv_count; i++) {
+                unsigned int slen = 0;
+                while (slen < 255 && kargv_buf[off + slen]) slen++;
+                if (i > 0 && pos < sizeof(kargs_str) - 1)
+                    kargs_str[pos++] = ' ';
+                for (unsigned int j = 0; j < slen && pos < sizeof(kargs_str) - 1; j++)
+                    kargs_str[pos++] = kargv_buf[off + j];
+                off += slen + 1;
+            }
+            kargs_str[pos] = 0;
+        }
+
+        // Build the env block (double-NUL terminated) for elf_load_linux
+        char kenv_str[2048];
+        if (kenv_len > 0) {
+            unsigned int copylen = kenv_len < sizeof(kenv_str) ? kenv_len : sizeof(kenv_str);
+            memcpy(kenv_str, kenv_buf, copylen);
+        }
+
+        // Load the new ELF — switch to the task's CR3 so segments are written
+        // into the correct address space.
+        unsigned int *kpd = paging_kernel_pd();
+        void *entry;
+        __asm__ volatile("cli");
+        paging_set_cr3(t->cr3);
+        entry = elf_load_linux(kpath, kargs_str, lc,
+                               kenv_len > 0 ? kenv_str : 0);
+        paging_set_cr3((unsigned int)kpd);
+        __asm__ volatile("sti");
+
+        if (!entry) {
+            r->eax = -2;   // -ENOENT
+            break;
+        }
+
+        // Close fds >= 3 (CLOEXEC) — only after successful ELF load so the
+        // original program's fds survive a failed exec.
+        for (int i = 3; i < TASK_MAX_FDS; i++) {
+            if (t->fds[i]) { vfs_close_fd(i); t->fds[i] = 0; }
+        }
+
+        // Update the interrupt frame so iret returns to the new program
+        r->eip = (unsigned int)entry;
+        r->user_esp = lc->stack_sp;
+        r->eax = 0;   // execve returns 0 on success (never actually returns)
         break;
     }
 

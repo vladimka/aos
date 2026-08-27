@@ -173,6 +173,9 @@ int sfs2_format(struct sfs2_fs *fs) {
     for (unsigned int b = fs->data_start; b < fs->block_count; b++)
         bit_set(bitmap_mem, b);
     inodes[1].type = SFS2_TYPE_DIR;
+    inodes[1].uid = 0;
+    inodes[1].gid = 0;
+    inodes[1].mode = 0755;
     inodes[1].nlink = 1;
     inodes[1].size = 0;
     inodes[1].mtime = fs_time_now();
@@ -202,11 +205,15 @@ int sfs2_alloc_inode(struct sfs2_fs *fs, unsigned int type) {
     for (unsigned int ino = 2; ino < SFS2_INODES; ino++) {
         if (inodes[ino].type == SFS2_TYPE_FREE) {
             inodes[ino].type = (unsigned char)type;
+            inodes[ino].uid = 0;
+            inodes[ino].gid = 0;
+            inodes[ino].mode = (type == SFS2_TYPE_DIR) ? 0755 : 0644;
             inodes[ino].nlink = 1;
             inodes[ino].size = 0;
             inodes[ino].mtime = fs_time_now();
             for (int i = 0; i < 8; i++) inodes[ino].direct[i] = 0;
             inodes[ino].indirect = 0;
+            memset(inodes[ino]._pad2, 0, sizeof(inodes[ino]._pad2));
             return (int)ino;
         }
     }
@@ -464,6 +471,17 @@ int sfs2_unlink(struct sfs2_fs *fs, unsigned int dir_ino, const char *name) {
 int sfs2_flush(struct sfs2_fs *fs) {
     save_meta(fs);
     return block_flush();
+}
+
+int sfs2_set_attr(struct sfs2_fs *fs, unsigned int ino,
+                  unsigned int uid, unsigned int gid, unsigned int mode) {
+    struct sfs2_inode *in = sfs2_get_inode(fs, ino);
+    if (!in || in->type == SFS2_TYPE_FREE) return SFS2_ERR_ENOENT;
+    in->uid = (unsigned char)uid;
+    in->gid = (unsigned char)gid;
+    in->mode = (unsigned short)(mode & 07777);
+    in->mtime = fs_time_now();
+    return 0;
 }
 
 // ---- selftest (isolated RAM device, never touches the real backend) ----

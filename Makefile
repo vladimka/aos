@@ -23,7 +23,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
                kernel/task.o kernel/linux_syscall.o kernel/pipe.o kernel/block.o kernel/sfs2.o \
                kernel/klog.o kernel/trace.o kernel/symtab.o
 
-PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest sh exitto random fstest procinfo bgspawn cp mv mkdir rmdir head wc sync envp ps init kill strace
+PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest sh exitto random fstest procinfo bgspawn cp mv mkdir rmdir head wc sync envp ps init kill strace whoami id sudo login useradd passwd su files
 
 # All AOS programs and the Linux ELF payload (lin/*) are built with the
 # static musl i386 toolchain. It is a hard build dependency: without it the
@@ -120,6 +120,10 @@ build/prog/clock.elf: programs/musl/clock.c programs/musl/gui.c programs/musl/th
 build/prog/notepad.elf: programs/musl/notepad.c programs/musl/gui.c programs/musl/theme.c programs/aosabi.h
 	@mkdir -p build/prog
 	$(MUSL_CC) -static -no-pie -Os -Wall -Wextra -Iprograms -o $@ programs/musl/notepad.c programs/musl/gui.c programs/musl/theme.c
+
+build/prog/files.elf: programs/musl/files.c programs/musl/gui.c programs/musl/theme.c programs/aosabi.h
+	@mkdir -p build/prog
+	$(MUSL_CC) -static -no-pie -Os -Wall -Wextra -Iprograms -o $@ programs/musl/files.c programs/musl/gui.c programs/musl/theme.c
 
 scripts/demo.ico: scripts/gen_ico.py
 	$(PYTHON) scripts/gen_ico.py > $@

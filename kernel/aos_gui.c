@@ -352,13 +352,51 @@ void aos_gui_handler(struct registers *r) {
         }
         break;
     }
-    case AOS_SPAWN_FDS:
+    case AOS_SPAWN_FDS: {
         r->eax = spawn_fds_common(r, 0);
         break;
+    }
     case AOS_SPAWN_FDS_ENV: {
         char *envb = r->edi ? copy_env_block((const void *)r->edi) : 0;
         if (r->edi && !envb) { r->eax = -5; break; }
+        /* Parse __AOS_UID / __AOS_GID from env block and strip them. */
+        int child_uid = -1, child_gid = -1;
+        if (envb) {
+            char *w = envb;
+            char *p = envb;
+            while (*p) {
+                int skip = 0;
+                if (strncmp(p, "__AOS_UID=", 10) == 0) {
+                    child_uid = 0;
+                    const char *d = p + 10;
+                    while (*d >= '0' && *d <= '9')
+                        child_uid = child_uid * 10 + (*d++ - '0');
+                    skip = 1;
+                } else if (strncmp(p, "__AOS_GID=", 10) == 0) {
+                    child_gid = 0;
+                    const char *d = p + 10;
+                    while (*d >= '0' && *d <= '9')
+                        child_gid = child_gid * 10 + (*d++ - '0');
+                    skip = 1;
+                }
+                if (!skip) {
+                    unsigned int len = strlen(p) + 1;
+                    unsigned int i;
+                    for (i = 0; i < len; i++) w[i] = p[i];
+                    w += len;
+                }
+                p += strlen(p) + 1;
+            }
+            *w = '\0';
+        }
         r->eax = spawn_fds_common(r, envb);
+        if (r->eax > 0 && (child_uid >= 0 || child_gid >= 0)) {
+            struct task *c = task_slot((unsigned int)r->eax);
+            if (c) {
+                if (child_uid >= 0) { c->uid = (unsigned int)child_uid; c->euid = (unsigned int)child_uid; }
+                if (child_gid >= 0) { c->gid = (unsigned int)child_gid; c->egid = (unsigned int)child_gid; }
+            }
+        }
         kfree(envb);
         break;
     }

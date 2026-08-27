@@ -45,6 +45,9 @@ struct vfs_inode {
     unsigned int nlink;
     unsigned int size;
     unsigned int mtime;
+    unsigned int uid;       // owner user id
+    unsigned int gid;       // owner group id
+    unsigned int mode;      // permission bits (rwxrwxrwx + suid/sgid/sticky)
     unsigned int refcount;
     struct vfs_inode *parent;   // weak parent link; child holds a reference
     unsigned int last_used;
@@ -113,6 +116,10 @@ int vfs_mkdir(struct vfs_inode *cwd, const char *path);
 int vfs_rmdir(struct vfs_inode *cwd, const char *path);
 int vfs_chdir(struct vfs_inode *cwd, const char *path);
 int vfs_getcwd(char *buf, unsigned int len);
+int vfs_chmod(struct vfs_inode *cwd, const char *path, unsigned int mode);
+int vfs_fchmod(int fd, unsigned int mode);
+int vfs_chown(struct vfs_inode *cwd, const char *path, unsigned int uid, unsigned int gid);
+int vfs_fchown(int fd, unsigned int uid, unsigned int gid);
 
 // Current working directory. Single kernel-global for Task 4; Task 5 moves it
 // into the task struct (current_task_cwd() in syscall.c is the accessor).
@@ -123,6 +130,7 @@ int vfs_kernel_read(const char *path, void *buf, unsigned int len,
 int vfs_kernel_write(const char *path, const void *buf, unsigned int len,
                      unsigned int off);
 int vfs_kernel_stat(const char *path, struct aos_stat *st);
+int vfs_kernel_mkdir(const char *path);
 
 // procfs (kernel/procfs.c)
 extern struct vfs_fs procfs_fs;

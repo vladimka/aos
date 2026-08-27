@@ -117,6 +117,41 @@ static const char icon_clock[32][33] = {
     "................................",
 };
 
+static const char icon_files[32][33] = {
+    "................................",
+    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "X..............................X",
+    "XOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOX",
+    "X..............................X",
+    "X..............................X",
+    "X.XXXXXXXXXXXXXXXXXXXXXXXXXXXX.X",
+    "X..............................X",
+    "X.XXX.....XXXXXXXXXXXXXXXXXXX.X",
+    "X..............................X",
+    "X.XXXXXXXXXXXXXXXXXXXXXXXXXXXX.X",
+    "X..............................X",
+    "X.XXX.....XXXXXXXXXXXXXXXXXXX.X",
+    "X..............................X",
+    "X.XXXXXXXXXXXXXXXXXXXXXXXXXXXX.X",
+    "X..............................X",
+    "X.XXX.....XXXXXXXXXXXXXXXXXXX.X",
+    "X..............................X",
+    "X.XXXXXXXXXXXXXXXXXXXXXXXXXXXX.X",
+    "X..............................X",
+    "X.XXX.....XXXXXXXXXXXXXXXXXXX.X",
+    "X..............................X",
+    "X.XXXXXXXXXXXXXXXXXXXXXXXXXXXX.X",
+    "X..............................X",
+    "X.XXX.....XXXXXXXXXXXXXXXXXXX.X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "X..............................X",
+    "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+};
+
 static const char icon_unknown[32][33] = {
     "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
     "X..............................X",
@@ -268,15 +303,16 @@ struct win {
     char title[16];
 };
 
-enum { APP_TERM = 0, APP_CLOCK = 1, APP_UNKNOWN = 2 };
+enum { APP_TERM = 0, APP_CLOCK = 1, APP_FILES = 2, APP_UNKNOWN = 3 };
 
 static struct launcher {
     const char *path;
     unsigned int pid;
     int running;
-} launchers[2] = {
+} launchers[3] = {
     { "bin/term", 0, 0 },
     { "bin/clock", 0, 0 },
+    { "bin/files", 0, 0 },
 };
 
 static int zorder[MAX_WINDOWS];
@@ -585,7 +621,7 @@ static void composite(void) {
 
 // ---- dock ----------------------------------------------------------------
 
-static int dock_nitems(void) { return 2 + nz; }
+static int dock_nitems(void) { return 3 + nz; }
 
 static int dock_x0(void) {
     return (int)fb_w / 2 - (16 + dock_nitems() * DOCK_STRIDE) / 2;
@@ -616,12 +652,15 @@ static void draw_dock(void) {
     draw_icon2(dx0 + DOCK_PAD_X, iy, icon_term, col_icon_fg, col_accent);
     draw_icon2(dx0 + DOCK_PAD_X + DOCK_STRIDE, iy, icon_clock,
                col_icon_fg, col_accent);
-    int di = 2;
+    draw_icon2(dx0 + DOCK_PAD_X + 2 * DOCK_STRIDE, iy, icon_files,
+               col_icon_fg, col_accent);
+    int di = 3;
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (!wins[i].used) continue;
         const char (*ic)[DOCK_ICON + 1];
         if (wins[i].app == APP_TERM) ic = icon_term;
         else if (wins[i].app == APP_CLOCK) ic = icon_clock;
+        else if (wins[i].app == APP_FILES) ic = icon_files;
         else ic = icon_unknown;
         int ix = dx0 + DOCK_PAD_X + di * DOCK_STRIDE;
         draw_icon2(ix, iy, ic, col_icon_fg, col_accent);
@@ -666,8 +705,8 @@ static int dock_hit(int mx, int my) {
     if (rel < 0 || rel >= dock_width()) return 0;
     int i = (rel - DOCK_PAD_X) / DOCK_STRIDE;
     if (i < 0) return 1;
-    if (i < 2) launcher_click(i);
-    else if (i < 2 + nz) {
+    if (i < 3) launcher_click(i);
+    else if (i < 3 + nz) {
         int wi = win_at_dock_index(i - 2);
         if (wi >= 0) raise_pid(wins[wi].pid);
     }
@@ -1128,7 +1167,7 @@ static void raise_pid(unsigned int pid) {
 }
 
 static int app_type_of(unsigned int pid) {
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 3; i++)
         if (launchers[i].pid == pid) return i;
     return APP_UNKNOWN;
 }

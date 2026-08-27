@@ -92,6 +92,9 @@ static int sfs2v_stat(struct vfs_fs *fs, unsigned int ino, struct aos_stat *st) 
     st->size = in->size;
     st->mtime = in->mtime;
     st->nlink = in->nlink;
+    st->uid = in->uid;
+    st->gid = in->gid;
+    st->mode = in->mode;
     return 0;
 }
 
@@ -203,6 +206,9 @@ struct vfs_inode *vfs_get(struct vfs_fs *fs, unsigned int ino) {
     in->nlink = st.nlink;
     in->size = st.size;
     in->mtime = st.mtime;
+    in->uid = st.uid;
+    in->gid = st.gid;
+    in->mode = st.mode;
     return in;
 }
 
@@ -763,6 +769,47 @@ int vfs_getcwd(char *buf, unsigned int len) {
     return 0;
 }
 
+int vfs_chmod(struct vfs_inode *cwd, const char *path, unsigned int mode) {
+    struct vfs_inode *in = vfs_resolve(cwd, path, 0);
+    if (!in) return VFS_ENOENT;
+    if (in->fs != &sfs2_vfs_fs) { vfs_put(in); return VFS_EINVAL; }
+    int r = sfs2_set_attr(&vfs_sfs2, in->ino, in->uid, in->gid, mode);
+    if (r == 0) { in->mode = mode; }
+    vfs_put(in);
+    return r < 0 ? r : 0;
+}
+
+int vfs_fchmod(int fd, unsigned int mode) {
+    struct open_file *of = ofile_get(fd);
+    if (!of) return VFS_EBADF;
+    struct vfs_inode *in = of->inode;
+    if (in->fs != &sfs2_vfs_fs) return VFS_EINVAL;
+    int r = sfs2_set_attr(&vfs_sfs2, in->ino, in->uid, in->gid, mode);
+    if (r == 0) { in->mode = mode; }
+    return r < 0 ? r : 0;
+}
+
+int vfs_chown(struct vfs_inode *cwd, const char *path,
+              unsigned int uid, unsigned int gid) {
+    struct vfs_inode *in = vfs_resolve(cwd, path, 0);
+    if (!in) return VFS_ENOENT;
+    if (in->fs != &sfs2_vfs_fs) { vfs_put(in); return VFS_EINVAL; }
+    int r = sfs2_set_attr(&vfs_sfs2, in->ino, uid, gid, in->mode);
+    if (r == 0) { in->uid = uid; in->gid = gid; }
+    vfs_put(in);
+    return r < 0 ? r : 0;
+}
+
+int vfs_fchown(int fd, unsigned int uid, unsigned int gid) {
+    struct open_file *of = ofile_get(fd);
+    if (!of) return VFS_EBADF;
+    struct vfs_inode *in = of->inode;
+    if (in->fs != &sfs2_vfs_fs) return VFS_EINVAL;
+    int r = sfs2_set_attr(&vfs_sfs2, in->ino, uid, gid, in->mode);
+    if (r == 0) { in->uid = uid; in->gid = gid; }
+    return r < 0 ? r : 0;
+}
+
 // ---- kernel read/write helpers (paths relative to /) ----
 int vfs_kernel_read(const char *path, void *buf, unsigned int len,
                     unsigned int off) {
@@ -801,6 +848,14 @@ int vfs_kernel_stat(const char *path, struct aos_stat *st) {
     struct vfs_inode *root = vfs_get_root();
     if (!root) return VFS_ENOENT;
     int r = vfs_stat(root, path, st);
+    vfs_put(root);
+    return r;
+}
+
+int vfs_kernel_mkdir(const char *path) {
+    struct vfs_inode *root = vfs_get_root();
+    if (!root) return VFS_ENOENT;
+    int r = vfs_mkdir(root, path);
     vfs_put(root);
     return r;
 }

@@ -120,7 +120,7 @@ static unsigned int proc_render_cmdline(unsigned int pid, char *buf,
     return i;
 }
 
-// Render /proc/<pid>/status as "State:/PPid:/Abi:" lines. Returns length.
+// Render /proc/<pid>/status as "State:/PPid:/Abi:/Uid:/Gid:" lines. Returns length.
 static unsigned int proc_render_status(unsigned int pid, char *buf,
                                        unsigned int cap) {
     struct task *t = pid < MAX_TASKS ? task_slot(pid) : 0;
@@ -129,38 +129,61 @@ static unsigned int proc_render_status(unsigned int pid, char *buf,
     unsigned int abi = (t->abi == ABI_LINUX) ? 1u : 0u;
     const char *state = proc_state_str(t->state);
     char num[12];
-    u32_str(t->parent, num);
     unsigned int i = 0;
-    const char *parts[] = { "State:\t", state, "\nPPid:\t", num,
-                            "\nAbi:\t", abis[abi], "\n" };
-    for (unsigned int k = 0; k < sizeof(parts) / sizeof(parts[0]); k++)
-        for (unsigned int j = 0; parts[k][j] && i < cap - 1; j++)
-            buf[i++] = parts[k][j];
+    /* State */
+    const char *s1 = "State:\t";
+    for (unsigned int j = 0; s1[j] && i < cap - 1; j++) buf[i++] = s1[j];
+    for (unsigned int j = 0; state[j] && i < cap - 1; j++) buf[i++] = state[j];
+    buf[i++] = '\n';
+    /* PPid */
+    const char *s2 = "PPid:\t";
+    for (unsigned int j = 0; s2[j] && i < cap - 1; j++) buf[i++] = s2[j];
+    u32_str(t->parent, num);
+    for (unsigned int j = 0; num[j] && i < cap - 1; j++) buf[i++] = num[j];
+    buf[i++] = '\n';
+    /* Abi */
+    const char *s3 = "Abi:\t";
+    for (unsigned int j = 0; s3[j] && i < cap - 1; j++) buf[i++] = s3[j];
+    for (unsigned int j = 0; abis[abi][j] && i < cap - 1; j++) buf[i++] = abis[abi][j];
+    buf[i++] = '\n';
+    /* Uid */
+    const char *s4 = "Uid:\t";
+    for (unsigned int j = 0; s4[j] && i < cap - 1; j++) buf[i++] = s4[j];
+    u32_str(t->uid, num);
+    for (unsigned int j = 0; num[j] && i < cap - 1; j++) buf[i++] = num[j];
+    buf[i++] = '\n';
+    /* Gid */
+    const char *s5 = "Gid:\t";
+    for (unsigned int j = 0; s5[j] && i < cap - 1; j++) buf[i++] = s5[j];
+    u32_str(t->gid, num);
+    for (unsigned int j = 0; num[j] && i < cap - 1; j++) buf[i++] = num[j];
+    buf[i++] = '\n';
     buf[i] = '\0';
     return i;
 }
 
 static int proc_stat(struct vfs_fs *fs, unsigned int ino, struct aos_stat *st) {
     (void)fs;
+    memset(st, 0, sizeof(*st));
+    st->uid = 0;
+    st->gid = 0;
+    st->mode = 0444;   // procfs: world-readable, root-owned
     if (ino == PROCFS_ROOT) {
         st->type = 2;
-        st->size = 0;
-        st->mtime = 0;
         st->nlink = 1;
+        st->mode = 0555;   // directories are readable+executable
         return 0;
     }
     if (ino == PROCFS_KLOG) {
         st->type = 1;
         st->size = klog_size();
-        st->mtime = 0;
         st->nlink = 1;
         return 0;
     }
     if (ino >= PROCFS_PID_BASE && ino < PROCFS_PID_BASE + MAX_TASKS) {
         st->type = 2;
-        st->size = 0;
-        st->mtime = 0;
         st->nlink = 1;
+        st->mode = 0555;
         return 0;
     }
     if (ino >= PROCFS_TRACE_BASE && ino < PROCFS_TRACE_BASE + MAX_TASKS) {
@@ -168,7 +191,6 @@ static int proc_stat(struct vfs_fs *fs, unsigned int ino, struct aos_stat *st) {
         trace_render_at(ino - PROCFS_TRACE_BASE, 0, 0, 0, &sz);
         st->type = 1;
         st->size = sz;
-        st->mtime = 0;
         st->nlink = 1;
         return 0;
     }
@@ -177,7 +199,6 @@ static int proc_stat(struct vfs_fs *fs, unsigned int ino, struct aos_stat *st) {
         st->type = 1;
         st->size = proc_render_cmdline(ino - PROCFS_CMDLINE_BASE,
                                        cbuf, sizeof(cbuf));
-        st->mtime = 0;
         st->nlink = 1;
         return 0;
     }

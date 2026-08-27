@@ -60,6 +60,11 @@ struct task {
     unsigned int trace_count;     // records written so far
     unsigned int trace_wrapped;   // 1 = the ring overwrote old records
     unsigned int trace_dumped;    // 1 = already printed by a strace session
+    unsigned int uid;             // real user id
+    unsigned int gid;             // real group id
+    unsigned int euid;            // effective user id (permission checks)
+    unsigned int egid;            // effective group id
+    unsigned int umask;           // file creation mask
 };
 
 void task_init(void);
@@ -85,6 +90,7 @@ int task_mailbox_recv(unsigned int *t, unsigned int *a, unsigned int *b, unsigne
 
 int task_event_pid(void);
 int task_set_event_pid(void);
+int task_has_user_tasks(void);
 
 unsigned int task_current_abi(void);
 int task_set_abi_current(unsigned int abi);

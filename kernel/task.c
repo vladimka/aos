@@ -173,6 +173,11 @@ void task_init(void) {
     tasks[0].fds[0] = &console_open_file;
     tasks[0].fds[1] = &console_open_file;
     tasks[0].fds[2] = &console_open_file;
+    tasks[0].uid = 0;
+    tasks[0].gid = 0;
+    tasks[0].euid = 0;
+    tasks[0].egid = 0;
+    tasks[0].umask = 0022;
     current_task = &tasks[0];
     tss_set_esp0(tasks[0].kstack_top);
 }
@@ -377,6 +382,12 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     t->state = TASK_SPAWNING;
     t->sink = sink;
     t->parent = task_current_pid();
+    // Inherit credentials from parent
+    t->uid = current_task->uid;
+    t->gid = current_task->gid;
+    t->euid = current_task->euid;
+    t->egid = current_task->egid;
+    t->umask = current_task->umask;
     // strace -f: a child inherits the parent's trace flag. trace_root marks
     // the session owner (the userland strace process): it propagates down the
     // whole traced tree and SURVIVES reparenting to init, so the strace
@@ -776,4 +787,11 @@ struct task *get_current_task(void) {
 
 struct task *task_slot(unsigned int i) {
     return i < MAX_TASKS ? &tasks[i] : 0;
+}
+
+int task_has_user_tasks(void) {
+    for (unsigned int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].state != TASK_FREE) return 1;
+    }
+    return 0;
 }

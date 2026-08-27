@@ -115,6 +115,39 @@ void config_load(void) {
     rtc_set_tz(tz_min);
     if (tz_min != 0)
         printf("config: timezone %s%d\n", tz_min > 0 ? "+" : "", tz_min);
+
+    /* Create default user files if absent */
+    {
+        struct aos_stat st;
+        /* /etc/passwd — root (uid=0) and user (uid=1000) */
+        if (vfs_kernel_stat("etc/passwd", &st) < 0) {
+            static const char passwd[] =
+                "root:x:0:0:root:/root:/bin/sh\n"
+                "user:x:1000:1000:user:/home/user:/bin/sh\n";
+            vfs_kernel_write("etc/passwd", passwd, sizeof(passwd) - 1, 0);
+            printf("config: created etc/passwd\n");
+        }
+        /* /etc/group — root, user, sudo */
+        if (vfs_kernel_stat("etc/group", &st) < 0) {
+            static const char group[] =
+                "root:x:0:\n"
+                "user:x:1000:\n"
+                "sudo:x:27:user\n";
+            vfs_kernel_write("etc/group", group, sizeof(group) - 1, 0);
+            printf("config: created etc/group\n");
+        }
+        /* /home/user/ directory */
+        if (vfs_kernel_stat("home/user", &st) < 0) {
+            vfs_kernel_mkdir("home");
+            vfs_kernel_mkdir("home/user");
+            printf("config: created home/user/\n");
+        }
+        /* /root/ directory */
+        if (vfs_kernel_stat("root", &st) < 0) {
+            vfs_kernel_mkdir("root");
+            printf("config: created root/\n");
+        }
+    }
 }
 
 int config_tz_min(void) { return tz_min; }
