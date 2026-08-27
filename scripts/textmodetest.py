@@ -16,12 +16,10 @@ GPU_ARGS = ["-vga", "none", "-device", "virtio-vga,disable-modern=on"]
 
 
 def boot_text_entry(q):
-    """Select the second GRUB entry ("AOS (text)") and wait for AOS>.
+    """Select the second GRUB entry ("AOS (text)") and wait for a shell prompt.
 
-    Down highlights it, Enter boots it (digit shortcuts proved unreliable
-    in this GRUB build). Presses landing before the menu exists are
-    swallowed by SeaBIOS and are harmless. Stop once kernel output reaches
-    serial.
+    The prompt can be either the kernel's legacy "AOS>" or the user shell's
+    "user@aos:...$ " format depending on whether init spawned a shell.
     """
     s = q.serial_socket()
     out = b""
@@ -33,10 +31,10 @@ def boot_text_entry(q):
         if len(out.strip()) > 20:
             break
 
-    # Kernel is running; wait for the shell prompt.
-    out += q.serial_drain(s, timeout=60, needle=b"AOS>")
-    if b"AOS>" not in out:
-        raise AssertionError("AOS> prompt missing after text-mode boot:\n"
+    # Kernel is running; wait for either prompt.
+    out += q.serial_drain(s, timeout=60)
+    if b"AOS>" not in out and b"@aos:" not in out:
+        raise AssertionError("shell prompt missing after text-mode boot:\n"
                              + out[-400:].decode(errors="replace"))
     return out.decode(errors="replace")
 

@@ -2,6 +2,7 @@
 #include "vga.h"
 #include "serial.h"
 #include "commands.h"
+#include "task.h"
 #include "vfs.h"
 #include "string.h"
 #include "user.h"
@@ -626,7 +627,7 @@ static void handle_delete(void) {
 
 // Serial console input: feed a byte as if it came from the keyboard
 void terminal_serial_byte(unsigned char c) {
-    if (user_program_active()) {
+    if (user_program_active() || task_has_user_tasks()) {
         key_queue_push(c);
         return;
     }
@@ -660,6 +661,11 @@ void terminal_serial_byte(unsigned char c) {
 void terminal_keyboard_handler(unsigned char scancode) {
     int k = terminal_scan_event(scancode);
     if (k < 0) return;
+
+    if (user_program_active() || task_has_user_tasks()) {
+        key_queue_push(k);
+        return;
+    }
 
     vga_reset_scroll();
     tab_reset();
@@ -711,11 +717,6 @@ void terminal_keyboard_handler(unsigned char scancode) {
         return;
     }
     if (k < 0x20) return;   // escape and other controls are ignored
-
-    if (user_program_active()) {
-        key_queue_push(k);
-        return;
-    }
 
     insert_codepoint((unsigned short)k);
 }

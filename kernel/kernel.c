@@ -63,7 +63,7 @@ static void keyboard_handler(void) {
 
         if (status & 0x20)
             mouse_process_byte(data);
-        else if (task_event_pid() > 0)
+        else if (!user_program_active() && task_event_pid() > 0)
             route_gui_key(terminal_scan_event(data));
         else
             terminal_keyboard_handler(data);

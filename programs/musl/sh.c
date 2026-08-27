@@ -28,7 +28,7 @@ static char var_name[MAX_VARS][32];
 static char var_val[MAX_VARS][64];
 static int var_count;
 
-static const char *prompt_str = "AOS> ";
+static void build_prompt(char *buf, int cap);
 
 static int utf8_lead(unsigned char c) {
     if (c < 0x80) return 1;
@@ -48,10 +48,17 @@ static int vis_len(const char *s, int n) {
     return cols;
 }
 
-static void redraw(void) {
-    write(1, "\r", 1);
-    write(1, "\x1b[K", 3);
-    write(1, prompt_str, 5);
+static char prompt_buf[128];
+static int prompt_len;
+
+static void redraw_at(int col0) {
+    build_prompt(prompt_buf, sizeof(prompt_buf));
+    prompt_len = (int)strlen(prompt_buf);
+    if (col0) {
+        write(1, "\r", 1);
+        write(1, "\x1b[K", 3);
+    }
+    write(1, prompt_buf, (size_t)prompt_len);
     write(1, line, (size_t)len);
     int back = vis_len(line, len) - vis_len(line, cur);
     if (back > 0) {
@@ -59,6 +66,10 @@ static void redraw(void) {
         int bn = snprintf(b, sizeof b, "\x1b[%dD", back);
         write(1, b, (size_t)bn);
     }
+}
+
+static void redraw(void) {
+    redraw_at(1);
 }
 
 static void insert_byte(unsigned char c) {
@@ -127,6 +138,49 @@ static void env_set(const char *name, const char *val) {
 }
 
 static char sh_last_cwd[256] = "/";
+
+static char *get_username(void) {
+    static char user[32] = "?";
+    static int loaded = 0;
+    if (loaded) return user;
+    loaded = 1;
+    int uid = getuid();
+    /* Look up name from /etc/passwd */
+    int pfd = open("/etc/passwd", 0);
+    if (pfd < 0) { snprintf(user, sizeof user, "%d", uid); return user; }
+    char pbuf[2048];
+    ssize_t n = read(pfd, pbuf, sizeof(pbuf) - 1);
+    close(pfd);
+    if (n <= 0) { snprintf(user, sizeof user, "%d", uid); return user; }
+    pbuf[n] = '\0';
+    char target[16];
+    snprintf(target, sizeof target, ":%d:", uid);
+    char *p = pbuf;
+    while (*p) {
+        char *eol = p;
+        while (*eol && *eol != '\n') eol++;
+        char saved = *eol;
+        *eol = '\0';
+        if (strstr(p, target)) {
+            int j = 0;
+            while (p[j] != ':' && j < 31) { user[j] = p[j]; j++; }
+            user[j] = '\0';
+            return user;
+        }
+        *eol = saved;
+        if (saved == '\n') p = eol + 1; else break;
+    }
+    snprintf(user, sizeof user, "%d", uid);
+    return user;
+}
+
+static void build_prompt(char *buf, int cap) {
+    /* user@host:path$ */
+    char *u = get_username();
+    char cwd[256];
+    getcwd(cwd, sizeof cwd);
+    snprintf(buf, cap, "%s@aos:%s$ ", u, cwd);
+}
 
 // Serialize the shell env into a double-NUL-terminated block for
 // SYS_SPAWN_FDS_ENV. term_off skips the leading TERM=aos entry (used for the
@@ -336,9 +390,11 @@ static int run_builtin(int argc, char **argv) {
         if (argc < 2) tgt = "/";
         else if (strcmp(argv[1], "-") == 0) tgt = sh_last_cwd;
         else if (argv[1][0] == '~') {
+            const char *home = env_get("HOME");
+            if (!home) home = "/";
             const char *rest = argv[1] + 1;
             if (*rest == '/') rest++;
-            snprintf(b, sizeof b, "/%s", rest);
+            snprintf(b, sizeof b, "%s/%s", home, rest);
             tgt = b;
         } else tgt = argv[1];
         char cur[256];
@@ -618,8 +674,10 @@ static void execute(void) {
     if (!bg) {
         for (int i = 0; i < nstages; i++)
             if (pids[i] > 0) last_status = aos_waitpid((unsigned int)pids[i]);
+        redraw_at(0);
+    } else {
+        redraw();
     }
-    redraw();
 }
 
 static int in_esc = 0;
@@ -661,6 +719,41 @@ static void handle_byte(unsigned char b) {
 
 int main(void) {
     env_set("TERM", "aos");
+    /* Set USER and HOME from /etc/passwd using getuid() */
+    {
+        int uid = getuid();
+        int pfd = open("/etc/passwd", 0);
+        if (pfd >= 0) {
+            char pbuf[2048];
+            ssize_t n = read(pfd, pbuf, sizeof(pbuf) - 1);
+            close(pfd);
+            pbuf[n] = '\0';
+            char target[16];
+            snprintf(target, sizeof target, ":%d:", uid);
+            char *p = pbuf;
+            while (*p) {
+                char *eol = p;
+                while (*eol && *eol != '\n') eol++;
+                char saved = *eol;
+                *eol = '\0';
+                if (strstr(p, target)) {
+                    /* name:x:uid:gid:...:home:shell */
+                    char *tok[7];
+                    int nt = 0;
+                    char *t = p;
+                    while (*t && nt < 7) { tok[nt++] = t; while (*t && *t != ':') t++; if (*t) *t++ = '\0'; }
+                    if (nt >= 7) {
+                        env_set("USER", tok[0]);
+                        env_set("LOGNAME", tok[0]);
+                        env_set("HOME", tok[5]);
+                    }
+                    break;
+                }
+                *eol = saved;
+                if (saved == '\n') p = eol + 1; else break;
+            }
+        }
+    }
     redraw();
     for (;;) {
         unsigned char b;
