@@ -27,8 +27,12 @@ int main(int argc, char **argv) {
             }
         } else {
             char buf[1024];
-            int n;
-            while ((n = read(fd, buf, sizeof(buf))) > 0) write(1, buf, (size_t)n);
+            int n, last = '\n';
+            while ((n = read(fd, buf, sizeof(buf))) > 0) {
+                write(1, buf, (size_t)n);
+                last = buf[n - 1];
+            }
+            if (last != '\n') putchar('\n');
         }
         close(fd);
     }
