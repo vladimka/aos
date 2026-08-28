@@ -13,7 +13,8 @@ SER = "/tmp/aos-vfsboot-ser.sock"
 BOOT_MARKS = [
     "VFS: / [sfs2] root=1",
     "VFS: /proc [procfs]",
-    "Loading programs... done",
+    "initramfs: staged",
+    "initramfs: unpacked",
     "Filesystem ready.",
 ]
 
@@ -58,7 +59,7 @@ def main():
             if mark not in text:
                 raise AssertionError("serial log missing %r; tail:\n%s"
                                      % (mark, text[-400:]))
-        print("PASS: VFS mounts + embedded payload seeded (boot marks OK)")
+        print("PASS: VFS mounts + initramfs payload seeded (boot marks OK)")
 
         s.settimeout(1)
         s.sendall(b"ls\n")

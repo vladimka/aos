@@ -6,19 +6,7 @@
 #include "serial.h"
 #include "kmm.h"
 #include "progload.h"
-
-// ---- embedded payload (generated kernel/progs.c) ----
-extern const struct embedded_prog {
-    const char *name;
-    const unsigned char *data;
-    unsigned int size;
-} embedded_progs[];
-
-extern const struct embedded_file {
-    const char *name;
-    const unsigned char *data;
-    unsigned int size;
-} embedded_data[];
+#include "initramfs.h"
 
 // ---- SFS2 backend ----
 static struct sfs2_fs vfs_sfs2;
@@ -879,8 +867,7 @@ void vfs_format(void) {
     for (unsigned int i = 0; i < n_mounts; i++)
         mount_setup(&mounts[i]);
     kernel_cwd = vfs_get_root();
-    load_embedded_programs();
-    load_embedded_data();
+    initramfs_unpack();
 }
 
 int vfs_sync(void) {
@@ -910,6 +897,5 @@ void vfs_init(void) {
     serial_print("VFS: /proc [procfs]\n");
 
     kernel_cwd = vfs_get_root();
-    load_embedded_programs();
-    load_embedded_data();
+    initramfs_unpack();
 }

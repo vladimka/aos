@@ -12,6 +12,7 @@
 #include "printf.h"
 #include "ports.h"
 #include "progload.h"
+#include "initramfs.h"
 #include "config.h"
 #include "commands.h"
 #include "mouse.h"
@@ -120,6 +121,11 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
            " A   A  O   O      S\n"
            " A   A   OOO    SSS \n");
     printf("=== AOS Kernel v0.3 ===\n");
+
+    // Copy the GRUB-loaded initramfs module into the reserved staging window
+    // before anything touches memory the module may be sitting on (especially
+    // the SFS ramdisk that vfs_init is about to format/mount).
+    initramfs_stage(__saved_mb_info);
 
     gdt_init();
     printf("GDT initialized.\n");

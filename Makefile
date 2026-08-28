@@ -19,7 +19,7 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
                kernel/interrupts.o kernel/bt.o kernel/elf.o kernel/syscall.o kernel/aos_gui.o \
                kernel/progload.o kernel/paging.o kernel/pmm.o kernel/kmm.o \
               kernel/config.o kernel/user.o \
-              kernel/user_tramp.o kernel/printf.o kernel/progs.o \
+              kernel/user_tramp.o kernel/printf.o kernel/initramfs.o \
                kernel/task.o kernel/linux_syscall.o kernel/pipe.o kernel/block.o kernel/sfs2.o \
                kernel/klog.o kernel/trace.o kernel/symtab.o
 
@@ -132,10 +132,15 @@ build/linux/%: tools/linux/%.c
 	@mkdir -p build/linux
 	$(LINUX_CC) -static -no-pie -Os -o $@ $<
 
-kernel/progs.c: $(PROG_ELFS) scripts/demo.ico scripts/init.conf scripts/gen_progs.py $(LINUX_BINS)
-	$(PYTHON) scripts/gen_progs.py $(PROG_ELFS) --data demo.ico=scripts/demo.ico \
+# The initramfs replaces the old C-array payload (kernel/progs.c): a newc cpio
+# archive of bin/* + lin/* + etc/init.conf + demo.ico, baked into the ISO as
+# /boot/initramfs.img and loaded as a multiboot2 module. The kernel stages it
+# into a reserved window at boot and unpacks it into the SFS (write-if-absent).
+build/initramfs.cpio: $(PROG_ELFS) scripts/demo.ico scripts/init.conf scripts/gen_progs.py $(LINUX_BINS)
+	@mkdir -p build
+	$(PYTHON) scripts/gen_progs.py --cpio $@ $(PROG_ELFS) --data demo.ico=scripts/demo.ico \
 		--data etc/init.conf=scripts/init.conf \
-		$(LINUX_EMBED) > $@
+		$(LINUX_EMBED)
 
 compile_commands.json: scripts/gen_compile_commands.py $(wildcard kernel/*.c drivers/*.c arch/i386/*.c boot/*.c programs/musl/*.c)
 	$(PYTHON) scripts/gen_compile_commands.py
@@ -149,11 +154,12 @@ aos.elf: $(KERNEL_OBJS) linker.ld scripts/gen_symtab.py
 	$(CC) $(CFLAGS) -c -o kernel/symtab.o kernel/symtab.c
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
 
-aos.iso: aos.elf aos-text.elf
+aos.iso: aos.elf aos-text.elf build/initramfs.cpio
 	mkdir -p iso/boot/grub
 	cp aos.elf iso/boot/aos.elf
 	cp aos-text.elf iso/boot/aos-text.elf
-	printf 'set timeout=60\nset default=0\nmenuentry "AOS" {\n  insmod all_video\n  multiboot2 /boot/aos.elf\n}\nmenuentry "AOS (text)" {\n  multiboot2 /boot/aos-text.elf\n}\n' > iso/boot/grub/grub.cfg
+	cp build/initramfs.cpio iso/boot/initramfs.img
+	printf 'set timeout=60\nset default=0\nmenuentry "AOS" {\n  insmod all_video\n  multiboot2 /boot/aos.elf\n  module2 /boot/initramfs.img\n}\nmenuentry "AOS (text)" {\n  multiboot2 /boot/aos-text.elf\n  module2 /boot/initramfs.img\n}\n' > iso/boot/grub/grub.cfg
 	grub-mkrescue -o $@ iso
 
 # Text-mode kernel: same objects, but the MB2 header requests no framebuffer,
@@ -205,7 +211,7 @@ test-fast: check-toolchain aos.iso
 	@echo "ALL $(words $(FAST_TESTS)) FAST TESTS PASSED"
 
 clean:
-	rm -f $(KERNEL_OBJS) $(PROG_ELFS) *.elf *.bin *.iso disk.img kernel/progs.c
+	rm -f $(KERNEL_OBJS) $(PROG_ELFS) *.elf *.bin *.iso disk.img kernel/progs.c build/initramfs.cpio
 	rm -f $(KERNEL_OBJS:.o=.d)
 	rm -rf iso build
 	rm -f $(MUSL_TGZ)

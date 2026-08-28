@@ -3,6 +3,7 @@
 #include "string.h"
 #include "printf.h"
 #include "vga.h"
+#include "initramfs.h"
 
 #define MAX_ORDER 16
 
@@ -254,6 +255,7 @@ void pmm_init(unsigned int mb_info_addr) {
     reserve(0x00000000, 0x00100000);                     // low MB (BIOS/multiboot)
     reserve(0x00100000, (unsigned int)&_end);            // kernel image
     reserve(RAMDISK_BASE, RAMDISK_BASE + (unsigned int)RAMDISK_SECTORS * BLOCK_SIZE); // ramdisk (kernel/block.c)
+    reserve(INITRAMFS_BASE, INITRAMFS_BASE + INITRAMFS_MAX); // boot initramfs staging (kernel/initramfs.h)
     reserve(0x01000000, 0x01C00000);                     // task-0 user area
     reserve(0x03000000, 0x04000000);                     // shared slab window
     reserve(0x04000000, 0x04800000);                     // virtio-gpu window + user-bit-marked tail
