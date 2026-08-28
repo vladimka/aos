@@ -112,6 +112,171 @@ static void put_dirent64(unsigned char *dst, unsigned long long ino,
     dst[19 + len] = 0;
 }
 
+// execve handler. Extracted into its own function so the large argv/envp
+// copy buffers live on the heap instead of bloating linux_syscall_handler's
+// -ffreestanding stack frame (0x1d2c bytes, compiled into the prologue for
+// EVERY linux syscall). A stack array there made ordinary read/write syscalls
+// reserve ~7.5 KB, which combined with the vfs/sfs read path overflowed the
+// 8 KB task kernel stack into the task's page directory page.
+static void linux_execve_handler(struct registers *r) {
+    const char *path = (const char *)r->ebx;
+    unsigned int *user_argv = (unsigned int *)r->ecx;
+    unsigned int *user_envp = (unsigned int *)r->edx;
+    struct task *t = get_current_task();
+
+    char *kpath = kmalloc(256);
+    char *kargv_buf = kmalloc(2048);
+    char *kenv_buf = kmalloc(2048);
+    char *kargs_str = kmalloc(1024);
+    char *kenv_str = kmalloc(2048);
+    if (!kpath || !kargv_buf || !kenv_buf || !kargs_str || !kenv_str) {
+        kfree(kpath); kfree(kargv_buf); kfree(kenv_buf);
+        kfree(kargs_str); kfree(kenv_str);
+        r->eax = -12;   // -ENOMEM
+        return;
+    }
+
+    // Copy filename to kernel buffer before user memory is overwritten
+    if (!in_luser(path, 1)) { r->eax = -14; goto done; }
+    {
+        unsigned int len = 0;
+        while (len < 255 && path[len]) { kpath[len] = path[len]; len++; }
+        kpath[len] = 0;
+        if (len == 0) { r->eax = -2; goto done; }  // -ENOENT
+    }
+
+    // Copy argv strings to kernel buffers
+    unsigned int kargv_count = 0;
+    {
+        unsigned int kpos = 0;
+        if (user_argv && in_luser(user_argv, 4)) {
+            unsigned int a_ptr;
+            while (kargv_count < 63) {
+                if (!in_luser(user_argv + kargv_count, 4)) break;
+                a_ptr = user_argv[kargv_count];
+                if (a_ptr == 0) break;
+                if (!in_luser((const char *)a_ptr, 1)) break;
+                unsigned int slen = 0;
+                while (slen < 255 && ((const char *)a_ptr)[slen]) slen++;
+                if (kpos + slen + 1 > 2048) break;
+                for (unsigned int i = 0; i <= slen; i++)
+                    kargv_buf[kpos++] = ((const char *)a_ptr)[i];
+                kargv_count++;
+            }
+        }
+    }
+
+    // Copy envp strings to kernel buffers (strip __AOS_UID/__AOS_GID)
+    unsigned int kenv_len = 0;
+    {
+        unsigned int kpos = 0;
+        if (user_envp && in_luser(user_envp, 4)) {
+            unsigned int e_ptr;
+            for (unsigned int ei = 0; ei < 64; ei++) {
+                if (!in_luser(user_envp + ei, 4)) break;
+                e_ptr = user_envp[ei];
+                if (e_ptr == 0) break;
+                if (!in_luser((const char *)e_ptr, 1)) break;
+                unsigned int slen = 0;
+                while (slen < 511 && ((const char *)e_ptr)[slen]) slen++;
+
+                // Skip __AOS_UID and __AOS_GID (handled by kernel)
+                if (slen >= 10 && strncmp((const char *)e_ptr, "__AOS_UID=", 10) == 0) {
+                    // Extract uid
+                    const char *v = (const char *)e_ptr + 10;
+                    unsigned int uid = 0;
+                    while (*v >= '0' && *v <= '9') { uid = uid * 10 + (*v - '0'); v++; }
+                    t->uid = uid;
+                    t->euid = uid;
+                    continue;
+                }
+                if (slen >= 10 && strncmp((const char *)e_ptr, "__AOS_GID=", 10) == 0) {
+                    const char *v = (const char *)e_ptr + 10;
+                    unsigned int gid = 0;
+                    while (*v >= '0' && *v <= '9') { gid = gid * 10 + (*v - '0'); v++; }
+                    t->gid = gid;
+                    t->egid = gid;
+                    continue;
+                }
+
+                if (kpos + slen + 1 > 2048) break;
+                for (unsigned int i = 0; i <= slen; i++)
+                    kenv_buf[kpos++] = ((const char *)e_ptr)[i];
+                kenv_len = kpos;
+            }
+        }
+        // Double-NUL terminate
+        if (kpos + 1 <= 2048) { kenv_buf[kpos] = 0; kenv_len = kpos + 1; }
+    }
+
+    // Reset linux context for fresh address space
+    struct linux_ctx *lc = t->lctx;
+    lc->brk_base = 0;
+    lc->brk_cur = 0;
+    lc->mmap_cur = 0x10000000 - STACK_MARGIN;
+    lc->tls_base = 0;
+    lc->tls_limit = 0;
+    lc->tls_seg32 = 0;
+    lc->tls_ro = 0;
+    lc->tls_gran_pages = 0;
+
+    // Build the argv string (space-delimited) for elf_load_linux
+    {
+        unsigned int pos = 0;
+        unsigned int off = 0;
+        for (unsigned int i = 0; i < kargv_count; i++) {
+            unsigned int slen = 0;
+            while (slen < 255 && kargv_buf[off + slen]) slen++;
+            if (i > 0 && pos < 1023)
+                kargs_str[pos++] = ' ';
+            for (unsigned int j = 0; j < slen && pos < 1023; j++)
+                kargs_str[pos++] = kargv_buf[off + j];
+            off += slen + 1;
+        }
+        kargs_str[pos] = 0;
+    }
+
+    // Build the env block (double-NUL terminated) for elf_load_linux
+    if (kenv_len > 0) {
+        unsigned int copylen = kenv_len < 2048 ? kenv_len : 2048;
+        memcpy(kenv_str, kenv_buf, copylen);
+    }
+
+    // Load the new ELF — switch to the task's CR3 so segments are written
+    // into the correct address space.
+    unsigned int *kpd = paging_kernel_pd();
+    void *entry;
+    __asm__ volatile("cli");
+    paging_set_cr3(t->cr3);
+    entry = elf_load_linux(kpath, kargs_str, lc,
+                           kenv_len > 0 ? kenv_str : 0);
+    paging_set_cr3((unsigned int)kpd);
+    __asm__ volatile("sti");
+
+    if (!entry) {
+        r->eax = -2;   // -ENOENT
+        goto done;
+    }
+
+    // Close fds >= 3 (CLOEXEC) — only after successful ELF load so the
+    // original program's fds survive a failed exec.
+    for (int i = 3; i < TASK_MAX_FDS; i++) {
+        if (t->fds[i]) { vfs_close_fd(i); t->fds[i] = 0; }
+    }
+
+    // Update the interrupt frame so iret returns to the new program
+    r->eip = (unsigned int)entry;
+    r->user_esp = lc->stack_sp;
+    r->eax = 0;   // execve returns 0 on success (never actually returns)
+
+done:
+    kfree(kpath);
+    kfree(kargv_buf);
+    kfree(kenv_buf);
+    kfree(kargs_str);
+    kfree(kenv_str);
+}
+
 void linux_syscall_handler(struct registers *r) {
     unsigned int n = r->eax;
     struct linux_ctx *lc = cur_lctx();
@@ -779,151 +944,9 @@ void linux_syscall_handler(struct registers *r) {
         break;
     }
 
-    case 11: {  // execve(filename, argv, envp)
-        const char *path = (const char *)r->ebx;
-        unsigned int *user_argv = (unsigned int *)r->ecx;
-        unsigned int *user_envp = (unsigned int *)r->edx;
-        struct task *t = get_current_task();
-
-        // Copy filename to kernel buffer before user memory is overwritten
-        char kpath[256];
-        if (!in_luser(path, 1)) { r->eax = -14; break; }
-        {
-            unsigned int len = 0;
-            while (len < 255 && path[len]) { kpath[len] = path[len]; len++; }
-            kpath[len] = 0;
-            if (len == 0) { r->eax = -2; break; }  // -ENOENT
-        }
-
-        // Copy argv strings to kernel buffers
-        char kargv_buf[2048];
-        unsigned int kargv_count = 0;
-        {
-            unsigned int kpos = 0;
-            if (user_argv && in_luser(user_argv, 4)) {
-                unsigned int a_ptr;
-                while (kargv_count < 63) {
-                    if (!in_luser(user_argv + kargv_count, 4)) break;
-                    a_ptr = user_argv[kargv_count];
-                    if (a_ptr == 0) break;
-                    if (!in_luser((const char *)a_ptr, 1)) break;
-                    unsigned int slen = 0;
-                    while (slen < 255 && ((const char *)a_ptr)[slen]) slen++;
-                    if (kpos + slen + 1 > sizeof(kargv_buf)) break;
-                    for (unsigned int i = 0; i <= slen; i++)
-                        kargv_buf[kpos++] = ((const char *)a_ptr)[i];
-                    kargv_count++;
-                }
-            }
-        }
-
-        // Copy envp strings to kernel buffers (strip __AOS_UID/__AOS_GID)
-        char kenv_buf[2048];
-        unsigned int kenv_len = 0;
-        {
-            unsigned int kpos = 0;
-            if (user_envp && in_luser(user_envp, 4)) {
-                unsigned int e_ptr;
-                for (unsigned int ei = 0; ei < 64; ei++) {
-                    if (!in_luser(user_envp + ei, 4)) break;
-                    e_ptr = user_envp[ei];
-                    if (e_ptr == 0) break;
-                    if (!in_luser((const char *)e_ptr, 1)) break;
-                    unsigned int slen = 0;
-                    while (slen < 511 && ((const char *)e_ptr)[slen]) slen++;
-
-                    // Skip __AOS_UID and __AOS_GID (handled by kernel)
-                    if (slen >= 10 && strncmp((const char *)e_ptr, "__AOS_UID=", 10) == 0) {
-                        // Extract uid
-                        const char *v = (const char *)e_ptr + 10;
-                        unsigned int uid = 0;
-                        while (*v >= '0' && *v <= '9') { uid = uid * 10 + (*v - '0'); v++; }
-                        t->uid = uid;
-                        t->euid = uid;
-                        continue;
-                    }
-                    if (slen >= 10 && strncmp((const char *)e_ptr, "__AOS_GID=", 10) == 0) {
-                        const char *v = (const char *)e_ptr + 10;
-                        unsigned int gid = 0;
-                        while (*v >= '0' && *v <= '9') { gid = gid * 10 + (*v - '0'); v++; }
-                        t->gid = gid;
-                        t->egid = gid;
-                        continue;
-                    }
-
-                    if (kpos + slen + 1 > sizeof(kenv_buf)) break;
-                    for (unsigned int i = 0; i <= slen; i++)
-                        kenv_buf[kpos++] = ((const char *)e_ptr)[i];
-                    kenv_len = kpos;
-                }
-            }
-            // Double-NUL terminate
-            if (kpos + 1 <= sizeof(kenv_buf)) { kenv_buf[kpos] = 0; kenv_len = kpos + 1; }
-        }
-
-        // Reset linux context for fresh address space
-        struct linux_ctx *lc = t->lctx;
-        lc->brk_base = 0;
-        lc->brk_cur = 0;
-        lc->mmap_cur = 0x10000000 - STACK_MARGIN;
-        lc->tls_base = 0;
-        lc->tls_limit = 0;
-        lc->tls_seg32 = 0;
-        lc->tls_ro = 0;
-        lc->tls_gran_pages = 0;
-
-        // Build the argv string (space-delimited) for elf_load_linux
-        char kargs_str[1024];
-        {
-            unsigned int pos = 0;
-            unsigned int off = 0;
-            for (unsigned int i = 0; i < kargv_count; i++) {
-                unsigned int slen = 0;
-                while (slen < 255 && kargv_buf[off + slen]) slen++;
-                if (i > 0 && pos < sizeof(kargs_str) - 1)
-                    kargs_str[pos++] = ' ';
-                for (unsigned int j = 0; j < slen && pos < sizeof(kargs_str) - 1; j++)
-                    kargs_str[pos++] = kargv_buf[off + j];
-                off += slen + 1;
-            }
-            kargs_str[pos] = 0;
-        }
-
-        // Build the env block (double-NUL terminated) for elf_load_linux
-        char kenv_str[2048];
-        if (kenv_len > 0) {
-            unsigned int copylen = kenv_len < sizeof(kenv_str) ? kenv_len : sizeof(kenv_str);
-            memcpy(kenv_str, kenv_buf, copylen);
-        }
-
-        // Load the new ELF — switch to the task's CR3 so segments are written
-        // into the correct address space.
-        unsigned int *kpd = paging_kernel_pd();
-        void *entry;
-        __asm__ volatile("cli");
-        paging_set_cr3(t->cr3);
-        entry = elf_load_linux(kpath, kargs_str, lc,
-                               kenv_len > 0 ? kenv_str : 0);
-        paging_set_cr3((unsigned int)kpd);
-        __asm__ volatile("sti");
-
-        if (!entry) {
-            r->eax = -2;   // -ENOENT
-            break;
-        }
-
-        // Close fds >= 3 (CLOEXEC) — only after successful ELF load so the
-        // original program's fds survive a failed exec.
-        for (int i = 3; i < TASK_MAX_FDS; i++) {
-            if (t->fds[i]) { vfs_close_fd(i); t->fds[i] = 0; }
-        }
-
-        // Update the interrupt frame so iret returns to the new program
-        r->eip = (unsigned int)entry;
-        r->user_esp = lc->stack_sp;
-        r->eax = 0;   // execve returns 0 on success (never actually returns)
+    case 11:  // execve(filename, argv, envp)
+        linux_execve_handler(r);
         break;
-    }
 
     default:
         r->eax = -38;   // -ENOSYS
