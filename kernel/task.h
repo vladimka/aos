@@ -4,6 +4,7 @@
 #include "commands.h"   // PATH_MAX
 
 struct open_file;   // forward decl (fully defined in vfs.h)
+struct registers;   // forward decl (fully defined in interrupts.h)
 
 #define MAX_TASKS 24
 #define TASK_MAX_FDS 64   // per-task open-file table size
@@ -25,6 +26,9 @@ struct open_file;   // forward decl (fully defined in vfs.h)
 
 enum task_abi { ABI_AOS = 0, ABI_LINUX = 1 };
 
+struct linux_ctx;      // defined in linux_syscall.h
+struct aos_sigstate;   // defined in signal.h
+
 struct task {
     unsigned int pid;
     unsigned int state;
@@ -36,6 +40,7 @@ struct task {
     unsigned int parent;      // pid that spawned this task (0 = kernel)
     unsigned int wake_tick;   // TASK_SLEEPING: wake when tick >= wake_tick
     unsigned int wait_pid;    // TASK_WAITING: child pid being waited on
+    unsigned int wait_any;    // TASK_WAITING: 1 = wait for ANY child to die
     unsigned int exit_code;   // TASK_ZOMBIE: exit code to hand to waitpid
     unsigned int kill_pending; // set by task_kill: exit(9) on next syscall
     unsigned int *pd;           // task's own page directory page
@@ -65,11 +70,15 @@ struct task {
     unsigned int euid;            // effective user id (permission checks)
     unsigned int egid;            // effective group id
     unsigned int umask;           // file creation mask
+    struct aos_sigstate *sig;     // signal state pointer (NULL = none yet, lazy)
 };
 
 void task_init(void);
 unsigned int task_switch_kernel(unsigned int cur_esp);
 int task_spawn(const char *path, const char *args, unsigned int sink, unsigned int *out_pid, const char *env);
+int task_fork(struct registers *r);   // fork(2): copy of current Linux task
+int task_handle_cow_fault(struct task *t, unsigned int addr, unsigned int err); // #PF handler
+int task_waitpid4(int wantpid, int *status, int options); // wait4 (Linux)
 void task_exit_current(unsigned int code);
 void task_sleep(unsigned int ms);
 int  task_waitpid(unsigned int pid);
@@ -83,6 +92,7 @@ unsigned int task_current_pid(void);
 unsigned int task_current_sink(void);
 int task_set_sink(unsigned int pid);
 int task_alive(unsigned int pid);
+struct task *task_find_pid(unsigned int pid);
 const char *task_current_args(void);
 
 int task_mailbox_send(unsigned int pid, unsigned int t, unsigned int a, unsigned int b, unsigned int c, unsigned int d, const char *title);

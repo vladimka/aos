@@ -1,5 +1,7 @@
 #include "vfs.h"
+#include "task.h"
 #include "pipe.h"
+#include "socket.h"
 #include "sfs2.h"
 #include "commands.h"
 #include "string.h"
@@ -457,6 +459,23 @@ int vfs_open_fd(struct vfs_inode *cwd, const char *path, int flags) {
     return fd;
 }
 
+/* Grab the next free open-file slot and attach an existing inode to it.
+   Returns the fd (>= 3) or a negative VFS errno. Used by pseudo-filesystems
+   (sockfs, pipefs) to create an fd backed by a caller-supplied inode. */
+int vfs_attach_ofile(struct vfs_inode *in) {
+    int fd = -1;
+    for (int i = 3; i < VFS_OFILES; i++) {
+        if (!ofiles[i].inode) { fd = i; break; }
+    }
+    if (fd < 0) return VFS_EMFILE;
+    ofiles[fd].inode = in;
+    ofiles[fd].flags = VFS_O_RDWR;
+    ofiles[fd].pos = 0;
+    ofiles[fd].refcount = 1;
+    in->refcount++;
+    return fd;
+}
+
 int vfs_pipe(int *rd, int *wr) {
     int r = -1, w = -1;
     for (int i = 3; i < VFS_OFILES; i++)
@@ -514,18 +533,92 @@ int vfs_dup_fd(int fd) {
     return fd2;
 }
 
+// fork(): duplicate the current task's fds[fd] into a fresh open-file slot and
+// return a pointer to that slot (so the child can set its SAME fd number to an
+// independent slot sharing the underlying inode/pipe/socket). Returns 0 if fd
+// is invalid or no slot is free. Unlike vfs_dup_fd (which returns a new,
+// arbitrary fd number), this keeps the fd number identical across fork.
+struct open_file *vfs_fork_dup_fd(int fd) {
+    struct task *t = get_current_task();
+    if (fd < 3 || fd >= TASK_MAX_FDS || !t->fds[fd])
+        return 0;
+    struct open_file *src = t->fds[fd];
+    int s = -1;
+    for (int i = 3; i < VFS_OFILES; i++)
+        if (!ofiles[i].inode) { s = i; break; }
+    if (s < 0) return 0;
+    ofiles[s] = *src;
+    ofiles[s].refcount = 1;
+    vfs_get(src->inode->fs, src->inode->ino);   // extra inode ref for the copy
+    if (src->inode->fs == &pipefs_fs)
+        pipe_dup(src->inode->fs, src->inode->ino, src->flags);
+    if (src->inode->fs == &sockfs_fs)
+        sock_dup(src->inode->fs, src->inode->ino, src->flags);
+    return &ofiles[s];
+}
+
 // Expose the underlying open_file for a given fd (used by the task fd table).
 struct open_file *vfs_ofile_ptr(int fd) {
     return ofile_get(fd);
 }
 
+// The current task's fds[fd] entry, or 0 if out of range / not open. This is
+// the authoritative view (a dup2 may have redirected 0..2 away from console).
+struct open_file *task_fd_of(int fd) {
+    if (fd < 0 || fd >= TASK_MAX_FDS) return 0;
+    return get_current_task()->fds[fd];
+}
+
+// dup2(oldfd, newfd): make newfd a copy of oldfd in the current task's fd
+// table. Because open-file slots are single-owner, each fd gets its own slot;
+// the two fds then point at distinct slots sharing the same inode/pipe/socket.
+int vfs_dup2_fd(int oldfd, int newfd) {
+    struct task *t = get_current_task();
+    struct open_file *src = (oldfd >= 0 && oldfd < TASK_MAX_FDS) ? t->fds[oldfd] : 0;
+    if (!src) return -9;               // -EBADF
+    if (newfd < 0 || newfd >= TASK_MAX_FDS) return -9;
+    if (oldfd == newfd) return newfd;
+
+    // Close any existing real fd at newfd first (console 0..2 just get
+    // repointed below, no ofile slot to release).
+    if (t->fds[newfd] && t->fds[newfd]->inode) {
+        struct open_file *old = t->fds[newfd];
+        vfs_put(old->inode);
+        if (old->inode->fs && old->inode->fs->close)
+            old->inode->fs->close(old->inode->fs, old->inode->ino, old->flags);
+        old->inode = 0;
+        old->refcount = 0;
+    }
+
+    int s = -1;
+    for (int i = 3; i < VFS_OFILES; i++)
+        if (!ofiles[i].inode) { s = i; break; }
+    if (s < 0) return -24;             // -EMFILE
+    ofiles[s] = *src;
+    ofiles[s].refcount = 1;
+    vfs_get(src->inode->fs, src->inode->ino);
+    if (src->inode->fs == &pipefs_fs)
+        pipe_dup(src->inode->fs, src->inode->ino, src->flags);
+    if (src->inode->fs == &sockfs_fs)
+        sock_dup(src->inode->fs, src->inode->ino, src->flags);
+    t->fds[newfd] = &ofiles[s];
+    return newfd;
+}
+
 int vfs_read_fd(int fd, void *buf, unsigned int len) {
     struct open_file *of = ofile_get(fd);
     if (!of) return VFS_EBADF;
+    return vfs_read_of(of, buf, len);
+}
+
+int vfs_read_of(struct open_file *of, void *buf, unsigned int len) {
     if (of->flags & VFS_O_WRONLY) return VFS_EBADF;
     if (of->inode->type == 2) return VFS_EISDIR;
     if (of->inode->fs == &pipefs_fs && (of->flags & VFS_O_NONBLOCK))
         return pipe_read_nonblock(of->inode->fs, of->inode->ino, buf, len,
+                                  of->pos);
+    if (of->inode->fs == &sockfs_fs && (of->flags & VFS_O_NONBLOCK))
+        return sock_read_nonblock(of->inode->fs, of->inode->ino, buf, len,
                                   of->pos);
     int n = of->inode->fs->read_at(of->inode->fs, of->inode->ino, buf, len,
                                    of->pos);
@@ -536,11 +629,18 @@ int vfs_read_fd(int fd, void *buf, unsigned int len) {
 int vfs_write_fd(int fd, const void *buf, unsigned int len) {
     struct open_file *of = ofile_get(fd);
     if (!of) return VFS_EBADF;
+    return vfs_write_of(of, buf, len);
+}
+
+int vfs_write_of(struct open_file *of, const void *buf, unsigned int len) {
     if (!(of->flags & (VFS_O_WRONLY | VFS_O_RDWR))) return VFS_EBADF;
     if (of->inode->type == 2) return VFS_EISDIR;
     if (of->flags & VFS_O_APPEND) of->pos = of->inode->size;
     if (of->inode->fs == &pipefs_fs && (of->flags & VFS_O_NONBLOCK))
         return pipe_write_nonblock(of->inode->fs, of->inode->ino, buf, len,
+                                   of->pos);
+    if (of->inode->fs == &sockfs_fs && (of->flags & VFS_O_NONBLOCK))
+        return sock_write_nonblock(of->inode->fs, of->inode->ino, buf, len,
                                    of->pos);
     int n = of->inode->fs->write_at(of->inode->fs, of->inode->ino, buf, len,
                                     of->pos);
@@ -549,6 +649,24 @@ int vfs_write_fd(int fd, const void *buf, unsigned int len) {
         if (of->pos > of->inode->size) of->inode->size = of->pos;
     }
     return n;
+}
+
+int vfs_fd_poll(int fd, short events, short *ready) {
+    struct open_file *of = ofile_get(fd);
+    if (!of) {
+        *ready = POLLNVAL;   /* always reported, regardless of events mask */
+        return 0;
+    }
+    if (of->inode->fs == &sockfs_fs)
+        return sock_poll(of->inode, events, ready);
+    if (of->inode->fs == &pipefs_fs)
+        return pipe_poll(of->inode, events, ready);
+    /* Regular file / directory: ready according to the open mode. */
+    *ready = 0;
+    if ((events & POLLIN) && !(of->flags & VFS_O_WRONLY)) *ready |= POLLIN;
+    if ((events & POLLOUT) && (of->flags & (VFS_O_WRONLY | VFS_O_RDWR)))
+        *ready |= POLLOUT;
+    return 0;
 }
 
 int vfs_lseek_fd(int fd, int off, int whence) {

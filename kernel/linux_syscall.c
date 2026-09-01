@@ -3,6 +3,7 @@
 #include "task.h"
 #include "user.h"
 #include "vfs.h"
+#include "socket.h"
 #include "paging.h"
 #include "gdt.h"
 #include "string.h"
@@ -15,6 +16,9 @@
 #include "trace.h"
 #include "serial.h"
 #include "elf.h"
+#include "signal.h"
+
+extern volatile unsigned int tick;   // 1000 Hz clock, for poll() deadlines
 
 #define STACK_MARGIN 0x10000   // pages mapped ahead of stack building
 
@@ -269,6 +273,9 @@ static void linux_execve_handler(struct registers *r) {
     r->user_esp = lc->stack_sp;
     r->eax = 0;   // execve returns 0 on success (never actually returns)
 
+    // exec: reset signal handlers to SIG_DFL and clear pending/block
+    sig_reset(t);
+
 done:
     kfree(kpath);
     kfree(kargv_buf);
@@ -288,17 +295,26 @@ void linux_syscall_handler(struct registers *r) {
         linux_exit(r->ebx);
         break;
 
+    case 2: {  // fork
+        int pid = task_fork(r);
+        r->eax = (pid < 0) ? (unsigned int)pid : (unsigned int)pid;
+        break;
+    }
+
     case 4: {  // write(fd, buf, count)
         int fd = r->ebx;
         const char *buf = (const char *)r->ecx;
         unsigned int count = r->edx;
         if (!in_luser(buf, count)) { r->eax = -14; break; }   // -EFAULT
-        if (fd <= 2) {
+        struct task *ct = get_current_task();
+        if (fd >= 0 && fd < TASK_MAX_FDS &&
+            ct->fds[fd] == &console_open_file) {
             int rc = route_text(buf, count);
             r->eax = (rc < 0) ? rc : (int)count;
         } else {
-            if (!lin_fd_valid(fd)) { r->eax = -9; break; }    // -EBADF
-            r->eax = vfs_write_fd(fd, buf, count);
+            struct open_file *of = (fd >= 3 && fd < TASK_MAX_FDS) ? ct->fds[fd] : 0;
+            if (!of || !of->inode) { r->eax = -9; break; }   // -EBADF
+            r->eax = vfs_write_of(of, buf, count);
         }
         break;
     }
@@ -454,19 +470,26 @@ void linux_syscall_handler(struct registers *r) {
         char *buf = (char *)r->ecx;
         unsigned int count = r->edx;
         if (!in_luser(buf, count)) { r->eax = -14; break; }
-        if (fd == 0) {
-            if (count == 0) { r->eax = 0; break; }
-            if (get_current_task()->stdin_fd >= 0) {
-                r->eax = vfs_read_fd(get_current_task()->stdin_fd, buf, count);
+        struct task *ct = get_current_task();
+        if (fd >= 0 && fd < TASK_MAX_FDS &&
+            ct->fds[fd] == &console_open_file) {
+            if (fd == 0) {
+                if (count == 0) { r->eax = 0; break; }
+                if (ct->stdin_fd >= 0) {
+                    r->eax = vfs_read_fd(ct->stdin_fd, buf, count);
+                    break;
+                }
+                int k = terminal_read_key();
+                r->eax = (k < 0) ? -11 : 1;                 // -EAGAIN when empty
+                if (k >= 0) buf[0] = (char)k;
                 break;
             }
-            int k = terminal_read_key();
-            r->eax = (k < 0) ? -11 : 1;                     // -EAGAIN when empty
-            if (k >= 0) buf[0] = (char)k;
+            r->eax = -9;                                    // -EBADF (can't read stdout)
             break;
         }
-        if (!lin_fd_valid(fd)) { r->eax = -9; break; }
-        r->eax = vfs_read_fd(fd, buf, count);
+        struct open_file *of = (fd >= 3 && fd < TASK_MAX_FDS) ? ct->fds[fd] : 0;
+        if (!of || !of->inode) { r->eax = -9; break; }
+        r->eax = vfs_read_of(of, buf, count);
         break;
     }
 
@@ -482,6 +505,24 @@ void linux_syscall_handler(struct registers *r) {
         fds[0] = (unsigned int)rd;
         fds[1] = (unsigned int)wr;
         r->eax = 0;
+        break;
+    }
+
+    case 63: {  // dup2(oldfd, newfd)
+        int oldfd = (int)r->ebx;
+        int newfd = (int)r->ecx;
+        struct task *t = get_current_task();
+        // Console source (inode == 0): just repoint newfd at the console.
+        struct open_file *src = (oldfd >= 0 && oldfd < TASK_MAX_FDS) ? t->fds[oldfd] : 0;
+        if (!src) { r->eax = -9; break; }                    // -EBADF
+        if (newfd < 0 || newfd >= TASK_MAX_FDS) { r->eax = -9; break; }
+        if (oldfd == newfd) { r->eax = newfd; break; }
+        if (!src->inode) {                                    // console source
+            t->fds[newfd] = &console_open_file;
+            r->eax = newfd;
+            break;
+        }
+        r->eax = vfs_dup2_fd(oldfd, newfd);
         break;
     }
 
@@ -631,6 +672,77 @@ void linux_syscall_handler(struct registers *r) {
         if (n == 20) { r->eax = task_current_pid(); break; }
         r->eax = 0;
         break;
+
+    case 64:   // getppid
+        r->eax = get_current_task()->parent;
+        break;
+
+    case 114: { // wait4(pid, status, options, rusage)
+        int *status = (int *)r->ecx;
+        if (status && !in_luser(status, 4)) { r->eax = -14; break; } // -EFAULT
+        r->eax = task_waitpid4((int)r->ebx, status, (int)r->edx);
+        break;
+    }
+    case 65:    // getpgrp()
+    case 132:   // getpgid(pid)
+        r->eax = get_current_task()->pid;
+        break;
+    case 66:    // setsid()
+        r->eax = get_current_task()->pid;
+        break;
+    case 57:    // setpgid(pid, pgid)
+        r->eax = 0;
+        break;
+    case 147:   // getsid(pid)
+        r->eax = get_current_task()->pid;
+        break;
+    case 37: {  // kill(pid, sig)
+        int sig = (int)r->ecx;
+        unsigned int pid = r->ebx;
+        if (sig < 0 || sig > 64) { r->eax = -22; break; }   // -EINVAL
+        if (pid == 0 || pid >= MAX_TASKS) { r->eax = -3; break; } // -ESRCH
+        if (sig == 0) { r->eax = 0; break; }   // existence check
+        if (pid != task_current_pid()) {
+            // route to the target via the shared tgkill path
+            if (sig == 9) { r->eax = task_kill(pid); break; }
+            struct task *target = task_find_pid(pid);
+            if (!target) { r->eax = -3; break; }
+            sig_pending_set(target, sig);
+            r->eax = 0;
+            break;
+        }
+        // self-signal: fall through to the tgkill self handling
+        r->ebx = task_current_pid();   // tid
+        r->ecx = (unsigned int)sig;
+        sig_tgkill(r);
+        break;
+    }
+
+    case 270: // tgkill(tgid, tid, sig)
+    case 238: // tkill(tid, sig)
+        sig_tgkill(r);
+        break;
+
+    case 224: // gettid
+        sig_gettid(r);
+        break;
+
+    case 174: // rt_sigaction(sig, act, oact, sigsetsize)
+        sig_rt_sigaction(r);
+        break;
+
+    case 175: // rt_sigprocmask(how, set, oset, sigsetsize)
+        sig_rt_sigprocmask(r);
+        break;
+
+    case 173: // rt_sigreturn
+        sig_rt_sigreturn(r);
+        break;
+
+    case 155: { // prctl(option, ...) — return 0 stub (musl/spawn may probe)
+        r->eax = 0;
+        break;
+    }
 
     case 24:    // getuid (i386 16-bit)
     case 199: { // getuid32 (musl i386)
@@ -948,9 +1060,168 @@ void linux_syscall_handler(struct registers *r) {
         linux_execve_handler(r);
         break;
 
+    case 359: {  // socket(domain, type, protocol)
+        r->eax = sock_sys_socket((int)r->ebx, (int)r->ecx, (int)r->edx);
+        break;
+    }
+
+    case 360: {  // socketpair(domain, type, protocol, sv[2])
+        int *sv = (int *)r->esi;
+        if (!in_luser(sv, 8)) { r->eax = -14; break; }   // -EFAULT
+        r->eax = sock_sys_socketpair((int)r->ebx, (int)r->ecx,
+                                     (int)r->edx, sv);
+        break;
+    }
+
+    case 361: {  // bind(fd, addr, addrlen)
+        int fd = (int)r->ebx;
+        const void *addr = (const void *)r->ecx;
+        unsigned int alen = r->edx;
+        if (!in_luser(addr, alen > 2 ? alen : 2)) { r->eax = -14; break; }
+        r->eax = sock_sys_bind(fd, (const struct sockaddr_un *)addr, alen);
+        break;
+    }
+
+    case 362: {  // connect(fd, addr, addrlen)
+        int fd = (int)r->ebx;
+        const void *addr = (const void *)r->ecx;
+        unsigned int alen = r->edx;
+        if (!in_luser(addr, alen > 2 ? alen : 2)) { r->eax = -14; break; }
+        r->eax = sock_sys_connect(fd, (const struct sockaddr_un *)addr, alen);
+        break;
+    }
+
+    case 363: {  // listen(fd, backlog)
+        r->eax = sock_sys_listen((int)r->ebx, (int)r->ecx);
+        break;
+    }
+
+    case 364: {  // accept4(fd, addr, addrlen, flags)
+        int fd = (int)r->ebx;
+        void *addr = (void *)r->ecx;
+        unsigned int *alen = (unsigned int *)r->edx;
+        int flags = (int)r->esi;
+        if (alen && !in_luser(alen, 4)) { r->eax = -14; break; }
+        if (addr && !in_luser(addr, 110)) { r->eax = -14; break; }
+        r->eax = sock_sys_accept4(fd, (struct sockaddr_un *)addr, alen, flags);
+        break;
+    }
+
+    case 365: {  // getsockopt(fd, level, optname, optval, optlen)
+        int fd = (int)r->ebx;
+        int level = (int)r->ecx;
+        int optname = (int)r->edx;
+        void *optval = (void *)r->esi;
+        unsigned int *optlen = (unsigned int *)r->edi;
+        if (optval && optlen && !in_luser(optval, 16)) { r->eax = -14; break; }
+        if (optlen && !in_luser(optlen, 4)) { r->eax = -14; break; }
+        r->eax = sock_sys_getsockopt(fd, level, optname, optval, optlen);
+        break;
+    }
+
+    case 366: {  // setsockopt(fd, level, optname, optval, optlen)
+        int fd = (int)r->ebx;
+        int level = (int)r->ecx;
+        int optname = (int)r->edx;
+        const void *optval = (const void *)r->esi;
+        unsigned int optlen = r->edi;
+        if (optval && !in_luser(optval, optlen)) { r->eax = -14; break; }
+        r->eax = sock_sys_setsockopt(fd, level, optname, optval, optlen);
+        break;
+    }
+
+    case 367: {  // getsockname(fd, addr, addrlen)
+        int fd = (int)r->ebx;
+        void *addr = (void *)r->ecx;
+        unsigned int *alen = (unsigned int *)r->edx;
+        if (alen && !in_luser(alen, 4)) { r->eax = -14; break; }
+        if (addr && !in_luser(addr, 110)) { r->eax = -14; break; }
+        r->eax = sock_sys_getsockname(fd, (struct sockaddr_un *)addr, alen);
+        break;
+    }
+
+    case 368: {  // getpeername(fd, addr, addrlen)
+        int fd = (int)r->ebx;
+        void *addr = (void *)r->ecx;
+        unsigned int *alen = (unsigned int *)r->edx;
+        if (alen && !in_luser(alen, 4)) { r->eax = -14; break; }
+        if (addr && !in_luser(addr, 110)) { r->eax = -14; break; }
+        r->eax = sock_sys_getpeername(fd, (struct sockaddr_un *)addr, alen);
+        break;
+    }
+
+    case 369: {  // sendto(fd, buf, len, flags, addr, addrlen)
+        int fd = (int)r->ebx;
+        const void *buf = (const void *)r->ecx;
+        unsigned int len = r->edx;
+        int flags = (int)r->esi;
+        /* addr/addrlen (arg5/arg6) are on the stack in i386 ABI and not
+           captured here; connected stream sockets pass NULL addr (send/recv
+           semantics), which is all libdbus needs. */
+        if (!in_luser(buf, len)) { r->eax = -14; break; }
+        r->eax = sock_sys_sendto(fd, buf, len, flags, (const struct sockaddr_un *)0, 0);
+        break;
+    }
+
+    case 371: {  // recvfrom(fd, buf, len, flags, addr, addrlen)
+        int fd = (int)r->ebx;
+        void *buf = (void *)r->ecx;
+        unsigned int len = r->edx;
+        int flags = (int)r->esi;
+        if (!in_luser(buf, len)) { r->eax = -14; break; }
+        r->eax = sock_sys_recvfrom(fd, buf, len, flags, (struct sockaddr_un *)0, (unsigned int *)0);
+        break;
+    }
+
+    case 373: {  // shutdown(fd, how)
+        r->eax = sock_sys_shutdown((int)r->ebx, (int)r->ecx);
+        break;
+    }
+
+    case 168: {  // poll(struct pollfd *fds, nfds_t nfds, int timeout_ms)
+        struct aos_pollfd *fds = (struct aos_pollfd *)r->ebx;
+        unsigned int nfds = r->ecx;
+        int timeout = (int)r->edx;
+        struct task *tp = get_current_task();
+        if (nfds > 256) nfds = 256;
+        if (nfds == 0) { r->eax = 0; break; }
+        if (!in_luser(fds, nfds * sizeof(struct aos_pollfd))) {
+            r->eax = -14;   // -EFAULT
+            break;
+        }
+        unsigned int deadline = 0;
+        if (timeout > 0) deadline = tick + (unsigned int)timeout;  // 1 tick = 1 ms
+        for (;;) {
+            int count = 0;
+            for (unsigned int i = 0; i < nfds; i++) {
+                int fd = fds[i].fd;
+                short ev = fds[i].events;
+                short rev = 0;
+                if (fd < 0) { fds[i].revents = 0; continue; }
+                if (fd == 1 || fd == 2) {
+                    if (ev & POLLOUT) rev |= POLLOUT;
+                } else if (fd == 0) {
+                    if (terminal_key_avail()) rev |= POLLIN;
+                } else if (fd >= 3 && fd < TASK_MAX_FDS && tp->fds[fd]) {
+                    vfs_fd_poll(fd, ev, &rev);
+                } else {
+                    rev = POLLNVAL;   /* reported regardless of events mask */
+                }
+                fds[i].revents = rev;
+                if (rev) count++;
+            }
+            if (count > 0) { r->eax = count; break; }
+            if (timeout == 0) { r->eax = 0; break; }
+            if (timeout > 0 && (int)(deadline - tick) <= 0) { r->eax = 0; break; }
+            __asm__ __volatile__("sti; hlt; cli");
+        }
+        break;
+    }
+
     default:
         r->eax = -38;   // -ENOSYS
         break;
     }
     trace_finish(r);
+    sig_check_deliver(r);
 }

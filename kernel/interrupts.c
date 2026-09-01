@@ -127,6 +127,15 @@ void isr_handler(struct registers *r) {
     unsigned int cr2, cr3v;
     __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
     __asm__ volatile("mov %%cr3, %0" : "=r"(cr3v));
+
+    // Copy-on-write: a user-mode write to a fork-shared read-only page is
+    // resolved transparently and the faulting instruction re-run. Anything
+    // else falls through to the panic below.
+    if (r->int_no == 14) {
+        if (task_handle_cow_fault(get_current_task(), cr2, r->err_code))
+            return;
+    }
+
     vga_set_color(VGA_WHITE, VGA_RED);
     printf("\n=== KERNEL PANIC ===\nException: %s (int %d)\nEIP: 0x%x  CS: 0x%x  EFLAGS: 0x%x  ERR: 0x%x  CR2: 0x%x  CR3: 0x%x\n",
            exception_messages[r->int_no], r->int_no, r->eip, r->cs, r->eflags, r->err_code, cr2, cr3v);

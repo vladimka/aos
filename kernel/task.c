@@ -9,6 +9,8 @@
 #include "pmm.h"
 #include "linux_syscall.h"
 #include "vfs.h"
+#include "interrupts.h"
+#include "signal.h"
 
 extern volatile unsigned int tick;
 
@@ -129,7 +131,7 @@ static void task_free_addrspace(struct task *t) {
             if (!pt) continue;
             for (int p = 0; p < 1024; p++)
                 if (pt[p] & PTE_PRESENT)
-                    page_free((void *)(pt[p] & 0xFFFFF000));
+                    cow_unlink(pt[p] & 0xFFFFF000);
             page_free(pt);
             t->lpts[i] = 0;
         }
@@ -187,6 +189,21 @@ static int task_done(unsigned int pid) {
     if (pid >= MAX_TASKS) return 1;
     unsigned int s = tasks[pid].state;
     return s == TASK_ZOMBIE || s == TASK_FREE;
+}
+
+// "Wait for any child" resolves when the waiter should re-scan: either there is
+// a zombie child to reap (even if other children are still live), or there are
+// no children left at all (so the waiter returns ECHILD). Purely-live children
+// keep it blocked.
+static int task_any_child_done(unsigned int me) {
+    int has_child = 0;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].parent != me) continue;
+        if (tasks[i].state == TASK_FREE) continue;
+        has_child = 1;
+        if (tasks[i].state == TASK_ZOMBIE) return 1;   // something to reap
+    }
+    return !has_child;   // no children left -> ECHILD
 }
 
 unsigned int task_switch_kernel(unsigned int cur_esp) {
@@ -254,6 +271,9 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         // promoted-but-not-yet-reaped waiter and leaves its zombie alone.
         if (t->state == TASK_WAITING && task_done(t->wait_pid))
             t->state = TASK_READY;
+        if (t->state == TASK_WAITING && t->wait_any &&
+            task_any_child_done(t->pid))
+            t->state = TASK_READY;
         if (t->state == TASK_READY) { next = t; break; }
     }
     // No READY task: resume whatever was current. If it is blocked this just
@@ -314,10 +334,12 @@ unsigned int task_switch_kernel(unsigned int cur_esp) {
         kfree(dead->mbox_str);
         kfree(dead->args);
         kfree(dead->lctx);
+        kfree(dead->sig);
         dead->lctx = 0;
         dead->mbox = 0;
         dead->mbox_str = 0;
         dead->args = 0;
+        dead->sig = 0;
         // Trace buffer: a traced task's log is collected by the strace session
         // that owns it. Free it here when already dumped or untraced; a
         // traced-but-undumped zombie keeps it so trace_session_dump (or slot
@@ -479,8 +501,8 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
             unsigned int *pt = page_alloc_zero();
             if (!pt) {
                 task_free_addrspace(t);
-                kfree(t->kstack); kfree(t->mbox); kfree(t->mbox_str); kfree(t->args); kfree(t->lctx);
-                t->kstack = 0; t->mbox = 0; t->mbox_str = 0; t->args = 0; t->lctx = 0;
+                kfree(t->kstack); kfree(t->mbox); kfree(t->mbox_str); kfree(t->args); kfree(t->lctx); kfree(t->sig);
+                t->kstack = 0; t->mbox = 0; t->mbox_str = 0; t->args = 0; t->lctx = 0; t->sig = 0;
                 t->state = TASK_FREE;
                 return -1;
             }
@@ -499,6 +521,7 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
                     kfree(t->mbox_str);
                     kfree(t->args);
                     kfree(t->lctx); t->lctx = 0;
+                    kfree(t->sig);  t->sig = 0;
                     t->kstack = 0; t->mbox = 0; t->mbox_str = 0; t->args = 0;
                     t->state = TASK_FREE;
                     return -1;
@@ -529,6 +552,7 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
         kfree(t->mbox_str);
         kfree(t->args);
         kfree(t->lctx); t->lctx = 0;
+        kfree(t->sig);  t->sig = 0;
         t->kstack = 0; t->mbox = 0; t->mbox_str = 0; t->args = 0;
         t->state = TASK_FREE;
         return -2;
@@ -557,6 +581,204 @@ int task_spawn(const char *path, const char *args, unsigned int sink, unsigned i
     t->state = TASK_READY;
     if (out_pid) *out_pid = (unsigned int)pid;
     return 0;
+}
+
+// fork(2) for ABI_LINUX tasks: build a child that is an exact copy of the
+// parent's address space + fd table + register frame, so the child returns
+// from fork() with eax==0 while the parent returns eax==child_pid.
+//
+// Address space: eager deep copy. Each PRESENT page of the parent's Linux
+// window (PDEs 32..63) is copied into a fresh frame, so parent and child are
+// fully isolated (true fork semantics — no COW alias yet; Stage 1.5 adds COW).
+// Only the live pages are copied, so a typical fork after ~1 page of text/data
+// costs a handful of page allocations, not 32 MB.
+//
+// fd table: fds 0-2 are the shared console; fds >= 3 are copied into fresh
+// ofile slots via vfs_fork_dup_fd so parent and child stay independent.
+//
+// Returns the child pid (>0) on success, or -1 (EAGAIN) / -12 (ENOMEM).
+int task_fork(struct registers *r) {
+    struct task *p = current_task;   // must be ABI_LINUX
+    if (p->abi != ABI_LINUX) return -1;
+
+    drain_zombies();
+
+    int pid = -1;
+    for (int i = 1; i < MAX_TASKS; i++)
+        if (tasks[i].state == TASK_FREE) { pid = i; break; }
+    if (pid < 0) {
+        for (int i = 1; i < MAX_TASKS && pid < 0; i++) {
+            if (tasks[i].state != TASK_ZOMBIE) continue;
+            int waited = 0;
+            for (int j = 0; j < MAX_TASKS; j++)
+                if (tasks[j].wait_pid == tasks[i].pid &&
+                    tasks[j].state != TASK_FREE && tasks[j].state != TASK_ZOMBIE)
+                    { waited = 1; break; }
+            if (!waited) pid = i;
+        }
+    }
+    if (pid < 0) return -1;   // EAGAIN
+
+    struct task *c = &tasks[pid];
+    if (c->trace_buf) {
+        kfree(c->trace_buf);
+        c->trace_buf = 0;
+    }
+    memset(c, 0, sizeof(*c));
+    c->pid = pid;
+    c->parent = p->pid;
+    c->abi = ABI_LINUX;
+    c->uid = p->uid; c->gid = p->gid;
+    c->euid = p->euid; c->egid = p->egid;
+    c->umask = p->umask;
+    c->trace_on = p->trace_on;
+    c->trace_root = p->trace_root;
+    c->stdout_fd = p->stdout_fd;
+    c->stdin_fd = p->stdin_fd;
+    memcpy(c->name, p->name, sizeof(p->name));
+    c->name[sizeof(c->name) - 1] = '\0';
+    strncpy(c->cwd, p->cwd, PATH_MAX);
+    c->cwd[PATH_MAX - 1] = '\0';
+
+    c->kstack = kmalloc(TASK_KSTACK_SIZE);
+    c->mbox = kmalloc(MSG_CAP * 5 * 4);
+    c->mbox_str = kmalloc(MSG_CAP * 16);
+    c->args = kmalloc(256);
+    c->lctx = kmalloc(sizeof(struct linux_ctx));
+    c->pd = page_alloc_zero();
+    c->state = TASK_SPAWNING;   // hold the slot while we build
+
+    int failed = 0;
+    if (!c->kstack || !c->mbox || !c->mbox_str || !c->args || !c->lctx || !c->pd)
+        failed = 1;
+    if (!failed) {
+        c->kstack_top = (unsigned int)(c->kstack + TASK_KSTACK_SIZE);
+        *c->lctx = *p->lctx;                  // copy brk/mmap/stack/tls cursor
+        memcpy(c->args, p->args, 256);
+        memcpy(c->args + 256 - 1, "", 1);     // NUL-terminate defensively
+        c->mbox_head = 0;
+        c->mbox_tail = 0;
+
+        unsigned int *kpd = paging_kernel_pd();
+        for (int i = 0; i < 1024; i++)
+            c->pd[i] = kpd[i];
+
+        // Copy-on-write the Linux window (PDEs 32..63). No per-page frame is
+        // allocated: the child shares the parent's frames. Every page that is
+        // currently writable is demoted in BOTH parent and child to
+        // read-only + PTE_COW, so the first write in either process faults and
+        // task_handle_cow_fault() hands it a private writable copy. Genuinely
+        // read-only pages (rodata/text) are simply shared as-is.
+        for (int pdn = 32; pdn <= 63 && !failed; pdn++) {
+            unsigned int *pp = p->lpts[pdn - 32];
+            unsigned int *np = page_alloc_zero();
+            if (!np) { failed = 1; break; }
+            for (int pg = 0; pg < 1024; pg++) {
+                if (!(pp[pg] & PTE_PRESENT)) continue;
+                if (pp[pg] & PTE_WRITABLE)
+                    pp[pg] = (pp[pg] & ~PTE_WRITABLE) | PTE_COW;
+                np[pg] = pp[pg];   // child shares the (possibly RO+COW) frame
+                // One more mapping references this frame (parent + child).
+                cow_link(np[pg] & 0xFFFFF000);
+            }
+            if (!failed) {
+                c->lpts[pdn - 32] = np;
+                c->pd[pdn] = (unsigned int)np | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+            }
+        }
+    }
+
+    if (failed) {
+        // Clean up partially built child. The pages it shares with the parent
+        // are COW (owned by BOTH via the shared frames) — freeing them here
+        // would corrupt the parent. Drop just the child's share of each shared
+        // frame (cow_unlink), and free only the child's own page-table pages.
+        for (int pdn = 32; pdn <= 63; pdn++) {
+            unsigned int *pt = c->lpts[pdn - 32];
+            if (!pt) continue;
+            for (int pg = 0; pg < 1024; pg++)
+                if (pt[pg] & PTE_PRESENT)
+                    cow_unlink(pt[pg] & 0xFFFFF000);
+            page_free(pt);
+        }
+        if (c->pd) page_free(c->pd);
+        if (c->kstack) kfree(c->kstack);
+        if (c->mbox) kfree(c->mbox);
+        if (c->mbox_str) kfree(c->mbox_str);
+        if (c->args) kfree(c->args);
+        if (c->lctx) kfree(c->lctx);
+        if (c->sig) kfree(c->sig);
+        c->kstack = 0; c->mbox = 0; c->mbox_str = 0; c->args = 0; c->lctx = 0;
+        c->sig = 0;
+        c->pd = 0; c->cr3 = 0;
+        c->state = TASK_FREE;
+        return -12;   // ENOMEM
+    }
+
+    c->cr3 = (unsigned int)c->pd;
+
+    // Copy the fd table: 0-2 shared console, >=3 into fresh independent slots.
+    c->fds[0] = &console_open_file;
+    c->fds[1] = &console_open_file;
+    c->fds[2] = &console_open_file;
+    for (int fd = 3; fd < TASK_MAX_FDS; fd++) {
+        if (!p->fds[fd]) continue;
+        struct open_file *newo = vfs_fork_dup_fd(fd);
+        if (newo) c->fds[fd] = newo;
+        // If dup fails we simply leave that fd closed in the child (best-effort).
+    }
+
+    // Copy the parent's signal state (handlers + block mask) to the child.
+    // Pending signals are NOT inherited. Parent's sig may be NULL (lazy).
+    if (p->sig) {
+        c->sig = kmalloc(sizeof(struct aos_sigstate));
+        if (!c->sig) { /* best-effort: child runs with default sig state */ }
+        else memcpy(c->sig, p->sig, sizeof(struct aos_sigstate));
+    }
+
+    // Copy the parent's syscall frame so the child iret's back into fork().
+    // The parent's live frame is *r (syscall_common pushed it, eax at [11]).
+    unsigned int *cf =
+        (unsigned int *)(c->kstack + TASK_KSTACK_SIZE - FRAME_WORDS * 4);
+    memcpy(cf, r, FRAME_WORDS * 4);
+    cf[11] = 0;                       // eax = 0 in the child
+    c->kernel_esp = (unsigned int)cf;
+
+    c->state = TASK_READY;
+    return pid;
+}
+
+// Resolve a copy-on-write page fault. Called from isr_handler on a #PF.
+// Returns 1 if the fault was a user write to a present, COW-marked, read-only
+// page in the task's Linux window — the page is handed a private writable copy
+// and the caller resumes the faulting instruction. Returns 0 for anything else
+// (genuine RO page, kernel fault, out-of-window) so the caller panics.
+int task_handle_cow_fault(struct task *t, unsigned int addr, unsigned int err) {
+    if (t->abi != ABI_LINUX) return 0;
+    if ((err & 0x6) != 0x6) return 0;       // must be user (0x4) + write (0x2)
+    unsigned int pdn = addr >> 22;
+    if (pdn < 32 || pdn > 63) return 0;     // outside the Linux window
+    unsigned int *pt = t->lpts[pdn - 32];
+    if (!pt) return 0;
+    unsigned int off = (addr >> 12) & 0x3FF;
+    unsigned int pte = pt[off];
+    if (!(pte & PTE_PRESENT) || !(pte & PTE_COW)) return 0;
+    if (pte & PTE_WRITABLE) return 0;
+    void *nf = page_alloc_zero();
+    if (!nf) return 0;
+    // The shared frame is identity-mapped (the task PD is a copy of the kernel
+    // PD's low 0..256 MB), so the physical address is directly readable.
+    memcpy(nf, (const void *)(pte & 0xFFFFF000), 0x1000);
+    unsigned int flags = (pte & 0xFFF) | PTE_WRITABLE;
+    flags &= ~PTE_COW;
+    pt[off] = (unsigned int)nf | flags;
+    // This task no longer maps the old shared frame: drop its share. If it was
+    // the last mapping, the frame is freed.
+    cow_unlink(pte & 0xFFFFF000);
+    // Invalidate the stale RO TLB entry so the re-executed faulting
+    // instruction observes the writable mapping.
+    __asm__ volatile("invlpg (%0)" : : "r"(addr) : "memory");
+    return 1;
 }
 
 void task_exit_current(unsigned int code) {
@@ -602,6 +824,12 @@ int task_set_sink(unsigned int pid) {
 int task_alive(unsigned int pid) {
     return pid < MAX_TASKS && tasks[pid].state != TASK_FREE &&
            tasks[pid].state != TASK_ZOMBIE;
+}
+
+struct task *task_find_pid(unsigned int pid) {
+    if (pid >= MAX_TASKS) return 0;
+    if (tasks[pid].state == TASK_FREE || tasks[pid].state == TASK_ZOMBIE) return 0;
+    return &tasks[pid];
 }
 
 // Block the current task for ~ms ticks. The wait loop runs on this task's own
@@ -660,6 +888,74 @@ int task_waitpid(unsigned int pid) {
         // and the state is re-marked TASK_WAITING before every hlt because the
         // scheduler's no-ready fallback forces the resumed task to TASK_RUNNING.
         current_task->wait_pid = pid;
+        current_task->state = TASK_WAITING;
+        __asm__ volatile("sti; hlt");
+    }
+}
+
+// Linux wait4(pid, status, options, rusage). wantpid<0 => any child;
+// wantpid==0 => any child (same group); wantpid>0 => that specific child.
+// Options bit0 (WNOHANG) returns 0 when nothing has exited yet instead of
+// blocking. Returns the reaped pid, 0 (WNOHANG), or a negative numeric errno:
+// -10 (-ECHILD) when no matching child exists. status is a user int pointer
+// written as (exit_code & 0xff) << 8 (Linux normal-exit layout).
+int task_waitpid4(int wantpid, int *status, int options) {
+    int any = (wantpid <= 0);
+    unsigned int f;
+    irq_save(&f);
+    for (;;) {
+        int found = -1;
+        if (any) {
+            int has_live = 0;
+            for (int i = 1; i < MAX_TASKS; i++) {
+                if (tasks[i].parent != current_task->pid) continue;
+                if (tasks[i].state == TASK_FREE) continue;
+                if (tasks[i].state == TASK_ZOMBIE) { found = i; break; }
+                has_live = 1;
+            }
+            if (found < 0) {
+                if (!has_live) {                 // no children at all -> ECHILD
+                    current_task->wait_any = 0;
+                    irq_restore(f);
+                    return -10;
+                }
+            }
+        } else {
+            if ((unsigned int)wantpid >= MAX_TASKS ||
+                tasks[wantpid].parent != current_task->pid ||
+                tasks[wantpid].state == TASK_FREE) {
+                current_task->wait_pid = 0;
+                current_task->wait_any = 0;
+                irq_restore(f);
+                return -10;                      // -ECHILD (not a child / gone)
+            }
+            if (tasks[wantpid].state == TASK_ZOMBIE) found = wantpid;
+        }
+
+        if (found >= 0) {                        // reap
+            struct task *c = &tasks[found];
+            int code = (int)c->exit_code;
+            if (status) {
+                unsigned int *dst = (unsigned int *)status;
+                *dst = (unsigned int)((code & 0xff) << 8);
+            }
+            c->state = TASK_FREE;
+            current_task->wait_pid = 0;
+            current_task->wait_any = 0;
+            irq_restore(f);
+            return found;
+        }
+
+        if (options & 1) {                       // WNOHANG: nothing ready
+            current_task->wait_pid = 0;
+            current_task->wait_any = 0;
+            irq_restore(f);
+            return 0;
+        }
+        // Block until the scheduler promotes us (spawn slot-reap guard keeps
+        // our zombie while wait_pid/wait_any stay set).
+        if (!any) current_task->wait_pid = (unsigned int)wantpid;
+        current_task->wait_any = any ? 1 : 0;
         current_task->state = TASK_WAITING;
         __asm__ volatile("sti; hlt");
     }

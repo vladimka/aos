@@ -14,6 +14,7 @@
 static int tz_min;
 static unsigned int wp_top;
 static unsigned int wp_bot;
+static int console_only;
 
 static int parse_int(const char *s) {
     int neg = 0;
@@ -57,18 +58,22 @@ static void apply_line(const char *line) {
         wp_top = parse_hex(val);
     else if (klen == 13 && strncmp(line, "wallpaper_bot", 13) == 0)
         wp_bot = parse_hex(val);
+    else if (klen == 12 && strncmp(line, "console_only", 12) == 0)
+        console_only = parse_int(val);
 }
 
 void config_load(void) {
     tz_min = DEFAULT_TZ;
     wp_top = DEFAULT_TOP;
     wp_bot = DEFAULT_BOT;
+    console_only = 0;
 
     struct aos_stat st;
     if (vfs_kernel_stat(CONFIG_PATH, &st) < 0) {
         static const char def[] =
             "# AOS system config\n"
             "timezone=0\n"
+            "console_only=0\n"
             "wallpaper_top=0x1A2030\n"
             "wallpaper_bot=0x0E1620\n"
             "theme_title=0x263C5E\n"
@@ -153,3 +158,4 @@ void config_load(void) {
 int config_tz_min(void) { return tz_min; }
 unsigned int config_wallpaper_top(void) { return wp_top; }
 unsigned int config_wallpaper_bot(void) { return wp_bot; }
+int config_console_only(void) { return console_only; }

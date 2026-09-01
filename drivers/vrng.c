@@ -8,6 +8,29 @@ static struct virtio_dev *gdev;
 static unsigned char rng_buf[4096] __attribute__((aligned(4096)));
 static unsigned int pool_len;      // bytes currently filled in rng_buf
 static unsigned int pool_off;
+static int fallback_active;        // no virtio-rng: PRNG fallback in use
+
+// Software fallback PRNG (xorshift32) so getrandom() always works even when
+// no virtio-rng device is present (dbus-daemon needs bytes unconditionally).
+// Seeded from the timer and a build-time constant; AOS is not a security
+// boundary, so cryptographic strength is not required here.
+static unsigned int rng_state;
+static void fallback_seed(void) {
+    rng_state = tick ^ 0x9E3779B9u;
+    rng_state ^= (unsigned int)(unsigned long)&rng_state;
+}
+static unsigned int xorshift32(void) {
+    rng_state ^= rng_state << 13;
+    rng_state ^= rng_state >> 17;
+    rng_state ^= rng_state << 5;
+    return rng_state;
+}
+static int vrng_fallback(void *buf, unsigned int n) {
+    unsigned char *out = (unsigned char *)buf;
+    for (unsigned int i = 0; i < n; i++)
+        out[i] = (unsigned char)(xorshift32() >> 8);
+    return (int)n;
+}
 
 // Submit one WRITE descriptor and spin for completion. Returns 0 on success.
 static int vrng_fetch(void) {
@@ -32,8 +55,11 @@ static int vrng_fetch(void) {
 }
 
 int vrng_bytes(void *buf, unsigned int n) {
-    if (!gdev) return -1;
     if (n > 4096) n = 4096;
+    if (!gdev) {
+        if (!fallback_active) { fallback_seed(); fallback_active = 1; }
+        return vrng_fallback(buf, n);
+    }
     unsigned char *out = (unsigned char *)buf;
     unsigned int filled = 0;
     while (filled < n) {

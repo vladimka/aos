@@ -20,6 +20,7 @@ struct pframe {
     unsigned char order;
     unsigned char flags;
     unsigned char slab_class;
+    unsigned char cow_ref;    // #of mappings referencing a COW-shared frame (>=1)
     unsigned short next;
 } __attribute__((packed));
 
@@ -39,6 +40,9 @@ void *page_alloc_zero(void);
 void *page_alloc_order(unsigned int order);
 void page_free(void *addr);
 void page_free_order(void *addr, unsigned int order);
+
+void cow_link(unsigned int phys);     // increment a COW frame's mapping count
+void cow_unlink(unsigned int phys);   // drop a mapping; free at last drop
 
 unsigned int pmm_total_pages(void);
 unsigned int pmm_free_pages(void);

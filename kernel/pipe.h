@@ -25,6 +25,10 @@ int pipe_read_nonblock(struct vfs_fs *fs, unsigned int ino, void *buf,
 int pipe_write_nonblock(struct vfs_fs *fs, unsigned int ino, const void *buf,
                         unsigned int len, unsigned int off);
 
+/* poll(): set *ready to the subset of `events` satisfiable on this pipe
+   inode. Returns 0, or a negative errno if `in` is not a pipe inode. */
+int pipe_poll(struct vfs_inode *in, short events, short *ready);
+
 extern struct vfs_fs pipefs_fs;
 
 #endif

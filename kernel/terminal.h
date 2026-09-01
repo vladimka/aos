@@ -26,6 +26,7 @@ void terminal_write(const char *buf, unsigned int len);
 
 void terminal_serial_byte(unsigned char c);
 int  terminal_read_key(void);
+int  terminal_key_avail(void);   /* non-consuming: is a key/pending stdin byte ready? */
 void terminal_reset_keys(void);
 int  terminal_scan_event(unsigned char scancode);
 int  terminal_pending_cmd(void);

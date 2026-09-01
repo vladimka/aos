@@ -22,9 +22,11 @@
 #include "ata.h"
 #include "ahci.h"
 #include "vfs.h"
+#include "socket.h"
 #include "sfs2.h"
 #include "aosipc.h"
 #include "klog.h"
+#include "hwaccel.h"
 
 volatile unsigned int tick = 0;
 unsigned int __saved_mb_info = 0;
@@ -83,6 +85,18 @@ static void mouse_handler(void) {
 // Throttled to one attempt per 100 ticks so a failing binary does not spin
 // the idle loop. The first call (from kernel_main) passes immediately.
 static void ensure_init(void) {
+    // console-only boots keep the kernel shell on the framebuffer console:
+    // no init, no sh, no GUI services. The serial console then talks to the
+    // kernel shell, and every command's output lands on the VGA console
+    // (whose scrollback the VBE pan feature navigates).
+    if (config_console_only()) {
+        static int announced = 0;
+        if (!announced) {
+            announced = 1;
+            printf("init: skipped (console-only mode)\n");
+        }
+        return;
+    }
     static unsigned int next_try = 0;
     unsigned int ip = task_init_pid();
     if (ip != 0 && task_alive(ip)) return;
@@ -92,9 +106,12 @@ static void ensure_init(void) {
     // env block (the format shell_build_env produces).
     static const char init_env_gui[] = "AOS_MODE=gui";
     static const char init_env_text[] = "AOS_MODE=text";
+    static const char init_env_console[] = "AOS_MODE=console";
     unsigned int npid = 0;
-    int rc = task_spawn("bin/init", "", 0, &npid,
-                        vga_fb_active() ? init_env_gui : init_env_text);
+    const char *env = init_env_text;
+    if (vga_fb_active())
+        env = config_console_only() ? init_env_console : init_env_gui;
+    int rc = task_spawn("bin/init", "", 0, &npid, env);
     if (rc != 0) {
         serial_print("init: respawn attempt failed\n");
         return;
@@ -139,6 +156,15 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
     kmm_selftest();
 
     paging_init();
+
+    // Framebuffer write-combining: needs the fb's paging to exist (mapped by
+    // paging_init via vga_get_fb_info), hence this sits right after it.
+    {
+        unsigned int fb_a = 0, fb_s = 0;
+        vga_get_fb_info(&fb_a, &fb_s);
+        hwaccel_wc_framebuffer(fb_a, fb_s);
+    }
+
     user_init();
     task_init();
 
@@ -172,6 +198,7 @@ void kernel_main(unsigned int magic, unsigned int mb_info) {
         serial_print("virtio-gpu: not present, using VGA\n");
 
     vfs_init();
+    sock_init();
     printf("Filesystem ready.\n");
     sfs2_selftest();
 

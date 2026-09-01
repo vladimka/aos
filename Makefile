@@ -10,7 +10,8 @@ ASFLAGS = -m32 -c -x assembler-with-cpp
 LDFLAGS = -T linker.ld -m elf_i386 -nostdlib --no-warn-rwx-segments
 
 KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
-              drivers/serial.o drivers/mouse.o drivers/pci.o drivers/uhci.o drivers/virtio.o \
+               drivers/hwaccel.o \
+               drivers/serial.o drivers/mouse.o drivers/pci.o drivers/uhci.o drivers/virtio.o \
               drivers/virtio_modern.o \
               drivers/vrng.o drivers/vblk.o drivers/vnet.o drivers/rtc.o drivers/ata.o \
               drivers/ahci.o drivers/virtio_gpu.o \
@@ -20,8 +21,9 @@ KERNEL_OBJS = boot/boot.o boot/isr.o kernel/kernel.o drivers/vga.o \
                kernel/progload.o kernel/paging.o kernel/pmm.o kernel/kmm.o \
               kernel/config.o kernel/user.o \
               kernel/user_tramp.o kernel/printf.o kernel/initramfs.o \
-               kernel/task.o kernel/linux_syscall.o kernel/pipe.o kernel/block.o kernel/sfs2.o \
-               kernel/klog.o kernel/trace.o kernel/symtab.o
+                kernel/task.o kernel/linux_syscall.o kernel/pipe.o kernel/socket.o kernel/block.o kernel/sfs2.o \
+                kernel/signal.o \
+                kernel/klog.o kernel/trace.o kernel/symtab.o
 
 PROGRAMS = help uptime clear echo tick info reboot panic ls cat rm format shutdown test wm term clock date ipctest notepad many linrun sleeptest sh exitto random fstest procinfo bgspawn cp mv mkdir rmdir head wc sync envp ps init kill strace whoami id sudo login useradd passwd su files
 
@@ -36,7 +38,12 @@ LINUX_CC  = $(MUSL_CC)
 LINUX_SRCS = $(wildcard tools/linux/*.c)
 LINUX_BINS = $(patsubst tools/linux/%.c,build/linux/%,$(LINUX_SRCS))
 LINUX_EMBED = --data lin/hello=build/linux/hello --data lin/ls=build/linux/ls \
-	--data lin/cat=build/linux/cat --data lin/piptest=build/linux/piptest \
+	--data lin/cat=build/linux/cat 	--data lin/piptest=build/linux/piptest \
+	--data lin/socktest=build/linux/socktest --data lin/polltest=build/linux/polltest \
+	--data lin/forktest=build/linux/forktest \
+	--data lin/cowtest=build/linux/cowtest \
+	--data lin/stage2test=build/linux/stage2test \
+	--data lin/sigtest=build/linux/sigtest \
 	--data lin/test.txt=tools/linux/test.txt
 
 all: check-toolchain aos.iso
@@ -125,7 +132,8 @@ build/prog/files.elf: programs/musl/files.c programs/musl/gui.c programs/musl/th
 	@mkdir -p build/prog
 	$(MUSL_CC) -static -no-pie -Os -Wall -Wextra -Iprograms -o $@ programs/musl/files.c programs/musl/gui.c programs/musl/theme.c
 
-scripts/demo.ico: scripts/gen_ico.py
+initramfs/demo.ico: scripts/gen_ico.py
+	@mkdir -p initramfs
 	$(PYTHON) scripts/gen_ico.py > $@
 
 build/linux/%: tools/linux/%.c
@@ -133,14 +141,15 @@ build/linux/%: tools/linux/%.c
 	$(LINUX_CC) -static -no-pie -Os -o $@ $<
 
 # The initramfs replaces the old C-array payload (kernel/progs.c): a newc cpio
-# archive of bin/* + lin/* + etc/init.conf + demo.ico, baked into the ISO as
-# /boot/initramfs.img and loaded as a multiboot2 module. The kernel stages it
-# into a reserved window at boot and unpacks it into the SFS (write-if-absent).
-build/initramfs.cpio: $(PROG_ELFS) scripts/demo.ico scripts/init.conf scripts/gen_progs.py $(LINUX_BINS)
+# archive of bin/* + lin/* + everything under initramfs/ (etc/init.conf,
+# demo.ico, configs, ...), baked into the ISO as /boot/initramfs.img and loaded
+# as a multiboot2 module. The kernel stages it into a reserved window at boot
+# and unpacks it into the SFS (write-if-absent). Drop any file into initramfs/
+# to have it land in the OS filesystem on the next build.
+INITRAMFS_FILES = $(shell find initramfs -type f 2>/dev/null)
+build/initramfs.cpio: $(PROG_ELFS) initramfs/demo.ico $(INITRAMFS_FILES) scripts/gen_progs.py $(LINUX_BINS)
 	@mkdir -p build
-	$(PYTHON) scripts/gen_progs.py --cpio $@ $(PROG_ELFS) --data demo.ico=scripts/demo.ico \
-		--data etc/init.conf=scripts/init.conf \
-		$(LINUX_EMBED)
+	$(PYTHON) scripts/gen_progs.py --cpio $@ --tree initramfs $(PROG_ELFS) $(LINUX_EMBED)
 
 compile_commands.json: scripts/gen_compile_commands.py $(wildcard kernel/*.c drivers/*.c arch/i386/*.c boot/*.c programs/musl/*.c)
 	$(PYTHON) scripts/gen_compile_commands.py
@@ -190,8 +199,8 @@ debug: aos.iso
 
 # Headless regression suite: each script boots aos.iso under QEMU, drives the
 # GUI via the monitor socket, and asserts on serial log + PPM screenshots.
-LINUX_TESTS = linhello lincat lindirtest pipetest
-TESTS = ipctest manytest notepadtest sleeptest rngtest blktest atatest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest toolflags lsflagstest sgrcolor pstest inittest textmodetest termscrolltest $(LINUX_TESTS) vguitest powertest tablettest
+LINUX_TESTS = linhello lincat lindirtest pipetest socktest polltest forktest cowtest stage2test sigtest
+TESTS = ipctest manytest notepadtest sleeptest rngtest blktest atatest virtiotest netlooptest rtctest configtest klogtest stracetest stracelive shelltest panictest fstoolstest toolflags lsflagstest sgrcolor pstest inittest textmodetest termscrolltest pantest $(LINUX_TESTS) vguitest powertest tablettest
 
 # Fast subset for CI: quick boots, no extra virtio devices.
 FAST_TESTS = ipctest linhello lincat

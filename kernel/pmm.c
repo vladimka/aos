@@ -163,6 +163,7 @@ void *page_alloc_order(unsigned int order) {
         push_block(big + (PAGE_SIZE << o), o);
     }
     pmm_frames[big >> 12].order = (unsigned char)order;
+    pmm_frames[big >> 12].cow_ref = 1;
     return (void *)big;
 }
 
@@ -185,6 +186,26 @@ void page_free_order(void *addr, unsigned int order) {
 
 void page_free(void *addr) {
     page_free_order(addr, 0);
+}
+
+// COW frame share accounting. cow_link is called when one more task maps a
+// frame (fork sharing); cow_unlink when one task drops its mapping (a COW fault
+// privatizes it, or a task exits). The frame is only freed when the last
+// mapping goes away (cow_ref reaches 0). Declared in pmm.h.
+void cow_link(unsigned int phys) {
+    unsigned int f = pmm_frame_of(phys);
+    if (f < PM_NR_MAX && pmm_frames[f].cow_ref < 250)
+        pmm_frames[f].cow_ref++;
+}
+void cow_unlink(unsigned int phys) {
+    unsigned int f = pmm_frame_of(phys);
+    if (f >= PM_NR_MAX) return;
+    if (pmm_frames[f].cow_ref > 1) {
+        pmm_frames[f].cow_ref--;
+        return;
+    }
+    pmm_frames[f].cow_ref = 1;
+    page_free((void *)phys);
 }
 
 unsigned int pmm_total_pages(void) { return total_pages; }

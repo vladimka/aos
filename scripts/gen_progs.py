@@ -18,7 +18,23 @@ CPIO_TRAILER = b"TRAILER!!!\0"                 # 11 bytes: name + NUL
 CPIO_HDR_LEN = 110
 CPIO_DATE = 0                                   # deterministic builds
 
-def cpio_write(out_path, progs, data):
+def tree_walk(root):
+    # Recursive walk of a real initramfs/ directory: every file under root is
+    # added to the archive at its relative path, so anything dropped into the
+    # folder ends up in the OS filesystem (configs, icons, scripts...).
+    # File-mode: regular 0644, executables under bin/ get 0755 by name below.
+    # README.md and dotfiles are repo metadata, not OS content.
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for fn in sorted(filenames):
+            if fn == "README.md" or fn.startswith("."):
+                continue
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, root)
+            with open(full, "rb") as fp:
+                yield rel, fp.read()
+
+def cpio_write(out_path, progs, data, tree_dir=None):
     # Directory entries first (parents of every file), bare names (a trailing
     # "/" is the CPIO convention but SFS paths use bare names).
     dirs = set()
@@ -28,9 +44,17 @@ def cpio_write(out_path, progs, data):
         i = name.rfind("/")
         if i > 0:
             dirs.add(name[:i])
+    if tree_dir:
+        for dirpath, dirnames, filenames in os.walk(tree_dir):
+            if dirnames or filenames:
+                rel = os.path.relpath(dirpath, tree_dir)
+                if rel != ".":
+                    dirs.add(rel)
     entries = [("d", sorted(dirs))]
     files = [("bin/" + n, b) for n, b in progs]
     files += [(n, b) for n, b in data]      # data entries keep their names
+    if tree_dir:
+        files += list(tree_walk(tree_dir))  # and whatever the user dropped in
     entries += [("f", files)]
 
     out = bytearray()
@@ -105,12 +129,19 @@ def read_stripped(path):
 progs = []
 data = []
 cpio_out = None
+tree_dir = None
 i = 0
 args = sys.argv[1:]
 while i < len(args):
     a = args[i]
     if a == '--cpio':
         cpio_out = args[i + 1]
+        i += 2
+        continue
+    if a == '--tree':
+        tree_dir = args[i + 1]
+        if not os.path.isdir(tree_dir):
+            sys.exit("--tree: %s is not a directory" % tree_dir)
         i += 2
         continue
     if a == '--data':
@@ -127,7 +158,7 @@ while i < len(args):
 # Initramfs mode: write a newc cpio archive on the ISO instead of C arrays
 # baked into the kernel image (see Makefile build/initramfs.cpio).
 if cpio_out:
-    cpio_write(cpio_out, progs, data)
+    cpio_write(cpio_out, progs, data, tree_dir)
     sys.exit(0)
 
 print('#include "elf.h"')

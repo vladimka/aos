@@ -38,10 +38,14 @@ ACCENT = (255, 0, 255)
 
 
 def build_sfs(entries, block_count=8192):
-    """Build an SFS2 disk image matching kernel/sfs2.{h,c} layout."""
+    """Build an SFS2 disk image matching kernel/sfs2.{h,c} layout.
+
+    Inode records are 64 B (type/uid/gid/pad, nlink, mode, size, mtime,
+    direct[8], indirect) since the multi-user commit; SFS2_DIRENT 32 B.
+    """
     BS = 512
     INODES = 256
-    INO_SIZE = 48
+    INO_SIZE = 64
     DIRENT = 32
     DIRENTS_PER_BLOCK = BS // DIRENT
     inode_blocks = (INODES * INO_SIZE + BS - 1) // BS
@@ -66,27 +70,27 @@ def build_sfs(entries, block_count=8192):
         used.add(b)
         return b
 
-    def put_inode(ino, itype, size, first_block):
+    def put_inode(ino, itype, size, first_block, mode):
         o = inode_start * BS + ino * INO_SIZE
-        struct.pack_into("<BBHII", out, o, itype, 0, 1, size, 0)
-        struct.pack_into("<I", out, o + 12, first_block)
+        struct.pack_into("<BBBxHHII", out, o, itype, 0, 0, 1, mode, size, 0)
+        struct.pack_into("<I", out, o + 16, first_block)
 
     def add_dirent(dir_ino, child_ino, name):
         o = inode_start * BS + dir_ino * INO_SIZE
-        size = struct.unpack_from("<I", out, o + 4)[0]
+        size = struct.unpack_from("<I", out, o + 8)[0]
         idx = size // DIRENT
         blk_i = idx // DIRENTS_PER_BLOCK
-        blk = struct.unpack_from("<I", out, o + 12 + 4 * blk_i)[0]
+        blk = struct.unpack_from("<I", out, o + 16 + 4 * blk_i)[0]
         if blk == 0:
             blk = alloc_block()
-            struct.pack_into("<I", out, o + 12 + 4 * blk_i, blk)
+            struct.pack_into("<I", out, o + 16 + 4 * blk_i, blk)
         off = blk * BS + (idx % DIRENTS_PER_BLOCK) * DIRENT
         struct.pack_into("<I", out, off, child_ino)
         struct.pack_into("<28s", out, off + 4, name.encode())
-        struct.pack_into("<I", out, o + 4, size + DIRENT)
+        struct.pack_into("<I", out, o + 8, size + DIRENT)
 
     dirs = {"": 1}
-    put_inode(1, 2, 0, alloc_block())
+    put_inode(1, 2, 0, alloc_block(), 0o755)
 
     def ensure_dir(path):
         if path in dirs:
@@ -96,7 +100,7 @@ def build_sfs(entries, block_count=8192):
         nonlocal next_ino
         ino = next_ino
         next_ino += 1
-        put_inode(ino, 2, 0, alloc_block())
+        put_inode(ino, 2, 0, alloc_block(), 0o755)
         add_dirent(parent, ino, name)
         dirs[path] = ino
         return ino
@@ -106,8 +110,8 @@ def build_sfs(entries, block_count=8192):
         parent = ensure_dir(path.rsplit("/", 1)[0]) if "/" in path else 1
         ino = next_ino
         next_ino += 1
-        put_inode(ino, 1, len(content), alloc_block())
-        blk = struct.unpack_from("<I", out, inode_start * BS + ino * INO_SIZE + 12)[0]
+        put_inode(ino, 1, len(content), alloc_block(), 0o644)
+        blk = struct.unpack_from("<I", out, inode_start * BS + ino * INO_SIZE + 16)[0]
         out[blk * BS:blk * BS + len(content)] = content
         add_dirent(parent, ino, name)
 

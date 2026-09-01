@@ -102,11 +102,38 @@ struct vfs_inode *vfs_resolve(struct vfs_inode *cwd, const char *path,
 
 int vfs_open_fd(struct vfs_inode *cwd, const char *path, int flags);
 int vfs_pipe(int *rd, int *wr);
+int vfs_attach_ofile(struct vfs_inode *in);   // fd backed by caller's inode, or <0
 int vfs_close_fd(int fd);
 int vfs_read_fd(int fd, void *buf, unsigned int len);
 int vfs_write_fd(int fd, const void *buf, unsigned int len);
+int vfs_read_of(struct open_file *of, void *buf, unsigned int len);   // of-pointer forms
+int vfs_write_of(struct open_file *of, const void *buf, unsigned int len);
+struct open_file *task_fd_of(int fd);   // current task's fds[fd], or 0
+
+/* Linux poll() event masks (i386 values) */
+#define POLLIN  0x001
+#define POLLOUT 0x004
+#define POLLERR 0x008
+#define POLLHUP 0x010
+#define POLLNVAL 0x020
+#define POLLRDHUP 0x2000
+
+/* struct pollfd (i386 layout): int fd; short events; short revents */
+struct aos_pollfd {
+    int fd;
+    short events;
+    short revents;
+};
+
+/* Compute the set of ready events for an open fd (0 if fd not open).
+   masks onto *ready via the fs-specific profile; returns 0 or a negative
+   errno. revents already carries POLLNVAL for bad fds. */
+int vfs_fd_poll(int fd, short events, short *ready);
+
 int vfs_lseek_fd(int fd, int off, int whence);
 int vfs_dup_fd(int fd);
+struct open_file *vfs_fork_dup_fd(int fd);  // fork: fresh slot for same fd (or 0)
+int vfs_dup2_fd(int oldfd, int newfd);      // dup2(2): copy fd to another number
 struct open_file *vfs_ofile_ptr(int fd);   // open_file for fd, or 0 if not open
 int vfs_readdir_fd(int fd, char *name, unsigned int name_len);
 int vfs_fstat_fd(int fd, struct aos_stat *st);

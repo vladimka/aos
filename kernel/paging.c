@@ -65,6 +65,9 @@ void paging_init(void) {
     // The user bit lets the window manager (a ring-3 task) composite directly.
     unsigned int fb_addr = 0, fb_size = 0;
     vga_get_fb_info(&fb_addr, &fb_size);
+    // The VBE-pan console keeps off-screen headroom lines above the scanout
+    // in VRAM, so the identity map must cover more than the visible screen.
+    fb_size = vga_get_fb_map_size();
     if (fb_size)
         paging_identity_map(fb_addr, fb_size);
 
@@ -124,4 +127,24 @@ int paging_map_user_page(unsigned int vaddr) {
     if (!frame) return -1;
     pt[pti] = frame | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
     return 0;
+}
+
+// Mark the PWT bit (bit 3) on every present PTE whose identity-mapped frame
+// falls inside [phys, phys+size). Used with PAT index 1 = WC to make the
+// framebuffer write-combining without MTRRs. Callers reload CR3 afterwards.
+void paging_mark_pwt(unsigned int phys, unsigned int size) {
+    if (size == 0) return;
+    unsigned int end = phys + size;
+    unsigned int pdl = phys >> 22;
+    unsigned int pdr = (end - 1) >> 22;
+    for (unsigned int pd = pdl; pd <= pdr && pd < 1024; pd++) {
+        unsigned int pde = page_dir[pd];
+        if (!(pde & PTE_PRESENT)) continue;
+        unsigned int *pt = (unsigned int *)(pde & 0xFFFFF000);
+        for (unsigned int p = 0; p < 1024; p++) {
+            unsigned int frame = (pd << 22) | (p << 12);
+            if (frame >= phys && frame < end && (pt[p] & PTE_PRESENT))
+                pt[p] |= 0x8;   /* PWT */
+        }
+    }
 }

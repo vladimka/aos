@@ -108,6 +108,17 @@ int pipe_write_nonblock(struct vfs_fs *fs, unsigned int ino, const void *buf,
     return (int)n;
 }
 
+int pipe_poll(struct vfs_inode *in, short events, short *ready) {
+    if (!in || in->fs != &pipefs_fs) return -9;      /* -EBADF */
+    struct aos_pipe *p = &pipes[in->ino - 1];
+    short r = 0;
+    if (p->count > 0) r |= POLLIN;
+    if (p->nwriters == 0) r |= POLLHUP;              /* writer gone -> EOF */
+    if (p->count < PIPE_BUF_SIZE) r |= POLLOUT;
+    *ready = (short)(r & events);
+    return 0;
+}
+
 void pipe_close(struct vfs_fs *fs, unsigned int ino, int flags) {
     (void)fs;
     struct aos_pipe *p = &pipes[ino - 1];

@@ -6,7 +6,7 @@ background. The AND mask is all zeros (every pixel is opaque-by-alpha or
 transparent-by-zero-alpha), so the decoder's palette path is exercised only
 for its 32bpp branch. Written to stdout; run as:
 
-    python3 scripts/gen_ico.py > scripts/demo.ico
+    python3 scripts/gen_ico.py > initramfs/demo.ico
 """
 
 import struct

@@ -37,6 +37,17 @@ static void key_queue_push(int cp) {
     key_queue_tail = next;
 }
 
+int terminal_key_avail(void) {
+    if (key_queue_head != key_queue_tail)
+        return 1;
+    struct task *t = get_current_task();
+    if (t->stdin_fd >= 0) {
+        unsigned char c;
+        if (vfs_read_fd(t->stdin_fd, &c, 1) > 0) return 1;
+    }
+    return 0;
+}
+
 int terminal_read_key(void) {
     if (key_queue_head != key_queue_tail) {
         int cp = key_queue[key_queue_head];
@@ -662,7 +673,24 @@ void terminal_keyboard_handler(unsigned char scancode) {
     int k = terminal_scan_event(scancode);
     if (k < 0) return;
 
-    if (user_program_active() || task_has_user_tasks()) {
+    if (user_program_active()) {
+        key_queue_push(k);
+        return;
+    }
+
+    // PgUp/PgDn browse the kernel console scrollback (also the VBE-pan
+    // accelerator path). They reach the no-GUI-console kernel even while a
+    // background task (e.g. init's console sh) is running: no GUI consumer
+    // ever forwards them here (keyboard_handler routes those to the WM),
+    // and the console owns its own scrollback. They must not hit the
+    // vga_reset_scroll() below, or the view would snap back to live.
+    if (k == GUI_KEY_PGUP || k == GUI_KEY_PGDN) {
+        int nrows = vga_get_max_y();
+        vga_scroll(k == GUI_KEY_PGUP ? nrows : -nrows);
+        return;
+    }
+
+    if (task_has_user_tasks()) {
         key_queue_push(k);
         return;
     }

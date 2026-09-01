@@ -2,6 +2,8 @@
 #include "serial.h"
 #include "ports.h"
 #include "string.h"
+#include "printf.h"
+#include "hwaccel.h"
 
 static int fb_initialized = 0;
 static int text_initialized = 0;
@@ -73,6 +75,7 @@ static unsigned char bg_index = 0;
 static int ansi_bold = 0;
 static int ansi_params[8];
 static int ansi_np = 0;
+static int ansi_digit = 0;
 
 static unsigned int cur_fg_rgb(void) {
     return xterm_rgb[ansi_bold ? ((fg_index & 0xF8) | 8) : fg_index];
@@ -127,6 +130,15 @@ static int scrollback_count = 0;
 // View offset: 0 = normal live view, >0 = scrolled back
 static int scroll_offset = 0;
 
+// VBE panning (BGA, QEMU -vga std / VirtualBox): the scanout is shifted with
+// the Y_OFFSET register instead of re-blitting VRAM on every wheel notch.
+// The baked VRAM window holds `vbe_pan_rows` headroom lines (virtual row
+// vbe_pan_bake at VRAM row 0) followed by the visible screen; navigating
+// within the band is a single port write (hwaccel_pan_set).
+static int vbe_pan_ok = 0;
+static int vbe_pan_rows = 0;
+static int vbe_pan_bake = 0;
+
 // CPU-side staging framebuffer (double buffering): scrollback redraws render
 // into shadow RAM first, then one memcpy flips it to VRAM. Placed in the
 // free identity-mapped gap between the ramdisk (RAMDISK_BASE, 0x00400000) and
@@ -139,10 +151,18 @@ static void fb_stage_begin(void) {
     fb_stage_active = fb_initialized && fb_height * fb_pitch <= FB_STAGE_SIZE;
 }
 
+// Flush the stage buffer to VRAM starting at pixel row vram_pix (used by the
+// VBE-pan path, which keeps headroom lines above the visible window).
+static void fb_stage_flush_at(int vram_pix) {
+    if (!fb_stage_active) return;
+    memcpy_fast((void *)(fb_addr + (unsigned)vram_pix * fb_pitch),
+                (void *)FB_STAGE_ADDR, fb_height * fb_pitch);
+    fb_stage_active = 0;
+}
+
 static void fb_stage_flush(void) {
     if (!fb_stage_active) return;
-    memcpy_fast((void *)fb_addr, (void *)FB_STAGE_ADDR, fb_height * fb_pitch);
-    fb_stage_active = 0;
+    fb_stage_flush_at(0);
 }
 
 static void mirror_clear_row(int r) {
@@ -329,17 +349,25 @@ static void text_putchar(char c) {
         if (uc == '[') {
             ansi_state = 2;
             ansi_np = 0;
+            ansi_digit = 0;
             for (int i = 0; i < 8; i++) ansi_params[i] = 0;
             return;
         }
         ansi_state = 0;
     } else if (ansi_state == 2) {
         if (uc >= '0' && uc <= '9') {
-            if (ansi_np < 8) ansi_params[ansi_np] = ansi_params[ansi_np] * 10 + (uc - '0');
+            if (!ansi_digit) {
+                ansi_digit = 1;
+                if (ansi_np < 8) ansi_np++;
+            }
+            if (ansi_np > 0)
+                ansi_params[ansi_np - 1] = ansi_params[ansi_np - 1] * 10 +
+                                           (uc - '0');
             return;
         }
-        if (uc == ';') { if (ansi_np < 8) ansi_np++; return; }
+        if (uc == ';') { ansi_digit = 0; return; }
         ansi_state = 0;
+        ansi_digit = 0;
         ansi_collect(uc);
         return;
     } else if (uc == 0x1b) {
@@ -391,11 +419,18 @@ static void fb_putchar(char c) {
         ansi_state = 0;
     } else if (ansi_state == 2) {
         if (uc >= '0' && uc <= '9') {
-            if (ansi_np < 8) ansi_params[ansi_np] = ansi_params[ansi_np] * 10 + (uc - '0');
+            if (!ansi_digit) {
+                ansi_digit = 1;
+                if (ansi_np < 8) ansi_np++;
+            }
+            if (ansi_np > 0)
+                ansi_params[ansi_np - 1] = ansi_params[ansi_np - 1] * 10 +
+                                           (uc - '0');
             return;
         }
-        if (uc == ';') { if (ansi_np < 8) ansi_np++; return; }
+        if (uc == ';') { ansi_digit = 0; return; }
         ansi_state = 0;
+        ansi_digit = 0;
         ansi_collect(uc);
         return;
     } else if (uc == 0x1b) {
@@ -589,6 +624,7 @@ static void render_scrollback_full(void) {
 
 // Full re-render of the live screen (returning from scrollback).
 static void render_live_full(void) {
+    hwaccel_pan_set(0);
     if (fb_initialized) {
         fb_stage_begin();
         fb_fill_rows((unsigned char *)FB_STAGE_ADDR, 0, (max_y + 1) * 16, cur_bg_rgb());
@@ -651,15 +687,76 @@ static void shift_view(int d) {
     reset_utf8_state();
 }
 
+// ---- VBE-pan scrollback (BGA: scanout shifted via Y_OFFSET) --------------
+
+// Bake the scrollback view into VRAM: vbe_pan_rows headroom lines (drawn
+// straight into the off-screen VRAM above the scanout) plus the visible
+// window (through the stage buffer, so the screen flip is atomic). The
+// screen is then pointed into the baked window with a pan write.
+static void hwpan_bake(void) {
+    int vis = max_y + 1;
+    int si_top = scrollback_count - scroll_offset;
+    if (si_top < 0) si_top = 0;
+    int vb_top = si_top - vbe_pan_rows;
+    if (vb_top < 0) vb_top = 0;
+
+    fb_stage_active = 0;
+    for (int k = 0; k < vbe_pan_rows; k++) {
+        int len;
+        const unsigned short *line = vrow_ptr(vb_top + k, &len);
+        fb_fill_rows((unsigned char *)fb_addr, k * 16, (k + 1) * 16,
+                     cur_bg_rgb());
+        fb_render_row_fast(line, len, k);
+    }
+
+    fb_stage_begin();
+    fb_fill_rows((unsigned char *)FB_STAGE_ADDR, 0, vis * 16, cur_bg_rgb());
+    for (int r = 0; r < vis; r++) {
+        int len;
+        const unsigned short *line =
+            vrow_ptr(vb_top + vbe_pan_rows + r, &len);
+        fb_render_row_fast(line, len, r);
+    }
+    fb_stage_flush_at(vbe_pan_rows * 16);
+
+    vbe_pan_bake = vb_top;
+    hwaccel_pan_set(si_top - vb_top);
+    reset_utf8_state();
+}
+
+// Navigate within the baked band: as long as the new view top stays inside
+// [vbe_pan_bake, vbe_pan_bake + vbe_pan_rows] the pan alone suffices;
+// otherwise re-bake the window around the new position.
+static void hwpan_nav(void) {
+    int si_top = scrollback_count - scroll_offset;
+    if (si_top < 0) si_top = 0;
+    if (si_top < vbe_pan_bake || si_top > vbe_pan_bake + vbe_pan_rows)
+        hwpan_bake();
+    else
+        hwaccel_pan_set(si_top - vbe_pan_bake);
+}
+
 void vga_scroll(int delta) {
     int old_offset = scroll_offset;
     scroll_offset += delta;
     if (scroll_offset < 0) scroll_offset = 0;
     if (scroll_offset > scrollback_count) scroll_offset = scrollback_count;
+    serial_print("vga_scroll: d="); serial_print_dec(delta);
+    serial_print(" off="); serial_print_dec(old_offset);
+    serial_print("->"); serial_print_dec(scroll_offset);
+    serial_print(" count="); serial_print_dec(scrollback_count);
+    serial_print(" pan="); serial_print_dec(vbe_pan_ok);
+    serial_print("\n");  // TMP
     if (scroll_offset == old_offset) return;
 
     if (scroll_offset == 0) {
+        hwaccel_pan_set(0);
         render_live_full();
+    } else if (vbe_pan_ok) {
+        if (old_offset == 0)
+            hwpan_bake();
+        else
+            hwpan_nav();
     } else if (!fb_initialized || old_offset == 0) {
         render_scrollback_full();
     } else {
@@ -745,6 +842,11 @@ void vga_set_cursor(int x, int y) {
 int vga_get_max_x(void) {
     if (fb_initialized) return max_x;
     return TEXT_COLS - 1;
+}
+
+int vga_get_max_y(void) {
+    if (fb_initialized) return max_y;
+    return TEXT_ROWS - 1;
 }
 
 void vga_clear_eol(void) {
@@ -855,7 +957,7 @@ void vga_init(void) {
 
     if (!ok) {
         serial_print("Framebuffer: not available, using text mode\n");
-        vga_refresh_text_color();
+vga_refresh_text_color();
         unsigned short blank = text_color << 8 | ' ';
         for (int i = 0; i < TEXT_ROWS * TEXT_COLS; i++)
             TEXT_ADDR[i] = blank;
@@ -886,6 +988,19 @@ void vga_init(void) {
     mirror_cols = max_x + 1;
     for (int r = 0; r <= max_y; r++)
         mirror_clear_row(r);
+
+    // VBE panning requires 32bpp and a whole-text-row rich BGA scanout.
+    vbe_pan_ok = (fb_bpp == 32 && (fb_height % 16) == 0);
+    if (vbe_pan_ok) {
+        int rows = hwaccel_pan_probe(fb_pitch, fb_height, fb_bpp);
+        vbe_pan_ok = rows >= 8;
+        if (vbe_pan_ok) {
+            vbe_pan_rows = rows > 32 ? 32 : rows;
+            printf("hwaccel: VBE pan %d scrollback rows (Y_OFFSET)\n",
+                   vbe_pan_rows);
+        }
+    }
+    hwaccel_pan_reset();
 }
 
 void vga_clear(void) {
@@ -897,6 +1012,7 @@ void vga_clear(void) {
     reset_utf8_state();
     ansi_state = 0;
     ansi_np = 0;
+    hwaccel_pan_set(0);
 
     if (fb_initialized) {
         unsigned int bg_rgb = cur_bg_rgb();
@@ -930,6 +1046,17 @@ void vga_get_fb_info(unsigned int *addr, unsigned int *size) {
 
 int vga_fb_active(void) {
     return fb_initialized;
+}
+
+// VRAM bytes the console actually touches: the visible screen plus, when
+// VBE panning is active, the off-screen headroom lines above the scanout.
+// Callers (paging_init) identity-map this many bytes.
+unsigned int vga_get_fb_map_size(void) {
+    if (!fb_initialized) return 0;
+    unsigned int size = fb_height * fb_pitch;
+    if (vbe_pan_ok)
+        size += (unsigned)vbe_pan_rows * 16 * fb_pitch;
+    return size;
 }
 
 void vga_get_fb_dimensions(unsigned int *addr, unsigned int *width, unsigned int *height,
